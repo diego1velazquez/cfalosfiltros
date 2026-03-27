@@ -2844,10 +2844,10 @@ function parseMealTimeDetail(lines) {
   for (const line of lines) {
     if (skipRe.test(line)) continue;
 
-    // Extract wage rate if present on this line
-    const wageMatch = line.match(/\$(\d+\.\d{2})/);
-    if (wageMatch && currentEmp) {
-      const w = parseFloat(wageMatch[1]);
+    // Extract wage rate from Regular punch lines (first $ amount after "Regular")
+    const wageLineMatch = line.match(/Regular\s+\$(\d+\.\d{2})/i);
+    if (wageLineMatch && currentEmp) {
+      const w = parseFloat(wageLineMatch[1]);
       if (w > 0) { currentWage = w; empWages[currentEmp] = w; }
     }
 
@@ -2860,6 +2860,8 @@ function parseMealTimeDetail(lines) {
       if (timeMatch && currentEmp) {
         const type = timeMatch[3].toLowerCase();
         if (type.startsWith('regular')) {
+          const lineWage = wageLineMatch ? parseFloat(wageLineMatch[1]) : currentWage;
+          if (lineWage > 0) { currentWage = lineWage; empWages[currentEmp] = lineWage; }
           currentShift = {
             empName: currentEmp, date: currentDate,
             shiftIn: fmtTime(timeMatch[1]), shiftOut: fmtTime(timeMatch[2]),
@@ -2878,6 +2880,8 @@ function parseMealTimeDetail(lines) {
     if (timeMatch && currentEmp && currentDate) {
       const type = timeMatch[3].toLowerCase();
       if (type.startsWith('regular')) {
+        const lineWage = wageLineMatch ? parseFloat(wageLineMatch[1]) : currentWage;
+        if (lineWage > 0) { currentWage = lineWage; empWages[currentEmp] = lineWage; }
         currentShift = {
           empName: currentEmp, date: currentDate,
           shiftIn: fmtTime(timeMatch[1]), shiftOut: fmtTime(timeMatch[2]),
