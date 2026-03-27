@@ -2379,6 +2379,14 @@ function deleteMealPenalty(id) {
   showToast('🗑 Penalty record deleted.');
 }
 
+function clearAllMealPenalties() {
+  if (!confirm('⚠️ This will delete ALL meal penalty records. Are you sure?')) return;
+  MEAL_PENALTIES.length = 0;
+  saveMealData();
+  renderMealPenalties();
+  showToast('🗑 All meal penalty records cleared.');
+}
+
 function exportMealsCSV() {
   const rows = [['Employee','Date','Shift Start','Shift End','Break Start','Break End','Break Duration (min)','Violations','Hourly Rate','Penalty Amount']];
   MEAL_PENALTIES.forEach(p => rows.push([p.empName,p.date,p.shiftStart,p.shiftEnd,p.breakStart||'',p.breakEnd||'',p.breakDuration,p.violationTypes.join('; '),'$'+(p.rate||0),'$'+p.penaltyAmount]));
