@@ -2259,10 +2259,10 @@ function checkMealViolation() {
   if (violations.length) {
     banner.style.display = 'block';
     banner.innerHTML = '<strong>Violations detected:</strong><br>' + violations.join('<br>');
-    const penalty = rate > 0 ? ((penaltyMinutes / 60) * rate * 1.5).toFixed(2) : '—';
+    const penalty = rate > 0 ? (rate * 1.5).toFixed(2) : '—';
     calcResult.style.display = 'block';
     calcResult.innerHTML = `<strong>Penalty calculation:</strong><br>
-      Period: ${penaltyMinutes} min × 1.5× rate${rate>0?' = <strong>$'+penalty+'</strong> owed':''}<br>
+      Period: 1 hr × 1.5× rate${rate>0?' = <strong>$'+penalty+'</strong> owed':''}<br>
       <span style="font-size:.75rem;color:#888">(1.5× hourly rate for meal period worked per PR Act 379)</span>`;
   } else {
     banner.style.display = 'none';
@@ -2304,7 +2304,7 @@ function submitMealPenalty() {
   if (shiftHours > 10 && (!breakStart)) violationTypes.push('Second break required');
 
   const penaltyMinutes = 30;
-  const penaltyAmount  = rate > 0 ? +((penaltyMinutes/60)*rate*1.5).toFixed(2) : 0;
+  const penaltyAmount  = rate > 0 ? +(rate*1.5).toFixed(2) : 0;
 
   const emp = EMPLOYEES[empKey];
   MEAL_PENALTIES.push({
@@ -2343,6 +2343,7 @@ function renderMealPenalties() {
       <td style="font-size:.8rem;color:${p.breakDuration<30&&p.breakDuration>0?'var(--red)':'inherit'}">${p.breakDuration?p.breakDuration+' min':'—'}</td>
       <td style="font-size:.75rem">${p.violationTypes.map(v=>`<span class="badge bg-red" style="font-size:.65rem">${v}</span>`).join(' ')}</td>
       <td style="font-size:.8rem">${p.rate?'$'+p.rate:'—'}</td>
+      <td style="font-size:.8rem;color:#b45309;font-weight:600">${p.penaltyAmount>0?'1 hr @ 1.5×':'—'}</td>
       <td style="font-weight:700;color:${p.penaltyAmount>0?'var(--red)':'#888'}">${p.penaltyAmount>0?'$'+p.penaltyAmount:'—'}</td>
       <td><button class="btn btn-red2 btn-sm" onclick="deleteMealPenalty(${p.id})">✕</button></td>
     </tr>`).join('');
@@ -2355,6 +2356,7 @@ function renderMealPenalties() {
     totalRow.style.cssText = 'background:#fef2f2;font-weight:700;border-top:2px solid #fca5a5';
     totalRow.innerHTML = `
       <td colspan="8" style="text-align:right;padding:10px;font-size:.85rem;color:#991b1b">ALL-TIME TOTAL LIABILITY</td>
+      <td style="padding:10px;font-size:.85rem;color:#991b1b">—</td>
       <td style="padding:10px;font-size:.85rem;color:#991b1b">—</td>
       <td style="padding:10px;font-size:1rem;color:#dc2626">$${totalPenalty.toFixed(2)}</td>
       <td></td>`;
@@ -2388,8 +2390,8 @@ function clearAllMealPenalties() {
 }
 
 function exportMealsCSV() {
-  const rows = [['Employee','Date','Shift Start','Shift End','Break Start','Break End','Break Duration (min)','Violations','Hourly Rate','Penalty Amount']];
-  MEAL_PENALTIES.forEach(p => rows.push([p.empName,p.date,p.shiftStart,p.shiftEnd,p.breakStart||'',p.breakEnd||'',p.breakDuration,p.violationTypes.join('; '),'$'+(p.rate||0),'$'+p.penaltyAmount]));
+  const rows = [['Employee','Date','Shift Start','Shift End','Break Start','Break End','Break Duration (min)','Violations','Hourly Rate','Time Owed','Penalty Amount']];
+  MEAL_PENALTIES.forEach(p => rows.push([p.empName,p.date,p.shiftStart,p.shiftEnd,p.breakStart||'',p.breakEnd||'',p.breakDuration,p.violationTypes.join('; '),'$'+(p.rate||0),p.penaltyAmount>0?'1 hr @ 1.5x':'—','$'+p.penaltyAmount]));
   const csv = rows.map(r=>r.map(v=>`"${v}"`).join(',')).join('\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
@@ -2974,7 +2976,7 @@ function parseMealTimeDetail(lines) {
       violTypeCounts[reason.split('(')[0].trim()] = (violTypeCounts[reason.split('(')[0].trim()]||0) + 1;
 
       const _rate1 = s.wage || 0;
-      const _penalty1 = _rate1 > 0 ? +((30/60)*_rate1*1.5).toFixed(2) : 0;
+      const _penalty1 = _rate1 > 0 ? +(_rate1*1.5).toFixed(2) : 0;
       violations.push({
         id: Date.now() + Math.random(),
         empKey: s.empName.replace(/[^a-z0-9]/gi,'_').toLowerCase(),
@@ -2998,7 +3000,7 @@ function parseMealTimeDetail(lines) {
         const qualifyingBreaks = allBreaks.filter(br => br.startHour >= 3 && br.startHour < 6 && br.dur >= 30);
         if (qualifyingBreaks.length < 2) {
           const _rate2 = s.wage || 0;
-          const _penalty2 = _rate2 > 0 ? +((30/60)*_rate2*1.5).toFixed(2) : 0;
+          const _penalty2 = _rate2 > 0 ? +(_rate2*1.5).toFixed(2) : 0;
           violations.push({
             id: Date.now() + Math.random(),
             empKey: s.empName.replace(/[^a-z0-9]/gi,'_').toLowerCase(),
