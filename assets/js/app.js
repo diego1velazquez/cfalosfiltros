@@ -9,37 +9,50 @@ window.onerror = function(msg, src, line, col, err) {
 };
 
 // ══════════════════════════════════════════
-// USER DATABASE (in-memory for now)
+// SUPABASE SETUP
 // ══════════════════════════════════════════
-const USERS = {
-  'admin': { password: 'doodles', role: 'admin', name: 'Admin', needsSetup: false },
-  // Employee accounts will be added here
-  // 'CLOCKPIN': { password: null, role: 'employee', name: 'Employee Name', needsSetup: true }
-};
+const SUPABASE_URL  = 'https://ccmprabfwhfvrkeyfamg.supabase.co';
+const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNjbXByYWJmd2hmdnJrZXlmYW1nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2MzUzODYsImV4cCI6MjA5MDIxMTM4Nn0.PV2tAkcC2p7QuQQNBw31GIjmr--qu-ULoqqtDBg6lH8';
+let _supaClient = null;
+function getSupa() {
+  if (!_supaClient) _supaClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+  return _supaClient;
+}
 
-// Simulate some employee data (placeholder until real data imported)
+// ══════════════════════════════════════════
+// USER DATABASE
+// ══════════════════════════════════════════
+const USERS = {};
 const EMPLOYEES = {};
-
 let currentUser = null;
 
 // ══════════════════════════════════════════
 // LOGIN
 // ══════════════════════════════════════════
-document.getElementById('loginForm').addEventListener('submit', function(e) {
+document.getElementById('loginForm').addEventListener('submit', async function(e) {
   e.preventDefault();
-  const pin  = document.getElementById('pinIn').value.trim();
-  const pass = document.getElementById('passIn').value.trim();
-  if (!pin || !pass) return;
+  const email = document.getElementById('pinIn').value.trim();
+  const pass  = document.getElementById('passIn').value.trim();
+  if (!email || !pass) return;
 
-  const user = USERS[pin];
+  const errEl = document.getElementById('loginErr');
+  errEl.style.display = 'none';
 
-  // Admin-only access
-  if (user && user.role === 'admin' && user.password === pass) {
-    doLogin(pin, user);
-    return;
+  try {
+    const { data, error } = await getSupa().auth.signInWithPassword({ email, password: pass });
+    if (error || !data.user) {
+      errEl.textContent = 'Invalid email or password.';
+      errEl.style.display = 'block';
+      return;
+    }
+    const { data: profile } = await getSupa().from('profiles').select('*').eq('id', data.user.id).single();
+    const role = profile?.role || 'admin';
+    const name = profile?.name || data.user.email;
+    doLogin(data.user.email, { role, name });
+  } catch(err) {
+    errEl.textContent = 'Login error: ' + err.message;
+    errEl.style.display = 'block';
   }
-
-  document.getElementById('loginErr').style.display = 'block';
 });
 
 function doLogin(pin, user) {
@@ -61,7 +74,8 @@ function doLogin(pin, user) {
   goTab('dashboard');
 }
 
-function signOut() {
+async function signOut() {
+  await getSupa().auth.signOut();
   currentUser = null;
   clearInterval(window._autoSaveInterval);
   document.getElementById('loginPage').style.display = 'flex';
@@ -1101,60 +1115,88 @@ function toggleInactiveEmployees(checked) {
 }
 
 // ══════════════════════════════════════════
-// DATA PERSISTENCE — localStorage
+// DATA PERSISTENCE — Supabase Cloud + localStorage fallback
 // ══════════════════════════════════════════
-function saveToStorage() {
+function _cacheToLocal() {
   try {
     localStorage.setItem('cfa_losfiltros_employees', JSON.stringify(EMPLOYEES));
     localStorage.setItem('cfa_losfiltros_periods',   JSON.stringify(IMPORTED_PERIODS));
-    localStorage.setItem('cfa_losfiltros_users',     JSON.stringify(USERS));
     localStorage.setItem('cfa_losfiltros_requests',  JSON.stringify(TIME_OFF_REQUESTS));
-    const now = new Date().toLocaleString();
-    document.getElementById('sBackup').textContent = now;
-    localStorage.setItem('cfa_losfiltros_backup_time', now);
-  } catch(e) { console.warn('Storage save failed:', e); }
+    localStorage.setItem('cfa_losfiltros_tardiness', JSON.stringify(TARDINESS_LOG));
+    localStorage.setItem('cfa_losfiltros_meals',     JSON.stringify(MEAL_PENALTIES));
+    localStorage.setItem('cfa_losfiltros_slack',     JSON.stringify(SLACK_SETTINGS));
+  } catch(e) { console.warn('localStorage cache failed:', e); }
 }
 
-function loadFromStorage() {
+async function saveToCloud() {
   try {
-    const empData = localStorage.getItem('cfa_losfiltros_employees');
-    if (empData) Object.assign(EMPLOYEES, JSON.parse(empData));
+    const payload = {
+      key:       'appdata',
+      employees: EMPLOYEES,
+      periods:   IMPORTED_PERIODS,
+      requests:  TIME_OFF_REQUESTS,
+      tardiness: TARDINESS_LOG,
+      meals:     MEAL_PENALTIES,
+      slack:     SLACK_SETTINGS,
+      saved_at:  new Date().toISOString(),
+    };
+    const { error } = await getSupa().from('app_data').upsert(payload, { onConflict: 'key' });
+    if (error) { console.warn('Cloud save error:', error.message); return; }
+    const now = new Date().toLocaleString();
+    localStorage.setItem('cfa_losfiltros_backup_time', now);
+    const sb = document.getElementById('sBackup');
+    if (sb) sb.textContent = now;
+  } catch(e) { console.warn('Cloud save failed:', e); }
+}
 
-    const periodData = localStorage.getItem('cfa_losfiltros_periods');
-    if (periodData) Object.assign(IMPORTED_PERIODS, JSON.parse(periodData));
+function saveToStorage() {
+  _cacheToLocal();
+  saveToCloud();
+}
 
-    const userData = localStorage.getItem('cfa_losfiltros_users');
-    if (userData) {
-      const saved = JSON.parse(userData);
-      // Merge saved users but never overwrite admin credentials
-      for (const [pin, user] of Object.entries(saved)) {
-        if (pin !== 'admin') USERS[pin] = user;
-      }
-    }
+async function loadFromStorage() {
+  try {
+    const { data, error } = await getSupa().from('app_data').select('*').eq('key','appdata').single();
+    if (!error && data) {
+      if (data.employees)  Object.assign(EMPLOYEES, data.employees);
+      if (data.periods)    Object.assign(IMPORTED_PERIODS, data.periods);
+      if (data.requests)   { TIME_OFF_REQUESTS.length = 0; TIME_OFF_REQUESTS.push(...data.requests); }
+      if (data.tardiness)  { TARDINESS_LOG.length  = 0; TARDINESS_LOG.push(...data.tardiness); }
+      if (data.meals)      { MEAL_PENALTIES.length  = 0; MEAL_PENALTIES.push(...data.meals); }
+      if (data.slack)      Object.assign(SLACK_SETTINGS, data.slack);
+      _cacheToLocal();
+      console.log('✅ Loaded from Supabase cloud');
+    } else throw new Error('no cloud data');
+  } catch(e) {
+    console.warn('Cloud load failed, using local cache:', e.message);
+    try {
+      const empData = localStorage.getItem('cfa_losfiltros_employees');
+      if (empData) Object.assign(EMPLOYEES, JSON.parse(empData));
+      const periodData = localStorage.getItem('cfa_losfiltros_periods');
+      if (periodData) Object.assign(IMPORTED_PERIODS, JSON.parse(periodData));
+      const reqData = localStorage.getItem('cfa_losfiltros_requests');
+      if (reqData) { TIME_OFF_REQUESTS.length = 0; TIME_OFF_REQUESTS.push(...JSON.parse(reqData)); }
+      const td = localStorage.getItem('cfa_losfiltros_tardiness');
+      if (td) { TARDINESS_LOG.length = 0; TARDINESS_LOG.push(...JSON.parse(td)); }
+      const mp = localStorage.getItem('cfa_losfiltros_meals');
+      if (mp) { MEAL_PENALTIES.length = 0; MEAL_PENALTIES.push(...JSON.parse(mp)); }
+      const sl = localStorage.getItem('cfa_losfiltros_slack');
+      if (sl) Object.assign(SLACK_SETTINGS, JSON.parse(sl));
+    } catch(e2) { console.warn('localStorage load failed:', e2); }
+  }
 
-    const backupTime = localStorage.getItem('cfa_losfiltros_backup_time');
-    if (backupTime) document.getElementById('sBackup').textContent = backupTime;
-
-    // Update data range
-    const allPeriods = Object.values(EMPLOYEES)
-      .flatMap(e => e.monthlyRecords?.flatMap(m => m.payPeriods || []) || [])
-      .map(p => p.start).filter(Boolean).sort();
-    if (allPeriods.length) {
-      document.getElementById('sRange').textContent =
-        allPeriods[0] + ' → ' + allPeriods[allPeriods.length-1];
-    }
-
-    // Load time-off requests
-    const reqData = localStorage.getItem('cfa_losfiltros_requests');
-    if (reqData) {
-      TIME_OFF_REQUESTS.length = 0;
-      TIME_OFF_REQUESTS.push(...JSON.parse(reqData));
-    }
-
-    populateEmployeeDropdowns();
-    recalculateAll();
-    updateRequestBadge();
-  } catch(e) { console.warn('Storage load failed:', e); }
+  const backupTime = localStorage.getItem('cfa_losfiltros_backup_time');
+  if (backupTime) { const sb = document.getElementById('sBackup'); if(sb) sb.textContent = backupTime; }
+  const allPeriods = Object.values(EMPLOYEES)
+    .flatMap(e => e.monthlyRecords?.flatMap(m => m.payPeriods || []) || [])
+    .map(p => p.start).filter(Boolean).sort();
+  if (allPeriods.length) {
+    const sr = document.getElementById('sRange');
+    if(sr) sr.textContent = allPeriods[0] + ' → ' + allPeriods[allPeriods.length-1];
+  }
+  populateEmployeeDropdowns();
+  recalculateAll();
+  updateRequestBadge();
 }
 
 // Auto-save every 5 minutes and after key actions
@@ -1164,7 +1206,7 @@ window.addEventListener('load', initReconciliationUI);
 // Override doBackup to also persist
 function doBackup() {
   saveToStorage();
-  alert('Backup saved successfully!');
+  alert('Backup saved to cloud successfully!');
 }
 
 // Load data on page load
