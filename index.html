@@ -8,7 +8,6 @@
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
   <link rel="stylesheet" href="assets/css/styles.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" onerror="console.warn('pdf.js CDN failed')"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 
@@ -534,7 +533,7 @@ window.onerror = function(msg, src, line, col, err) {
 // ══════════════════════════════════════════
 const SUPABASE_URL  = 'https://ccmprabfwhfvrkeyfamg.supabase.co';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNjbXByYWJmd2hmdnJrZXlmYW1nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2MzUzODYsImV4cCI6MjA5MDIxMTM4Nn0.PV2tAkcC2p7QuQQNBw31GIjmr--qu-ULoqqtDBg6lH8';
-const _supa = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+const _supa = (window.supabase || window.supabaseJs).createClient(SUPABASE_URL, SUPABASE_ANON);
 
 // ══════════════════════════════════════════
 // USER DATABASE
@@ -3424,6 +3423,7 @@ function parseMealTimeDetail(lines) {
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="assets/js/app.js"></script>
 </body>
 </html>
