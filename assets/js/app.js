@@ -2827,8 +2827,6 @@ function parseMealTimeDetail(lines) {
   let employees = new Set();
   const empWages = {};
   const shifts = [];
-  let employees = new Set();
-  const shifts = []; // { empName, date, shiftIn, shiftOut, breaks: [{in, out}] }
 
   // Date pattern: "Mon, 02/16/2026"
   const dateRe   = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+(\d{2}\/\d{2}\/\d{4})/i;
