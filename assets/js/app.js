@@ -1911,7 +1911,7 @@ function exportToPrint() {
     <div id="mealErr" style="display:none;background:#fee2e2;color:#991b1b;border-radius:7px;padding:9px 12px;font-size:.82rem;margin-bottom:12px"></div>
     <div id="mealViolationBanner" style="display:none;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:.82rem;color:#92400e"></div>
     <div class="frow full"><div class="field"><label>Employee</label>
-      <select id="mealEmpSel"><option value="">Select employee...</option></select>
+      <select id="mealEmpSel" onchange="autoFillMealRate(this.value)"><option value="">Select employee...</option></select>
     </div></div>
     <div class="frow"><div class="field"><label>Date</label>
       <input type="date" id="mealDate"/>
@@ -2198,6 +2198,15 @@ function timeToMin(t) {
   return parts[0] * 60 + parts[1];
 }
 
+function autoFillMealRate(empKey) {
+  if (!empKey) return;
+  const emp = EMPLOYEES[empKey];
+  if (emp?.hourlyRate) {
+    const rateEl = document.getElementById('mealRate');
+    if (rateEl && !rateEl.value) rateEl.value = emp.hourlyRate;
+  }
+}
+
 function checkMealViolation() {
   const shiftStart  = document.getElementById('mealShiftStart').value;
   const shiftEnd    = document.getElementById('mealShiftEnd').value;
@@ -2339,13 +2348,26 @@ function renderMealPenalties() {
     </tr>`).join('');
   }
 
+  // Add all-time totals footer row
+  if (MEAL_PENALTIES.length) {
+    const totalPenalty = MEAL_PENALTIES.reduce((s,p) => s + (p.penaltyAmount||0), 0);
+    const totalRow = document.createElement('tr');
+    totalRow.style.cssText = 'background:#fef2f2;font-weight:700;border-top:2px solid #fca5a5';
+    totalRow.innerHTML = `
+      <td colspan="8" style="text-align:right;padding:10px;font-size:.85rem;color:#991b1b">ALL-TIME TOTAL LIABILITY</td>
+      <td style="padding:10px;font-size:.85rem;color:#991b1b">—</td>
+      <td style="padding:10px;font-size:1rem;color:#dc2626">$${totalPenalty.toFixed(2)}</td>
+      <td></td>`;
+    tbody.appendChild(totalRow);
+  }
+
   // Update stats
   const now = new Date();
   const thisMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
   const monthItems = MEAL_PENALTIES.filter(p => p.date.startsWith(thisMonth));
   document.getElementById('mealMonthCount').textContent = monthItems.length;
-  document.getElementById('mealEmpCount').textContent   = new Set(monthItems.map(p=>p.empKey)).size;
-  document.getElementById('mealLiability').textContent  = '$'+monthItems.reduce((s,p)=>s+p.penaltyAmount,0).toFixed(2);
+  if (document.getElementById('mealEmpCount')) document.getElementById('mealEmpCount').textContent = new Set(monthItems.map(p=>p.empKey)).size;
+  document.getElementById('mealLiability').textContent  = '$'+monthItems.reduce((s,p)=>s+(p.penaltyAmount||0),0).toFixed(2);
   document.getElementById('mealTotalCount').textContent = MEAL_PENALTIES.length;
 }
 
@@ -2801,6 +2823,10 @@ function parseMealTimeDetail(lines) {
 
   // ── state ────────────────────────────────────────────────
   let currentEmp = null;
+  let currentWage = 0;
+  let employees = new Set();
+  const empWages = {};
+  const shifts = [];
   let employees = new Set();
   const shifts = []; // { empName, date, shiftIn, shiftOut, breaks: [{in, out}] }
 
@@ -2820,6 +2846,13 @@ function parseMealTimeDetail(lines) {
   for (const line of lines) {
     if (skipRe.test(line)) continue;
 
+    // Extract wage rate if present on this line
+    const wageMatch = line.match(/\$(\d+\.\d{2})/);
+    if (wageMatch && currentEmp) {
+      const w = parseFloat(wageMatch[1]);
+      if (w > 0) { currentWage = w; empWages[currentEmp] = w; }
+    }
+
     // Check for date line
     const dateMatch = line.match(dateRe);
     if (dateMatch) {
@@ -2832,7 +2865,7 @@ function parseMealTimeDetail(lines) {
           currentShift = {
             empName: currentEmp, date: currentDate,
             shiftIn: fmtTime(timeMatch[1]), shiftOut: fmtTime(timeMatch[2]),
-            breaks: []
+            breaks: [], wage: currentWage
           };
           shifts.push(currentShift);
         } else if (type.startsWith('break') && currentShift && currentShift.date === currentDate) {
@@ -2850,7 +2883,7 @@ function parseMealTimeDetail(lines) {
         currentShift = {
           empName: currentEmp, date: currentDate,
           shiftIn: fmtTime(timeMatch[1]), shiftOut: fmtTime(timeMatch[2]),
-          breaks: []
+          breaks: [], wage: currentWage
         };
         shifts.push(currentShift);
       } else if (type.startsWith('break') && currentShift && currentShift.date === currentDate) {
@@ -2868,6 +2901,7 @@ function parseMealTimeDetail(lines) {
         employees.add(candidate);
         currentDate = null;
         currentShift = null;
+        currentWage = empWages[candidate] || 0;
       }
     }
   }
@@ -2929,12 +2963,14 @@ function parseMealTimeDetail(lines) {
 
       violTypeCounts[reason.split('(')[0].trim()] = (violTypeCounts[reason.split('(')[0].trim()]||0) + 1;
 
+      const _rate1 = s.wage || 0;
+      const _penalty1 = _rate1 > 0 ? +((30/60)*_rate1*1.5).toFixed(2) : 0;
       violations.push({
         id: Date.now() + Math.random(),
         empKey: s.empName.replace(/[^a-z0-9]/gi,'_').toLowerCase(),
         empName: s.empName,
         date: s.date,
-        rate: 0, // unknown from PDF - can be filled manually
+        rate: _rate1,
         shiftStart: s.shiftIn,
         shiftEnd: s.shiftOut,
         breakStart: breakInfo.in || '',
@@ -2942,7 +2978,7 @@ function parseMealTimeDetail(lines) {
         shiftHours: +shiftHours.toFixed(2),
         breakDuration: breakInfo.dur || 0,
         violationTypes: [reason],
-        penaltyAmount: 0, // rate unknown
+        penaltyAmount: _penalty1,
         notes: `Auto-detected from Time Detail Report`,
         loggedAt: new Date().toISOString()
       });
@@ -2951,12 +2987,14 @@ function parseMealTimeDetail(lines) {
       if (shiftHours > 10) {
         const qualifyingBreaks = allBreaks.filter(br => br.startHour >= 3 && br.startHour < 6 && br.dur >= 30);
         if (qualifyingBreaks.length < 2) {
+          const _rate2 = s.wage || 0;
+          const _penalty2 = _rate2 > 0 ? +((30/60)*_rate2*1.5).toFixed(2) : 0;
           violations.push({
             id: Date.now() + Math.random(),
             empKey: s.empName.replace(/[^a-z0-9]/gi,'_').toLowerCase(),
             empName: s.empName,
             date: s.date,
-            rate: 0,
+            rate: _rate2,
             shiftStart: s.shiftIn,
             shiftEnd: s.shiftOut,
             breakStart: bestBreak?.in || '',
@@ -2964,7 +3002,7 @@ function parseMealTimeDetail(lines) {
             shiftHours: +shiftHours.toFixed(2),
             breakDuration: bestBreak?.dur || 0,
             violationTypes: [`Shift over 10h — 2nd meal period required`],
-            penaltyAmount: 0,
+            penaltyAmount: _penalty2,
             notes: 'Auto-detected from Time Detail Report',
             loggedAt: new Date().toISOString()
           });
