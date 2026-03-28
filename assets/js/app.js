@@ -67,9 +67,7 @@ function doLogin(pin, user) {
   document.getElementById('navRolePill').className = 'role-pill admin-pill';
   document.getElementById('adminTabNav').style.display = 'flex';
   document.getElementById('empTabNav').style.display = 'none';
-  document.getElementById('notifBtn').style.display = 'none';
   document.getElementById('btnSettings').style.display = 'none';
-  document.getElementById('btnSlack').style.display   = 'inline-flex';
   document.getElementById('btnHosting').style.display = 'inline-flex';
   goTab('dashboard');
 }
@@ -80,7 +78,7 @@ async function signOut() {
   clearInterval(window._autoSaveInterval);
   document.getElementById('loginPage').style.display = 'flex';
   document.getElementById('appShell').style.display = 'none';
-  ['btnSettings','btnSlack','btnHosting'].forEach(id => {
+  ['btnSettings','btnHosting'].forEach(id => {
     const el = document.getElementById(id); if (el) el.style.display = 'none';
   });
   const tw = document.getElementById('timeoutOverlay');

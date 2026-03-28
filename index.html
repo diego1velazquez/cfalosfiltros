@@ -46,11 +46,10 @@
     <div class="tnr">
       <span class="uname" id="navUser"></span>
       <span class="role-pill" id="navRolePill"></span>
-      <button class="notif-btn" id="notifBtn" onclick="goTab('recordto')" style="display:none">🔔<span class="nbadge" id="nb" style="display:none">0</span></button>
-      <button class="tnbtn" id="btnSettings" onclick="om('settingsModal')" style="display:none">⚙ Settings</button>
-      <button onclick="om('slackModal')" id="btnSlack" style="display:none;padding:7px 14px;border:1px solid #10b981;border-radius:8px;font-size:.78rem;font-weight:600;cursor:pointer;color:#059669;background:transparent">🔔 Slack</button>
+            <button class="tnbtn" id="btnSettings" onclick="om('settingsModal')" style="display:none">⚙ Settings</button>
+
       <button onclick="om('hostingModal')" id="btnHosting" style="display:none;padding:7px 14px;border:1px solid var(--navy);border-radius:8px;font-size:.78rem;font-weight:600;cursor:pointer;color:var(--navy);background:transparent">🌐 Hosting</button>
-      <button class="tnbtn" onclick="om('cpModal')">Change Password</button>
+      
       <button class="tnbtn" onclick="signOut()">Sign Out</button>
     </div>
   </nav>
@@ -356,7 +355,7 @@
           <table><thead><tr>
             <th>Employee</th><th>Date</th><th>Shift Start</th><th>Shift End</th>
             <th>Break Start</th><th>Break End</th><th>Break Duration</th>
-            <th>Violation Type</th><th>Hourly Rate</th><th>Penalty</th><th></th>
+            <th>Violation Type</th><th>Hourly Rate</th><th>Time Owed</th><th>Penalty</th><th></th>
           </tr></thead>
           <tbody id="mealTbody">
             <tr><td colspan="11"><div class="empty"><div class="ei">🥪</div><p>No violations logged. Use "+ Log Violation" to add one.</p></div></td></tr>
@@ -508,16 +507,6 @@
   </div>
 </div>
 
-<div class="moverlay" id="cpModal">
-  <div class="modal">
-    <h3>Change Password</h3>
-    <div id="cpErr" style="display:none;background:#fee2e2;color:#991b1b;border-radius:7px;padding:9px 12px;font-size:.82rem;margin-bottom:12px"></div>
-    <div class="frow full"><div class="field"><label>Current Password</label><input type="password" id="cpCurrent"/></div></div>
-    <div class="frow full"><div class="field"><label>New Password</label><input type="password" id="cpNew"/></div></div>
-    <div class="frow full"><div class="field"><label>Confirm New Password</label><input type="password" id="cpConfirm"/></div></div>
-    <div class="mfooter"><button class="btn" onclick="cm('cpModal')">Cancel</button><button class="btn btn-navy" onclick="submitChangePassword()">Update Password</button></div>
-  </div>
-</div>
 
 <script type="text/plain" id="legacyInlineScript">
 
