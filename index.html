@@ -64,6 +64,7 @@
     <div class="tab" onclick="goTab('meals')" id="t-meals">Meal Penalties</div>
     <div class="tab" onclick="goTab('recon')" id="t-recon">Reconciliation</div>
     <div class="tab" onclick="goTab('users')" id="t-users">User Accounts</div>
+    <div class="tab" onclick="goTab('writeups')" id="t-writeups">📋 Write-Ups</div>
   </div>
 
   <!-- Employee tab nav -->
@@ -3403,6 +3404,143 @@ function parseMealTimeDetail(lines) {
     <div style="font-size:.85rem;font-weight:700;color:var(--navy);margin-bottom:8px">📋 Time-Off Log</div>
     <div id="detTimeOffLog" style="font-size:.8rem;color:var(--text-mid)">No time-off recorded.</div>
   </div>
+</div>
+
+<!-- ════ WRITE-UPS PAGE ════ -->
+<div class="page" id="p-writeups">
+  <div class="ccard" style="margin-bottom:16px">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:16px">
+      <h2 style="margin:0;font-size:1.2rem;color:var(--navy)">📋 Sistema de Amonestaciones Disciplinarias</h2>
+      <button class="btn btn-navy" onclick="wuOpenNewForm()">+ Nueva Amonestación</button>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <input class="sinput" id="wuSearchInput" placeholder="Buscar empleado..." oninput="wuSearchEmployees(this.value)" style="flex:1;min-width:200px"/>
+    </div>
+    <div id="wuSearchResults" style="margin-top:10px"></div>
+  </div>
+
+  <!-- Employee history panel -->
+  <div id="wuHistoryPanel" style="display:none">
+    <div class="ccard" style="margin-bottom:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div>
+          <h3 id="wuEmpName" style="margin:0;font-size:1.05rem;color:var(--navy)"></h3>
+          <div id="wuEmpStatus" style="font-size:.8rem;margin-top:4px"></div>
+        </div>
+        <button class="btn" onclick="wuCloseHistory()">✕ Cerrar</button>
+      </div>
+      <div style="font-size:.85rem;font-weight:600;color:var(--text-mid);margin-bottom:8px">Historial de Amonestaciones</div>
+      <div id="wuHistoryList" style="font-size:.85rem"></div>
+    </div>
+  </div>
+
+  <!-- Write-up form -->
+  <div id="wuFormPanel" style="display:none">
+    <div class="ccard">
+      <h3 style="margin:0 0 18px;font-size:1rem;color:var(--navy)">📝 Nueva Amonestación — <span id="wuFormEmpName" style="font-weight:400"></span></h3>
+
+      <!-- Discipline level -->
+      <div class="frow" style="margin-bottom:14px">
+        <div class="field" style="flex:1">
+          <label>Nivel de Acción Disciplinaria</label>
+          <select id="wuLevel" onchange="wuUpdateFaltaMejora()">
+            <option value="verbal">Amonestación Verbal</option>
+            <option value="escrita">Amonestación Escrita</option>
+            <option value="final">Amonestación Final Escrita</option>
+            <option value="terminacion">Terminación</option>
+          </select>
+        </div>
+        <div class="field" style="flex:1">
+          <label>Falta de Mejora (Auto-calculado)</label>
+          <input type="text" id="wuFaltaMejora" readonly style="background:#f1f5f9;color:var(--text-mid);cursor:not-allowed"/>
+        </div>
+      </div>
+
+      <!-- Category -->
+      <div class="frow" style="margin-bottom:14px">
+        <div class="field full" style="flex:1">
+          <label>Categoría de Violación</label>
+          <select id="wuCategory">
+            <option value="">Seleccionar categoría...</option>
+            <option>Asistencia y Puntualidad</option>
+            <option>Normas de Conducta</option>
+            <option>Inocuidad de Alimentos / Seguridad Alimentaria</option>
+            <option>Deberes y Responsabilidades del Puesto</option>
+            <option>Ambiente de Trabajo Civil y Respetuoso</option>
+            <option>Apariencia y Aseo Personal</option>
+            <option>Seguridad en el Lugar de Trabajo</option>
+            <option>Responsabilidad de Efectivo y Cupones</option>
+            <option>Política de Uniformes</option>
+            <option>Comunicaciones Telefónicas</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Supervisor / Date / Shift -->
+      <div class="frow" style="margin-bottom:14px">
+        <div class="field" style="flex:1">
+          <label>Supervisor</label>
+          <input type="text" id="wuSupervisor" placeholder="Nombre del supervisor"/>
+        </div>
+        <div class="field" style="flex:1">
+          <label>Fecha del Incidente</label>
+          <input type="date" id="wuDate"/>
+        </div>
+        <div class="field" style="flex:1">
+          <label>Turno</label>
+          <select id="wuShift">
+            <option value="">Seleccionar turno...</option>
+            <option>Mañana</option>
+            <option>Tarde</option>
+            <option>Noche</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Raw description -->
+      <div class="frow" style="margin-bottom:14px">
+        <div class="field full" style="flex:1">
+          <label>Descripción del Incidente (en sus propias palabras)</label>
+          <textarea id="wuRawDescription" rows="4" placeholder="Describa lo que ocurrió de manera clara y concisa..."></textarea>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px;margin-bottom:16px">
+        <button class="btn btn-navy" onclick="wuGenerateWithAI()" id="wuGenerateBtn">✨ Generar con IA</button>
+        <button class="btn" onclick="wuCancelForm()">Cancelar</button>
+      </div>
+
+      <!-- AI-generated output -->
+      <div id="wuAIOutput" style="display:none">
+        <div style="border-top:1px solid #e5e7eb;padding-top:16px;margin-top:4px">
+          <div style="font-size:.85rem;font-weight:700;color:var(--navy);margin-bottom:12px">📄 Redacción Formal Generada por IA</div>
+
+          <div style="margin-bottom:12px">
+            <label style="font-size:.8rem;font-weight:600;color:var(--text-mid);display:block;margin-bottom:4px">DESCRIPCIÓN DEL INCIDENTE</label>
+            <textarea id="wuGenIncidente" rows="4" style="width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:6px;padding:10px;font-size:.85rem;line-height:1.5;resize:vertical"></textarea>
+          </div>
+
+          <div style="margin-bottom:12px">
+            <label style="font-size:.8rem;font-weight:600;color:var(--text-mid);display:block;margin-bottom:4px">ACCIÓN CORRECTIVA REQUERIDA</label>
+            <textarea id="wuGenCorrectiva" rows="3" style="width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:6px;padding:10px;font-size:.85rem;line-height:1.5;resize:vertical"></textarea>
+          </div>
+
+          <div style="margin-bottom:16px">
+            <label style="font-size:.8rem;font-weight:600;color:var(--text-mid);display:block;margin-bottom:4px">CONSECUENCIAS EN CASO DE NO MEJORA</label>
+            <textarea id="wuGenConsecuencia" rows="2" style="width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:6px;padding:10px;font-size:.85rem;line-height:1.5;resize:vertical"></textarea>
+          </div>
+
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <button class="btn btn-navy" onclick="wuSaveRecord()">💾 Guardar en Expediente</button>
+            <button class="btn" onclick="wuPrintRecord()" style="border-color:#7c3aed;color:#7c3aed">🖨 Imprimir</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Print template (hidden) -->
+  <div id="wuPrintArea" style="display:none"></div>
 </div>
 
 <!-- PAY PERIOD HISTORY MODAL -->

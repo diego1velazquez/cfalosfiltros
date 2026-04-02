@@ -3035,3 +3035,457 @@ function parseMealTimeDetail(lines) {
   };
 }
 
+
+// ══════════════════════════════════════════════════════════════════
+// WRITE-UPS MODULE — Sistema de Amonestaciones Disciplinarias
+// ══════════════════════════════════════════════════════════════════
+
+const WU = {
+  currentEmpId: null,
+  currentEmpName: null,
+  currentRecords: [],
+
+  LEVELS: {
+    verbal:      'Amonestación Verbal',
+    escrita:     'Amonestación Escrita',
+    final:       'Amonestación Final Escrita',
+    terminacion: 'Terminación'
+  },
+
+  FALTA_MAP: {
+    verbal:      'Amonestación Escrita',
+    escrita:     'Amonestación Final Escrita',
+    final:       'Terminación',
+    terminacion: 'N/A — Nivel máximo'
+  },
+
+  // ── Auto-suggest level based on history ──────────────────────
+  suggestLevel(records) {
+    if (!records || records.length === 0) return 'verbal';
+    const sorted = [...records].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    const last = sorted[0].level;
+    const progression = { verbal: 'escrita', escrita: 'final', final: 'terminacion', terminacion: 'terminacion' };
+    return progression[last] || 'verbal';
+  },
+
+  // ── Supabase helpers ─────────────────────────────────────────
+  async fetchEmployees(query) {
+    try {
+      const supa = getSupa();
+      let q = supa.from('wu_employees').select('*').eq('terminated', false);
+      if (query) q = q.ilike('name', `%${query}%`);
+      const { data, error } = await q.order('name');
+      if (error) throw error;
+      return data || [];
+    } catch (e) {
+      // fallback to localStorage
+      const all = JSON.parse(localStorage.getItem('wu_employees') || '[]');
+      if (!query) return all.filter(e => !e.terminated);
+      return all.filter(e => !e.terminated && e.name.toLowerCase().includes(query.toLowerCase()));
+    }
+  },
+
+  async upsertEmployee(name) {
+    try {
+      const supa = getSupa();
+      // Check if exists
+      const { data: existing } = await supa.from('wu_employees').select('*').ilike('name', name).single();
+      if (existing) return existing;
+      const { data, error } = await supa.from('wu_employees').insert({ name, terminated: false }).select().single();
+      if (error) throw error;
+      return data;
+    } catch (e) {
+      // localStorage fallback
+      const all = JSON.parse(localStorage.getItem('wu_employees') || '[]');
+      let emp = all.find(x => x.name.toLowerCase() === name.toLowerCase());
+      if (!emp) {
+        emp = { id: 'local_' + Date.now(), name, terminated: false };
+        all.push(emp);
+        localStorage.setItem('wu_employees', JSON.stringify(all));
+      }
+      return emp;
+    }
+  },
+
+  async fetchRecords(empId) {
+    try {
+      const supa = getSupa();
+      const { data, error } = await supa.from('wu_records').select('*').eq('emp_id', empId).order('created_at', { ascending: false });
+      if (error) throw error;
+      return data || [];
+    } catch (e) {
+      const all = JSON.parse(localStorage.getItem('wu_records') || '[]');
+      return all.filter(r => r.emp_id === empId).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    }
+  },
+
+  async saveRecord(record) {
+    try {
+      const supa = getSupa();
+      const { data, error } = await supa.from('wu_records').insert(record).select().single();
+      if (error) throw error;
+      return data;
+    } catch (e) {
+      const all = JSON.parse(localStorage.getItem('wu_records') || '[]');
+      const rec = { ...record, id: 'local_' + Date.now() };
+      all.push(rec);
+      localStorage.setItem('wu_records', JSON.stringify(all));
+      return rec;
+    }
+  }
+};
+
+// ── Search employees ──────────────────────────────────────────────
+async function wuSearchEmployees(query) {
+  const resultsEl = document.getElementById('wuSearchResults');
+  if (!query || query.trim().length < 2) {
+    resultsEl.innerHTML = '';
+    return;
+  }
+  resultsEl.innerHTML = '<div style="color:var(--text-mid);font-size:.85rem;padding:8px">Buscando...</div>';
+  const emps = await WU.fetchEmployees(query.trim());
+
+  // Build result list + "add new" option
+  let html = '<div style="display:flex;flex-direction:column;gap:6px;margin-top:4px">';
+  emps.forEach(emp => {
+    html += `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer" onclick="wuSelectEmployee('${emp.id}','${emp.name.replace(/'/g,"\\'")}')">
+      <span style="font-weight:500;font-size:.9rem">${emp.name}</span>
+      <span style="font-size:.78rem;color:var(--text-mid)">Ver historial →</span>
+    </div>`;
+  });
+
+  // Offer to add as new if no exact match
+  const exactMatch = emps.find(e => e.name.toLowerCase() === query.trim().toLowerCase());
+  if (!exactMatch) {
+    const safeName = query.trim().replace(/'/g, "\\'");
+    html += `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#eff6ff;border:1px dashed #3b82f6;border-radius:8px;cursor:pointer" onclick="wuAddAndSelect('${safeName}')">
+      <span style="font-size:.9rem;color:#2563eb">+ Agregar <strong>${query.trim()}</strong> como nuevo empleado</span>
+    </div>`;
+  }
+
+  html += '</div>';
+  resultsEl.innerHTML = html;
+}
+
+async function wuAddAndSelect(name) {
+  const emp = await WU.upsertEmployee(name);
+  wuSelectEmployee(emp.id, emp.name);
+}
+
+async function wuSelectEmployee(empId, empName) {
+  WU.currentEmpId = empId;
+  WU.currentEmpName = empName;
+
+  document.getElementById('wuSearchResults').innerHTML = '';
+  document.getElementById('wuSearchInput').value = '';
+  document.getElementById('wuFormPanel').style.display = 'none';
+  document.getElementById('wuAIOutput').style.display = 'none';
+
+  // Load records
+  const records = await WU.fetchRecords(empId);
+  WU.currentRecords = records;
+
+  // Show history panel
+  document.getElementById('wuEmpName').textContent = empName;
+  renderWuHistory(records);
+  document.getElementById('wuHistoryPanel').style.display = 'block';
+}
+
+function renderWuHistory(records) {
+  const listEl = document.getElementById('wuHistoryList');
+  const statusEl = document.getElementById('wuEmpStatus');
+
+  if (!records || records.length === 0) {
+    listEl.innerHTML = '<div style="color:var(--text-mid);padding:12px 0;font-style:italic">Sin amonestaciones previas.</div>';
+    statusEl.innerHTML = '<span style="background:#dcfce7;color:#16a34a;padding:2px 10px;border-radius:20px;font-size:.78rem;font-weight:600">Sin historial disciplinario</span>';
+    return;
+  }
+
+  const levelColors = {
+    verbal:      { bg:'#fef9c3', color:'#854d0e', label:'Verbal' },
+    escrita:     { bg:'#ffedd5', color:'#9a3412', label:'Escrita' },
+    final:       { bg:'#fee2e2', color:'#991b1b', label:'Final Escrita' },
+    terminacion: { bg:'#1e293b', color:'#f8fafc', label:'Terminación' }
+  };
+
+  const latest = records[0];
+  const lc = levelColors[latest.level] || levelColors.verbal;
+  statusEl.innerHTML = `<span style="background:${lc.bg};color:${lc.color};padding:2px 10px;border-radius:20px;font-size:.78rem;font-weight:600">Última acción: ${WU.LEVELS[latest.level] || latest.level}</span>`;
+
+  let html = '<div style="display:flex;flex-direction:column;gap:8px">';
+  records.forEach(r => {
+    const lc2 = levelColors[r.level] || levelColors.verbal;
+    const d = r.date ? new Date(r.date + 'T12:00:00').toLocaleDateString('es-PR', { year:'numeric', month:'short', day:'numeric' }) : '';
+    html += `<div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0">
+        <span style="background:${lc2.bg};color:${lc2.color};padding:2px 8px;border-radius:12px;font-size:.75rem;font-weight:700">${WU.LEVELS[r.level] || r.level}</span>
+        <span style="font-size:.82rem;color:var(--text-mid)">${d}</span>
+        <span style="font-size:.82rem;color:var(--text-mid);margin-left:auto">${r.category || ''}</span>
+      </div>
+      <div style="padding:10px 14px;font-size:.82rem;line-height:1.5;color:#374151">${r.incident ? r.incident.substring(0, 200) + (r.incident.length > 200 ? '…' : '') : ''}</div>
+    </div>`;
+  });
+  html += '</div>';
+  listEl.innerHTML = html;
+}
+
+function wuOpenNewForm() {
+  if (!WU.currentEmpId) {
+    alert('Por favor, busque y seleccione un empleado primero.');
+    return;
+  }
+  // Auto-suggest level
+  const suggested = WU.suggestLevel(WU.currentRecords);
+  const levelSel = document.getElementById('wuLevel');
+  levelSel.value = suggested;
+
+  document.getElementById('wuFormEmpName').textContent = WU.currentEmpName;
+  document.getElementById('wuDate').value = new Date().toISOString().split('T')[0];
+  document.getElementById('wuCategory').value = '';
+  document.getElementById('wuSupervisor').value = '';
+  document.getElementById('wuShift').value = '';
+  document.getElementById('wuRawDescription').value = '';
+  document.getElementById('wuAIOutput').style.display = 'none';
+
+  wuUpdateFaltaMejora();
+  document.getElementById('wuFormPanel').style.display = 'block';
+  document.getElementById('wuFormPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function wuUpdateFaltaMejora() {
+  const level = document.getElementById('wuLevel').value;
+  document.getElementById('wuFaltaMejora').value = WU.FALTA_MAP[level] || '';
+}
+
+function wuCancelForm() {
+  document.getElementById('wuFormPanel').style.display = 'none';
+  document.getElementById('wuAIOutput').style.display = 'none';
+}
+
+function wuCloseHistory() {
+  WU.currentEmpId = null;
+  WU.currentEmpName = null;
+  WU.currentRecords = [];
+  document.getElementById('wuHistoryPanel').style.display = 'none';
+  document.getElementById('wuFormPanel').style.display = 'none';
+  document.getElementById('wuAIOutput').style.display = 'none';
+}
+
+// ── AI Generation ─────────────────────────────────────────────────
+async function wuGenerateWithAI() {
+  const level      = document.getElementById('wuLevel').value;
+  const category   = document.getElementById('wuCategory').value;
+  const supervisor = document.getElementById('wuSupervisor').value.trim();
+  const date       = document.getElementById('wuDate').value;
+  const shift      = document.getElementById('wuShift').value;
+  const rawDesc    = document.getElementById('wuRawDescription').value.trim();
+
+  if (!category)   { alert('Por favor seleccione una categoría de violación.'); return; }
+  if (!supervisor) { alert('Por favor ingrese el nombre del supervisor.'); return; }
+  if (!rawDesc)    { alert('Por favor describa el incidente.'); return; }
+
+  const levelLabel = WU.LEVELS[level];
+  const faltaLabel = WU.FALTA_MAP[level];
+  const empName    = WU.currentEmpName;
+
+  const prompt = `Eres un especialista en recursos humanos y derecho laboral en Puerto Rico. 
+Redacta una amonestación disciplinaria formal en español legal y profesional para el siguiente caso:
+
+Empleado: ${empName}
+Nivel de acción: ${levelLabel}
+Categoría: ${category}
+Supervisor: ${supervisor}
+Fecha: ${date}
+Turno: ${shift}
+Descripción informal del incidente: ${rawDesc}
+Falta de mejora implica: ${faltaLabel}
+
+Devuelve SOLAMENTE un objeto JSON válido sin backticks ni texto adicional, con exactamente estas tres claves:
+{
+  "incidente": "Redacción formal del incidente en 3-5 oraciones en español legal, en tercera persona, mencionando al empleado por nombre, la fecha, el turno, y la categoría de violación.",
+  "correctiva": "Acción correctiva requerida al empleado en 2-3 oraciones formales, describiendo qué debe cambiar y en qué plazo.",
+  "consecuencia": "Consecuencias en caso de no mejora en 1-2 oraciones, mencionando que la próxima acción sería ${faltaLabel}."
+}`;
+
+  const btn = document.getElementById('wuGenerateBtn');
+  btn.textContent = '⏳ Generando...';
+  btn.disabled = true;
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+
+    const data = await response.json();
+    const text = data.content?.[0]?.text || '';
+
+    let parsed;
+    try {
+      const clean = text.replace(/```json|```/g, '').trim();
+      parsed = JSON.parse(clean);
+    } catch (parseErr) {
+      throw new Error('La IA no devolvió JSON válido. Intente de nuevo.');
+    }
+
+    document.getElementById('wuGenIncidente').value    = parsed.incidente    || '';
+    document.getElementById('wuGenCorrectiva').value   = parsed.correctiva   || '';
+    document.getElementById('wuGenConsecuencia').value = parsed.consecuencia || '';
+
+    document.getElementById('wuAIOutput').style.display = 'block';
+    document.getElementById('wuAIOutput').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  } catch (err) {
+    alert('Error al generar con IA: ' + err.message);
+    console.error(err);
+  } finally {
+    btn.textContent = '✨ Generar con IA';
+    btn.disabled = false;
+  }
+}
+
+// ── Save record ───────────────────────────────────────────────────
+async function wuSaveRecord() {
+  const record = {
+    emp_id:      WU.currentEmpId,
+    emp_name:    WU.currentEmpName,
+    date:        document.getElementById('wuDate').value,
+    level:       document.getElementById('wuLevel').value,
+    category:    document.getElementById('wuCategory').value,
+    supervisor:  document.getElementById('wuSupervisor').value.trim(),
+    shift:       document.getElementById('wuShift').value,
+    incident:    document.getElementById('wuGenIncidente').value,
+    corrective:  document.getElementById('wuGenCorrectiva').value,
+    consequence: document.getElementById('wuGenConsecuencia').value,
+    created_at:  new Date().toISOString()
+  };
+
+  try {
+    await WU.saveRecord(record);
+    // Refresh history
+    const records = await WU.fetchRecords(WU.currentEmpId);
+    WU.currentRecords = records;
+    renderWuHistory(records);
+    document.getElementById('wuFormPanel').style.display = 'none';
+    document.getElementById('wuAIOutput').style.display  = 'none';
+    document.getElementById('wuHistoryPanel').scrollIntoView({ behavior: 'smooth' });
+    alert('✅ Amonestación guardada exitosamente en el expediente de ' + WU.currentEmpName + '.');
+  } catch (err) {
+    alert('Error al guardar: ' + err.message);
+    console.error(err);
+  }
+}
+
+// ── Print ─────────────────────────────────────────────────────────
+function wuPrintRecord() {
+  const empName    = WU.currentEmpName;
+  const level      = document.getElementById('wuLevel').value;
+  const levelLabel = WU.LEVELS[level];
+  const faltaLabel = WU.FALTA_MAP[level];
+  const category   = document.getElementById('wuCategory').value;
+  const supervisor = document.getElementById('wuSupervisor').value.trim();
+  const date       = document.getElementById('wuDate').value;
+  const shift      = document.getElementById('wuShift').value;
+  const incidente  = document.getElementById('wuGenIncidente').value;
+  const correctiva = document.getElementById('wuGenCorrectiva').value;
+  const consecuencia = document.getElementById('wuGenConsecuencia').value;
+
+  const dateFormatted = date
+    ? new Date(date + 'T12:00:00').toLocaleDateString('es-PR', { year:'numeric', month:'long', day:'numeric' })
+    : '';
+
+  const printHtml = `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Amonestación — ${empName}</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&display=swap');
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'DM Sans', Arial, sans-serif; color: #1e293b; background: #fff; padding: 40px; }
+    .header { text-align: center; border-bottom: 3px solid #1e3a5f; padding-bottom: 20px; margin-bottom: 28px; }
+    .header h1 { font-size: 1.4rem; color: #1e3a5f; margin-bottom: 4px; }
+    .header p { font-size: .85rem; color: #64748b; }
+    .level-badge { display:inline-block;background:#1e3a5f;color:#fff;padding:6px 18px;border-radius:4px;font-size:.9rem;font-weight:700;margin:10px 0; }
+    .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 24px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius:8px; padding: 16px; margin-bottom: 24px; }
+    .meta-item label { font-size: .72rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: .06em; display:block; margin-bottom:2px; }
+    .meta-item span { font-size: .9rem; font-weight: 500; }
+    .section { margin-bottom: 20px; }
+    .section h2 { font-size: .78rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: .07em; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; margin-bottom: 10px; }
+    .section p { font-size: .9rem; line-height: 1.7; color: #1e293b; }
+    .sig-block { display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-top:48px;padding-top:24px;border-top:1px solid #e2e8f0; }
+    .sig-line { border-bottom: 1px solid #94a3b8; margin-bottom:6px; height:32px; }
+    .sig-label { font-size: .78rem; color: #64748b; }
+    @media print { body { padding: 24px; } }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>LOS FILTROS FSU — DOCUMENTO DE ACCIÓN DISCIPLINARIA</h1>
+    <p>Expediente Confidencial de Recursos Humanos</p>
+    <div class="level-badge">${levelLabel}</div>
+  </div>
+
+  <div class="meta-grid">
+    <div class="meta-item"><label>Nombre del Empleado</label><span>${empName}</span></div>
+    <div class="meta-item"><label>Categoría de Violación</label><span>${category}</span></div>
+    <div class="meta-item"><label>Fecha del Incidente</label><span>${dateFormatted}</span></div>
+    <div class="meta-item"><label>Turno</label><span>${shift}</span></div>
+    <div class="meta-item"><label>Supervisor</label><span>${supervisor}</span></div>
+    <div class="meta-item"><label>Nivel Siguiente (Falta de Mejora)</label><span>${faltaLabel}</span></div>
+  </div>
+
+  <div class="section">
+    <h2>Descripción del Incidente</h2>
+    <p>${incidente.replace(/\n/g, '<br/>')}</p>
+  </div>
+
+  <div class="section">
+    <h2>Acción Correctiva Requerida</h2>
+    <p>${correctiva.replace(/\n/g, '<br/>')}</p>
+  </div>
+
+  <div class="section">
+    <h2>Consecuencias en Caso de No Mejora</h2>
+    <p>${consecuencia.replace(/\n/g, '<br/>')}</p>
+  </div>
+
+  <div class="sig-block">
+    <div>
+      <div class="sig-line"></div>
+      <div class="sig-label">Firma del Empleado / Fecha</div>
+    </div>
+    <div>
+      <div class="sig-line"></div>
+      <div class="sig-label">Firma del Supervisor / Fecha</div>
+    </div>
+    <div>
+      <div class="sig-line"></div>
+      <div class="sig-label">Firma de Recursos Humanos / Fecha</div>
+    </div>
+    <div style="padding-top:8px;font-size:.78rem;color:#64748b;line-height:1.5">
+      Al firmar este documento, el empleado reconoce haberlo recibido y leído. La firma no implica necesariamente acuerdo con el contenido.
+    </div>
+  </div>
+</body>
+</html>`;
+
+  const win = window.open('', '_blank');
+  win.document.write(printHtml);
+  win.document.close();
+  win.focus();
+  setTimeout(() => win.print(), 600);
+}
+
+// ── Hook goTab for write-ups ──────────────────────────────────────
+const _wuOrigGoTab = goTab;
+goTab = function(t) {
+  _wuOrigGoTab(t);
+  // Nothing special needed on tab activation for write-ups
+};
+
