@@ -3062,41 +3062,38 @@ const WU = {
   suggestLevel(records) {
     if (!records || records.length === 0) return 'verbal';
     const sorted = [...records].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-    const last = sorted[0].level;
     const progression = { verbal: 'escrita', escrita: 'final', final: 'terminacion', terminacion: 'terminacion' };
-    return progression[last] || 'verbal';
+    return progression[sorted[0].level] || 'verbal';
   },
 
   getShiftString() {
-    const sh = document.getElementById('wuShiftStartH').value.padStart(2,'0');
-    const sm = document.getElementById('wuShiftStartM').value.padStart(2,'0');
+    const sh  = String(document.getElementById('wuShiftStartH').value).padStart(2,'0');
+    const sm  = String(document.getElementById('wuShiftStartM').value).padStart(2,'0');
     const sap = document.getElementById('wuShiftStartAMPM').value;
-    const eh = document.getElementById('wuShiftEndH').value.padStart(2,'0');
-    const em = document.getElementById('wuShiftEndM').value.padStart(2,'0');
+    const eh  = String(document.getElementById('wuShiftEndH').value).padStart(2,'0');
+    const em  = String(document.getElementById('wuShiftEndM').value).padStart(2,'0');
     const eap = document.getElementById('wuShiftEndAMPM').value;
     return `${sh}:${sm} ${sap} – ${eh}:${em} ${eap}`;
   },
 
-  // Supabase helpers with localStorage fallback
   async fetchRecords(empKey) {
     try {
-      const supa = getSupa();
-      const { data, error } = await supa.from('wu_records').select('*').eq('emp_id', empKey).order('created_at', { ascending: false });
+      const { data, error } = await getSupa().from('wu_records').select('*').eq('emp_id', empKey).order('created_at', { ascending: false });
       if (error) throw error;
       return data || [];
-    } catch (e) {
-      const all = JSON.parse(localStorage.getItem('wu_records') || '[]');
-      return all.filter(r => r.emp_id === empKey).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    } catch {
+      return (JSON.parse(localStorage.getItem('wu_records') || '[]'))
+        .filter(r => r.emp_id === empKey)
+        .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     }
   },
 
   async saveRecord(record) {
     try {
-      const supa = getSupa();
-      const { data, error } = await supa.from('wu_records').insert(record).select().single();
+      const { data, error } = await getSupa().from('wu_records').insert(record).select().single();
       if (error) throw error;
       return data;
-    } catch (e) {
+    } catch {
       const all = JSON.parse(localStorage.getItem('wu_records') || '[]');
       const rec = { ...record, id: 'local_' + Date.now() };
       all.push(rec);
@@ -3106,45 +3103,34 @@ const WU = {
   }
 };
 
-// ── Populate employee dropdown from the global EMPLOYEES object ───
 function wuRefreshEmpList() {
   const sel = document.getElementById('wuEmpSelect');
   if (!sel) return;
   const prev = sel.value;
   sel.innerHTML = '<option value="">— Seleccionar empleado —</option>';
-
-  const empEntries = Object.entries(EMPLOYEES)
+  Object.entries(EMPLOYEES)
     .filter(([, e]) => e.status === 'active')
-    .sort((a, b) => (a[1].name || '').localeCompare(b[1].name || ''));
-
-  empEntries.forEach(([key, emp]) => {
-    const opt = document.createElement('option');
-    opt.value = key;
-    opt.textContent = emp.name;
-    sel.appendChild(opt);
-  });
-
+    .sort((a, b) => (a[1].name || '').localeCompare(b[1].name || ''))
+    .forEach(([key, emp]) => {
+      const opt = document.createElement('option');
+      opt.value = key;
+      opt.textContent = emp.name;
+      sel.appendChild(opt);
+    });
   if (prev) sel.value = prev;
 }
 
 async function wuSelectFromDropdown(sel) {
   const key = sel.value;
-  if (!key) {
-    wuCloseHistory();
-    return;
-  }
+  if (!key) { wuCloseHistory(); return; }
   const emp = EMPLOYEES[key];
   if (!emp) return;
-
   WU.currentEmpKey  = key;
   WU.currentEmpName = emp.name;
-
   document.getElementById('wuFormPanel').style.display = 'none';
   document.getElementById('wuAIOutput').style.display  = 'none';
-
   const records = await WU.fetchRecords(key);
   WU.currentRecords = records;
-
   document.getElementById('wuEmpNameDisplay').textContent = emp.name;
   wuRenderHistory(records);
   document.getElementById('wuHistoryPanel').style.display = 'block';
@@ -3153,49 +3139,38 @@ async function wuSelectFromDropdown(sel) {
 function wuRenderHistory(records) {
   const listEl   = document.getElementById('wuHistoryList');
   const statusEl = document.getElementById('wuEmpStatus');
-
-  const levelColors = {
+  const LC = {
     verbal:      { bg:'#fef9c3', color:'#854d0e' },
     escrita:     { bg:'#ffedd5', color:'#9a3412' },
     final:       { bg:'#fee2e2', color:'#991b1b' },
     terminacion: { bg:'#1e293b', color:'#f8fafc' }
   };
-
   if (!records || records.length === 0) {
     listEl.innerHTML = '<div style="color:var(--text-mid);padding:12px 0;font-style:italic">Sin amonestaciones previas.</div>';
     statusEl.innerHTML = '<span style="background:#dcfce7;color:#16a34a;padding:2px 10px;border-radius:20px;font-size:.78rem;font-weight:600">Sin historial disciplinario</span>';
     return;
   }
-
-  const latest = records[0];
-  const lc0 = levelColors[latest.level] || levelColors.verbal;
-  statusEl.innerHTML = `<span style="background:${lc0.bg};color:${lc0.color};padding:2px 10px;border-radius:20px;font-size:.78rem;font-weight:600">Última acción: ${WU.LEVELS[latest.level] || latest.level}</span>`;
-
-  let html = '<div style="display:flex;flex-direction:column;gap:8px">';
-  records.forEach(r => {
-    const lc = levelColors[r.level] || levelColors.verbal;
-    const d = r.date ? new Date(r.date + 'T12:00:00').toLocaleDateString('es-PR', { year:'numeric', month:'short', day:'numeric' }) : '';
-    html += `<div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
-      <div style="display:flex;align-items:center;gap:10px;padding:9px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;flex-wrap:wrap">
-        <span style="background:${lc.bg};color:${lc.color};padding:2px 8px;border-radius:12px;font-size:.75rem;font-weight:700">${WU.LEVELS[r.level] || r.level}</span>
-        <span style="font-size:.82rem;color:var(--text-mid)">${d}</span>
-        ${r.shift ? `<span style="font-size:.82rem;color:var(--text-mid)">🕐 ${r.shift}</span>` : ''}
-        <span style="font-size:.82rem;color:var(--text-mid);margin-left:auto">${r.category || ''}</span>
-      </div>
-      <div style="padding:10px 14px;font-size:.82rem;line-height:1.5;color:#374151">${(r.incident || '').substring(0,200)}${(r.incident || '').length > 200 ? '…' : ''}</div>
-    </div>`;
-  });
-  html += '</div>';
-  listEl.innerHTML = html;
+  const lc0 = LC[records[0].level] || LC.verbal;
+  statusEl.innerHTML = `<span style="background:${lc0.bg};color:${lc0.color};padding:2px 10px;border-radius:20px;font-size:.78rem;font-weight:600">Última acción: ${WU.LEVELS[records[0].level] || records[0].level}</span>`;
+  listEl.innerHTML = '<div style="display:flex;flex-direction:column;gap:8px">' +
+    records.map(r => {
+      const lc = LC[r.level] || LC.verbal;
+      const d  = r.date ? new Date(r.date + 'T12:00:00').toLocaleDateString('es-PR', { year:'numeric', month:'short', day:'numeric' }) : '';
+      return `<div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:10px;padding:9px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;flex-wrap:wrap">
+          <span style="background:${lc.bg};color:${lc.color};padding:2px 8px;border-radius:12px;font-size:.75rem;font-weight:700">${WU.LEVELS[r.level] || r.level}</span>
+          <span style="font-size:.82rem;color:var(--text-mid)">${d}</span>
+          ${r.shift ? `<span style="font-size:.82rem;color:var(--text-mid)">🕐 ${r.shift}</span>` : ''}
+          <span style="font-size:.82rem;color:var(--text-mid);margin-left:auto">${r.category || ''}</span>
+        </div>
+        <div style="padding:10px 14px;font-size:.82rem;line-height:1.5;color:#374151">${(r.incident||'').substring(0,200)}${(r.incident||'').length>200?'…':''}</div>
+      </div>`;
+    }).join('') + '</div>';
 }
 
 function wuOpenNewForm() {
-  if (!WU.currentEmpKey) {
-    alert('Por favor, seleccione un empleado primero.');
-    return;
-  }
-  const suggested = WU.suggestLevel(WU.currentRecords);
-  document.getElementById('wuLevel').value = suggested;
+  if (!WU.currentEmpKey) { alert('Por favor, seleccione un empleado primero.'); return; }
+  document.getElementById('wuLevel').value = WU.suggestLevel(WU.currentRecords);
   document.getElementById('wuFormEmpName').textContent = WU.currentEmpName;
   document.getElementById('wuDate').value = new Date().toISOString().split('T')[0];
   document.getElementById('wuCategory').value = '';
@@ -3210,12 +3185,11 @@ function wuOpenNewForm() {
   document.getElementById('wuAIOutput').style.display = 'none';
   wuUpdateFaltaMejora();
   document.getElementById('wuFormPanel').style.display = 'block';
-  document.getElementById('wuFormPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  document.getElementById('wuFormPanel').scrollIntoView({ behavior:'smooth', block:'start' });
 }
 
 function wuUpdateFaltaMejora() {
-  const level = document.getElementById('wuLevel').value;
-  document.getElementById('wuFaltaMejora').value = WU.FALTA_MAP[level] || '';
+  document.getElementById('wuFaltaMejora').value = WU.FALTA_MAP[document.getElementById('wuLevel').value] || '';
 }
 
 function wuCancelForm() {
@@ -3224,36 +3198,30 @@ function wuCancelForm() {
 }
 
 function wuCloseHistory() {
-  WU.currentEmpKey  = null;
-  WU.currentEmpName = null;
-  WU.currentRecords = [];
+  WU.currentEmpKey = null; WU.currentEmpName = null; WU.currentRecords = [];
   document.getElementById('wuHistoryPanel').style.display = 'none';
   document.getElementById('wuFormPanel').style.display    = 'none';
   document.getElementById('wuAIOutput').style.display     = 'none';
 }
 
-// ── AI Generation ─────────────────────────────────────────────────
 async function wuGenerateWithAI() {
-  const level      = document.getElementById('wuLevel').value;
-  const category   = document.getElementById('wuCategory').value;
+  const level    = document.getElementById('wuLevel').value;
+  const category = document.getElementById('wuCategory').value;
   const supervisor = document.getElementById('wuSupervisor').value.trim();
-  const date       = document.getElementById('wuDate').value;
-  const shift      = WU.getShiftString();
-  const rawDesc    = document.getElementById('wuRawDescription').value.trim();
+  const date     = document.getElementById('wuDate').value;
+  const shift    = WU.getShiftString();
+  const rawDesc  = document.getElementById('wuRawDescription').value.trim();
 
   if (!category)   { alert('Por favor seleccione una categoría de violación.'); return; }
   if (!supervisor) { alert('Por favor ingrese el nombre del supervisor.'); return; }
   if (!rawDesc)    { alert('Por favor describa el incidente.'); return; }
 
-  const levelLabel = WU.LEVELS[level];
   const faltaLabel = WU.FALTA_MAP[level];
-  const empName    = WU.currentEmpName;
-
   const prompt = `Eres un especialista en recursos humanos y derecho laboral en Puerto Rico.
 Redacta una amonestación disciplinaria formal en español legal y profesional para el siguiente caso:
 
-Empleado: ${empName}
-Nivel de acción: ${levelLabel}
+Empleado: ${WU.currentEmpName}
+Nivel de acción: ${WU.LEVELS[level]}
 Categoría: ${category}
 Supervisor: ${supervisor}
 Fecha: ${date}
@@ -3269,47 +3237,35 @@ Devuelve SOLAMENTE un objeto JSON válido sin backticks ni texto adicional, con 
 }`;
 
   const btn = document.getElementById('wuGenerateBtn');
-  btn.textContent = '⏳ Generando...';
-  btn.disabled = true;
-
+  btn.textContent = '⏳ Generando...'; btn.disabled = true;
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const res  = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        messages: [{ role: 'user', content: prompt }]
-      })
+      body: JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:1000, messages:[{ role:'user', content:prompt }] })
     });
-    const data = await response.json();
-    const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(text);
-
+    const data   = await res.json();
+    const parsed = JSON.parse((data.content?.[0]?.text || '').replace(/```json|```/g,'').trim());
     document.getElementById('wuGenIncidente').value    = parsed.incidente    || '';
     document.getElementById('wuGenCorrectiva').value   = parsed.correctiva   || '';
     document.getElementById('wuGenConsecuencia').value = parsed.consecuencia || '';
     document.getElementById('wuAIOutput').style.display = 'block';
-    document.getElementById('wuAIOutput').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  } catch (err) {
+    document.getElementById('wuAIOutput').scrollIntoView({ behavior:'smooth', block:'start' });
+  } catch(err) {
     alert('Error al generar con IA: ' + err.message);
-    console.error(err);
   } finally {
-    btn.textContent = '✨ Generar con IA';
-    btn.disabled = false;
+    btn.textContent = '✨ Generar con IA'; btn.disabled = false;
   }
 }
 
-// ── Save record ───────────────────────────────────────────────────
 async function wuSaveRecord() {
   const record = {
-    emp_id:      WU.currentEmpKey,
-    emp_name:    WU.currentEmpName,
-    date:        document.getElementById('wuDate').value,
-    level:       document.getElementById('wuLevel').value,
-    category:    document.getElementById('wuCategory').value,
-    supervisor:  document.getElementById('wuSupervisor').value.trim(),
-    shift:       WU.getShiftString(),
+    emp_id: WU.currentEmpKey, emp_name: WU.currentEmpName,
+    date: document.getElementById('wuDate').value,
+    level: document.getElementById('wuLevel').value,
+    category: document.getElementById('wuCategory').value,
+    supervisor: document.getElementById('wuSupervisor').value.trim(),
+    shift: WU.getShiftString(),
     incident:    document.getElementById('wuGenIncidente').value,
     corrective:  document.getElementById('wuGenCorrectiva').value,
     consequence: document.getElementById('wuGenConsecuencia').value,
@@ -3317,88 +3273,62 @@ async function wuSaveRecord() {
   };
   try {
     await WU.saveRecord(record);
-    const records = await WU.fetchRecords(WU.currentEmpKey);
-    WU.currentRecords = records;
-    wuRenderHistory(records);
+    WU.currentRecords = await WU.fetchRecords(WU.currentEmpKey);
+    wuRenderHistory(WU.currentRecords);
     document.getElementById('wuFormPanel').style.display = 'none';
     document.getElementById('wuAIOutput').style.display  = 'none';
-    document.getElementById('wuHistoryPanel').scrollIntoView({ behavior: 'smooth' });
+    document.getElementById('wuHistoryPanel').scrollIntoView({ behavior:'smooth' });
     alert('✅ Amonestación guardada en el expediente de ' + WU.currentEmpName + '.');
-  } catch (err) {
-    alert('Error al guardar: ' + err.message);
-  }
+  } catch(err) { alert('Error al guardar: ' + err.message); }
 }
 
-// ── Print ─────────────────────────────────────────────────────────
 function wuPrintRecord() {
-  const empName      = WU.currentEmpName;
-  const level        = document.getElementById('wuLevel').value;
-  const levelLabel   = WU.LEVELS[level];
-  const faltaLabel   = WU.FALTA_MAP[level];
-  const category     = document.getElementById('wuCategory').value;
-  const supervisor   = document.getElementById('wuSupervisor').value.trim();
-  const date         = document.getElementById('wuDate').value;
-  const shift        = WU.getShiftString();
-  const incidente    = document.getElementById('wuGenIncidente').value;
-  const correctiva   = document.getElementById('wuGenCorrectiva').value;
-  const consecuencia = document.getElementById('wuGenConsecuencia').value;
-  const dateFormatted = date ? new Date(date + 'T12:00:00').toLocaleDateString('es-PR', { year:'numeric', month:'long', day:'numeric' }) : '';
-
-  const win = window.open('', '_blank');
+  const level      = document.getElementById('wuLevel').value;
+  const faltaLabel = WU.FALTA_MAP[level];
+  const date       = document.getElementById('wuDate').value;
+  const dateFormatted = date ? new Date(date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'}) : '';
+  const win = window.open('','_blank');
   win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/>
-<title>Amonestación — ${empName}</title>
-<style>
-  * { box-sizing:border-box; margin:0; padding:0; }
-  body { font-family: Arial, sans-serif; color:#1e293b; padding:36px; }
-  .hdr { text-align:center; border-bottom:3px solid #1e3a5f; padding-bottom:18px; margin-bottom:24px; }
-  .hdr h1 { font-size:1.2rem; color:#1e3a5f; }
-  .hdr p  { font-size:.8rem; color:#64748b; margin-top:4px; }
-  .badge  { display:inline-block; background:#1e3a5f; color:#fff; padding:5px 16px; border-radius:4px; font-size:.85rem; font-weight:700; margin-top:8px; }
-  .grid   { display:grid; grid-template-columns:1fr 1fr; gap:8px 20px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:14px; margin-bottom:20px; }
-  .gi label { font-size:.7rem; font-weight:700; color:#64748b; text-transform:uppercase; letter-spacing:.06em; display:block; margin-bottom:2px; }
-  .gi span  { font-size:.87rem; font-weight:500; }
-  .sec h2   { font-size:.72rem; font-weight:700; color:#64748b; text-transform:uppercase; letter-spacing:.07em; border-bottom:1px solid #e2e8f0; padding-bottom:5px; margin:0 0 8px; }
-  .sec p    { font-size:.87rem; line-height:1.7; margin-bottom:18px; }
-  .sigs     { display:grid; grid-template-columns:1fr 1fr; gap:36px; margin-top:44px; padding-top:20px; border-top:1px solid #e2e8f0; }
-  .sig-line { border-bottom:1px solid #94a3b8; height:30px; margin-bottom:5px; }
-  .sig-lbl  { font-size:.72rem; color:#64748b; }
-  .note     { font-size:.72rem; color:#64748b; line-height:1.5; margin-top:8px; }
-  @media print { body { padding:20px; } }
-</style></head><body>
-<div class="hdr">
-  <h1>LOS FILTROS FSU — DOCUMENTO DE ACCIÓN DISCIPLINARIA</h1>
-  <p>Expediente Confidencial de Recursos Humanos</p>
-  <div class="badge">${levelLabel}</div>
-</div>
+<title>Amonestación — ${WU.currentEmpName}</title>
+<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;color:#1e293b;padding:36px}
+.hdr{text-align:center;border-bottom:3px solid #1e3a5f;padding-bottom:18px;margin-bottom:24px}
+.hdr h1{font-size:1.15rem;color:#1e3a5f}.hdr p{font-size:.78rem;color:#64748b;margin-top:4px}
+.badge{display:inline-block;background:#1e3a5f;color:#fff;padding:5px 16px;border-radius:4px;font-size:.85rem;font-weight:700;margin-top:8px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:14px;margin-bottom:20px}
+.gi label{font-size:.68rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:2px}
+.gi span{font-size:.87rem;font-weight:500}
+h2{font-size:.7rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.07em;border-bottom:1px solid #e2e8f0;padding-bottom:5px;margin:0 0 8px}
+p{font-size:.87rem;line-height:1.7;margin-bottom:18px}
+.sigs{display:grid;grid-template-columns:1fr 1fr;gap:36px;margin-top:44px;padding-top:20px;border-top:1px solid #e2e8f0}
+.sl{border-bottom:1px solid #94a3b8;height:30px;margin-bottom:5px}.slb{font-size:.7rem;color:#64748b}
+.note{font-size:.7rem;color:#64748b;line-height:1.5;margin-top:8px}
+@media print{body{padding:20px}}</style></head><body>
+<div class="hdr"><h1>LOS FILTROS FSU — DOCUMENTO DE ACCIÓN DISCIPLINARIA</h1>
+<p>Expediente Confidencial de Recursos Humanos</p>
+<div class="badge">${WU.LEVELS[level]}</div></div>
 <div class="grid">
-  <div class="gi"><label>Empleado</label><span>${empName}</span></div>
-  <div class="gi"><label>Categoría de Violación</label><span>${category}</span></div>
+  <div class="gi"><label>Empleado</label><span>${WU.currentEmpName}</span></div>
+  <div class="gi"><label>Categoría</label><span>${document.getElementById('wuCategory').value}</span></div>
   <div class="gi"><label>Fecha del Incidente</label><span>${dateFormatted}</span></div>
-  <div class="gi"><label>Turno</label><span>${shift}</span></div>
-  <div class="gi"><label>Supervisor</label><span>${supervisor}</span></div>
+  <div class="gi"><label>Turno</label><span>${WU.getShiftString()}</span></div>
+  <div class="gi"><label>Supervisor</label><span>${document.getElementById('wuSupervisor').value}</span></div>
   <div class="gi"><label>Falta de Mejora</label><span>${faltaLabel}</span></div>
 </div>
-<div class="sec">
-  <h2>Descripción del Incidente</h2>
-  <p>${incidente.replace(/\n/g,'<br/>')}</p>
-  <h2>Acción Correctiva Requerida</h2>
-  <p>${correctiva.replace(/\n/g,'<br/>')}</p>
-  <h2>Consecuencias en Caso de No Mejora</h2>
-  <p>${consecuencia.replace(/\n/g,'<br/>')}</p>
-</div>
+<h2>Descripción del Incidente</h2><p>${document.getElementById('wuGenIncidente').value.replace(/\n/g,'<br/>')}</p>
+<h2>Acción Correctiva Requerida</h2><p>${document.getElementById('wuGenCorrectiva').value.replace(/\n/g,'<br/>')}</p>
+<h2>Consecuencias en Caso de No Mejora</h2><p>${document.getElementById('wuGenConsecuencia').value.replace(/\n/g,'<br/>')}</p>
 <div class="sigs">
-  <div><div class="sig-line"></div><div class="sig-lbl">Firma del Empleado / Fecha</div></div>
-  <div><div class="sig-line"></div><div class="sig-lbl">Firma del Supervisor / Fecha</div></div>
-  <div><div class="sig-line"></div><div class="sig-lbl">Firma de Recursos Humanos / Fecha</div></div>
-  <div class="note">Al firmar este documento, el empleado reconoce haberlo recibido y leído. La firma no implica necesariamente acuerdo con el contenido.</div>
-</div>
-</body></html>`);
+  <div><div class="sl"></div><div class="slb">Firma del Empleado / Fecha</div></div>
+  <div><div class="sl"></div><div class="slb">Firma del Supervisor / Fecha</div></div>
+  <div><div class="sl"></div><div class="slb">Firma de Recursos Humanos / Fecha</div></div>
+  <div class="note">Al firmar, el empleado reconoce haber recibido y leído este documento. La firma no implica necesariamente acuerdo con el contenido.</div>
+</div></body></html>`);
   win.document.close();
   setTimeout(() => win.print(), 500);
 }
 
-// ── Hook goTab to refresh employee list when Write-Ups tab opens ──
-(function() {
+// Refresh employee list whenever Write-Ups tab is opened
+(function(){
   const _orig = goTab;
   goTab = function(t) {
     _orig(t);
