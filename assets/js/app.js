@@ -512,213 +512,6 @@ function showTimeoutWarning() {
 // Law: Act 180 of Puerto Rico
 // ══════════════════════════════════════════
 
-/**
- * Calculate monthly accrual for one employee for one month.
- * @param {number} hoursWorked - total hours worked that month
- * @param {number} avgWeeklyHours - average weekly hours (hoursWorked / weeksInMonth)
- * @returns {{ vacationEarned: number, sickEarned: number, tier: string }}
- */
-// Act 180-1998 caps (Law 41-2022 was struck down March 2023 — original Act 180 applies)
-const SICK_MAX_ACCRUAL   = 15;  // Max 15 days sick leave balance at any time
-const VAC_MAX_ACCRUAL    = 30;  // Max 30 days vacation balance at any time
-const VAC_MIN_TENURE_MONTHS = 12; // Vacation cannot be claimed until 1 year of service
-
-function calcMonthlyAccrual(hoursWorked, avgWeeklyHours) {
-  // Rule 1: ≥ 115 hours → full tier
-  if (hoursWorked >= 115) {
-    return { vacationEarned: 1.25, sickEarned: 1.0, tier: 'full' };
-  }
-  // Rule 2: < 115 hours but avg weekly ≥ 20 → partial tier
-  else if (avgWeeklyHours >= 20) {
-    return { vacationEarned: 0.5, sickEarned: 0.5, tier: 'partial' };
-  }
-  // Rule 3: does not qualify
-  else {
-    return { vacationEarned: 0, sickEarned: 0, tier: 'none' };
-  }
-}
-
-/**
- * Process all months of punch data for an employee and return totals.
- * Applies PR Act 180 caps and 1-year vacation eligibility rule.
- * @param {Array} monthlyRecords - array of { year, month, hoursWorked }
- * @param {string} firstClockIn  - ISO date string of first day worked
- * @param {number} vacTaken      - total vacation days already taken
- * @param {number} sickTaken     - total sick days already taken
- * @returns {{ vacationEarned, sickEarned, vacationBal, sickBal, vacationEligible, monthlyBreakdown }}
- */
-function calcEmployeeAccruals(monthlyRecords, firstClockIn, vacTaken = 0, sickTaken = 0) {
-  let vacationEarned = 0;
-  let sickEarned     = 0;
-  const monthlyBreakdown = [];
-
-  // Calculate tenure in months from firstClockIn
-  const startDate = firstClockIn ? new Date(firstClockIn) : null;
-  const tenureMonths = startDate
-    ? Math.floor((Date.now() - startDate) / (1000 * 60 * 60 * 24 * 30.44))
-    : 0;
-
-  // Vacation can only be CLAIMED (used) after 12 months — but still accrues
-  const vacationEligible = tenureMonths >= VAC_MIN_TENURE_MONTHS;
-
-  for (const rec of monthlyRecords) {
-    // A month is "complete" when it has 2 pay periods uploaded
-    // For months with only 1 pay period, accrue based on current hours
-    // (user uploads bi-weekly; after both uploads the month is fully counted)
-    const periodCount = (rec.payPeriods || []).length;
-    const isComplete  = periodCount >= 2;
-
-    // Always calculate accrual immediately on whatever hours are uploaded so far.
-    // Employees see their running balance right away.
-    // When the 2nd pay period is uploaded, the month recalculates automatically —
-    // someone who was partial tier may move to full tier once all hours are in.
-    const avgWeeklyHours = rec.hoursWorked / 4.33;
-    const accrual = calcMonthlyAccrual(rec.hoursWorked, avgWeeklyHours);
-
-    vacationEarned += accrual.vacationEarned;
-    sickEarned     += accrual.sickEarned;
-
-    const sickBal = Math.min(sickEarned - sickTaken, SICK_MAX_ACCRUAL);
-    const vacBal  = Math.min(vacationEarned - vacTaken, VAC_MAX_ACCRUAL);
-
-    monthlyBreakdown.push({
-      year: rec.year,
-      month: rec.month,
-      hoursWorked: rec.hoursWorked,
-      avgWeeklyHours: +avgWeeklyHours.toFixed(2),
-      vacationEarned: accrual.vacationEarned,
-      sickEarned: accrual.sickEarned,
-      tier: accrual.tier,
-      periodCount,
-      isComplete,
-      runningVacBal:  +Math.max(0, vacBal).toFixed(2),
-      runningSickBal: +Math.max(0, sickBal).toFixed(2)
-    });
-  }
-
-  // Final balances with caps applied
-  const sickBal = +Math.min(Math.max(sickEarned - sickTaken, 0), SICK_MAX_ACCRUAL).toFixed(2);
-  const vacBal  = +Math.min(Math.max(vacationEarned - vacTaken, 0), VAC_MAX_ACCRUAL).toFixed(2);
-
-  return {
-    vacationEarned:   +vacationEarned.toFixed(2),
-    sickEarned:       +sickEarned.toFixed(2),
-    vacationBal:      vacBal,
-    sickBal:          sickBal,
-    vacationEligible, // false = accruing but can't use yet (< 1 year tenure)
-    tenureMonths,
-    monthlyBreakdown
-  };
-}
-
-/**
- * Recalculate all employees in the EMPLOYEES object and update the dashboard.
- * Call this after importing data or recording time-off.
- */
-function recalculateAll() {
-  let activeCount = 0;
-  let inactiveCount = 0;
-
-  const tbody = document.getElementById('dashTbody');
-  if (!tbody) return;
-
-  const rows = [];
-
-  for (const [pin, emp] of Object.entries(EMPLOYEES)) {
-    const accruals = calcEmployeeAccruals(emp.monthlyRecords || [], emp.firstClockIn, emp.vacTaken || 0, emp.sickTaken || 0);
-
-    // Apply time-off taken
-    const vacTaken  = +(emp.vacTaken  || 0);
-    const sickTaken = +(emp.sickTaken || 0);
-    const vacBal    = +(accruals.vacationEarned - vacTaken).toFixed(2);
-    const sickBal   = +(accruals.sickEarned    - sickTaken).toFixed(2);
-
-    // Store back
-    emp.vacEarned  = accruals.vacationEarned;
-    emp.sickEarned = accruals.sickEarned;
-    emp.vacBal     = vacBal;
-    emp.sickBal    = sickBal;
-
-    if (emp.status === 'active') activeCount++; else inactiveCount++;
-
-    // Tenure
-    let tenure = '—';
-    if (emp.firstClockIn) {
-      const months = Math.floor((Date.now() - new Date(emp.firstClockIn)) / (1000*60*60*24*30.44));
-      tenure = months >= 12 ? Math.floor(months/12) + 'y ' + (months%12) + 'm' : months + 'm';
-    }
-
-    const vacNote = !accruals.vacationEligible ? ' <span title="Cannot use vacation until 1 year of service" style="font-size:.7rem;color:#d97706;cursor:help">⚠ < 1yr</span>' : '';
-    rows.push(`<tr>
-      <td><strong>${emp.name}</strong></td>
-      <td><span class="badge bg-teal">${emp.type || 'hourly'}</span></td>
-      <td><span class="badge ${emp.status==='active'?'bg-green':'bg-gray'}">${emp.status||'active'}</span></td>
-      <td>${tenure}</td>
-      <td>${accruals.sickEarned}</td>
-      <td>${emp.sickTaken||0}</td>
-      <td style="font-weight:600;color:${accruals.sickBal<=0?'var(--red)':'var(--navy)'}">${accruals.sickBal}</td>
-      <td>${accruals.vacationEarned}${vacNote}</td>
-      <td>${emp.vacTaken||0}</td>
-      <td style="font-weight:600;color:${accruals.vacationBal<=0?'var(--red)':'var(--navy)'}">${accruals.vacationBal}${vacNote}</td>
-    </tr>`);
-  }
-
-  // Check for any months missing their 2nd pay period
-  const pendingMonths = [];
-  for (const [pin, emp] of Object.entries(EMPLOYEES)) {
-    for (const rec of (emp.monthlyRecords || [])) {
-      const periodCount = (rec.payPeriods || []).length;
-      const now = new Date();
-      const isCurrentMonth = rec.year === now.getFullYear() && rec.month === now.getMonth()+1;
-      if (periodCount === 1 && !isCurrentMonth) {
-        const monthName = new Date(rec.year, rec.month-1).toLocaleString('en-US',{month:'long',year:'numeric'});
-        if (!pendingMonths.includes(monthName)) pendingMonths.push(monthName);
-      }
-    }
-  }
-
-  if (pendingMonths.length) {
-    const notice = document.getElementById('pendingPeriodsNotice') || (() => {
-      const d = document.createElement('div');
-      d.id = 'pendingPeriodsNotice';
-      d.style.cssText = 'background:#fffbec;border-left:4px solid #d97706;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:.84rem';
-      document.getElementById('p-dashboard').insertBefore(d, document.getElementById('p-dashboard').firstChild);
-      return d;
-    })();
-    notice.innerHTML = `📋 <strong>Note:</strong> ${pendingMonths.join(', ')} only have 1 of 2 pay periods uploaded. Balances are estimated — upload the 2nd period to finalize.`;
-    notice.style.display = 'block';
-  } else {
-    const n = document.getElementById('pendingPeriodsNotice');
-    if (n) n.style.display = 'none';
-  }
-
-  if (rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="10"><div class="empty"><div class="ei">📋</div><p>No data yet. Import data to get started.</p></div></td></tr>';
-  } else {
-    tbody.innerHTML = rows.join('');
-  }
-
-  // Update stat cards
-  const sActive   = document.getElementById('sActive');
-  const sInactive = document.getElementById('sInactive');
-  if (sActive)   sActive.textContent   = activeCount;
-  if (sInactive) sInactive.textContent = inactiveCount;
-
-  // Update employee portal balances if logged in as employee
-  if (currentUser && currentUser.role === 'employee') {
-    const emp = EMPLOYEES[currentUser.pin];
-    if (emp) {
-      document.getElementById('empSickEarned').textContent = emp.sickEarned ?? '—';
-      document.getElementById('empSickTaken').textContent  = emp.sickTaken  ?? '—';
-      document.getElementById('empSickBal').textContent    = emp.sickBal    ?? '—';
-      document.getElementById('empVacEarned').textContent  = emp.vacEarned  ?? '—';
-      document.getElementById('empVacTaken').textContent   = emp.vacTaken   ?? '—';
-      document.getElementById('empVacBal').textContent     = emp.vacBal     ?? '—';
-    }
-  }
-}
-
-
 
 // ══════════════════════════════════════════
 // PDF PARSER — CFA Time Summary Report
@@ -2953,10 +2746,12 @@ function parseMealTimeDetail(lines) {
 
 // ══════════════════════════════════════════════════════════════════
 // WRITE-UPS MODULE — Sistema de Amonestaciones Disciplinarias
-// Fixed legal templates — consistent language every time
+// Fixed legal templates + delete with double verification
 // ══════════════════════════════════════════════════════════════════
 
 const WU_PROXY_URL = `${SUPABASE_URL}/functions/v1/claude-proxy`;
+// Secret token for the leader QR form — change this to revoke access
+const WU_LEADER_TOKEN = 'filtros-ldr-2026';
 
 const WU = {
   currentEmpKey:  null,
@@ -2997,173 +2792,156 @@ const WU = {
     return `${sh}:${sm} ${sap} – ${eh}:${em} ${eap}`;
   },
 
-  // ── FIXED LEGAL TEMPLATES ───────────────────────────────────────
-  // These never change — only facts are inserted. Approved legal language.
-  // gender: 'M' or 'F'
-  buildDocument(data) {
-    const { empName, category, level, supervisor, dateFormatted, shift, fields } = data;
+  // ── FIXED LEGAL TEMPLATES ───────────────────────────────────
+  buildDocument({ empName, category, level, supervisor, dateFormatted, shift, fields }) {
     const faltaLabel = WU.FALTA_MAP[level];
-    const levelLabel = WU.LEVELS[level];
-
-    // Gender-neutral pronoun helper
-    const el  = 'el/la';
-    const del = 'del/de la';
-    const al  = 'al/a la';
-
-    // ── Incidente templates per category ──
-    const incidente = WU.buildIncidente(empName, category, supervisor, dateFormatted, shift, fields);
-    
-    // ── Correctiva templates per category ──
-    const correctiva = WU.buildCorrectiva(empName, category, fields);
-    
-    // ── Consecuencia — always same structure, only next level changes ──
-    const consecuencia = `De reincidir en esta conducta, ${el} empleado/a ${empName} estará sujeto/a a ${faltaLabel}, conforme a la política disciplinaria progresiva de Los Filtros FSU. Esta empresa está comprometida con mantener un ambiente de trabajo que cumpla con todas las normas establecidas, y espera el cumplimiento inmediato y sostenido de dicha política.`;
-
-    return { incidente, correctiva, consecuencia };
+    return {
+      incidente:    WU.buildIncidente(empName, category, supervisor, dateFormatted, shift, fields),
+      correctiva:   WU.buildCorrectiva(empName, category),
+      consecuencia: `De reincidir en esta conducta, el/la empleado/a ${empName} estará sujeto/a a ${faltaLabel}, conforme a la política disciplinaria progresiva de Los Filtros FSU. Esta empresa está comprometida con mantener un ambiente de trabajo que cumpla con todas las normas establecidas, y espera el cumplimiento inmediato y sostenido de dicha política.`
+    };
   },
 
   buildIncidente(empName, category, supervisor, date, shift, f) {
-    const templates = {
-      'Asistencia y Puntualidad': `En fecha ${date}, el/la empleado/a ${empName} incurrió en una violación a la Política de Asistencia y Puntualidad de Los Filtros FSU. El/la empleado/a tenía programada su entrada a las ${f.horaProgram}, sin embargo se presentó a sus labores a las ${f.horaLlegada}, registrando una tardanza de ${f.minutosT} minutos${f.llamo === 'Sí' ? `, habiendo notificado al supervisor a las ${f.horaLlamo} con ${f.quienAtendio}` : ', sin haber notificado previamente a la gerencia'}. ${f.reloj === 'Sí' ? 'Dicha tardanza quedó registrada en el sistema de marcaje electrónico de la empresa.' : 'El sistema de marcaje no registró entrada a tiempo.'} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente durante el turno de ${shift}.`,
+    const t = {
+      'Asistencia y Puntualidad':
+        `En fecha ${date}, el/la empleado/a ${empName} incurrió en una violación a la Política de Asistencia y Puntualidad de Los Filtros FSU. El/la empleado/a tenía programada su entrada a las ${f.horaProgram}, sin embargo se presentó a sus labores a las ${f.horaLlegada}, registrando una tardanza de ${f.minutosT} minutos${f.llamo==='Sí'?`, habiendo notificado al supervisor a las ${f.horaLlamo} con ${f.quienAtendio}`:', sin haber notificado previamente a la gerencia'}. ${f.reloj==='Sí'?'Dicha tardanza quedó registrada en el sistema de marcaje electrónico de la empresa.':'El sistema de marcaje no registró entrada a tiempo.'} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente durante el turno de ${shift}.`,
 
-      'Normas de Conducta': `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a las Normas de Conducta establecidas por Los Filtros FSU. Específicamente, ${f.descripcion}. El incidente ocurrió en el área de ${f.area} a las ${f.horaInc}. ${f.clientes === 'Sí' ? 'Había clientes presentes al momento del incidente, lo cual afectó la imagen y reputación del establecimiento.' : ''} ${f.testigos ? `El/la testigo ${f.testigos} estuvo presente y ${f.testigoDecl === 'Sí' ? 'está dispuesto/a a declarar sobre los hechos.' : 'fue notificado/a del incidente.'}` : ''} ${f.dano ? `Como consecuencia, ${f.dano}.` : ''} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
+      'Normas de Conducta':
+        `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a las Normas de Conducta establecidas por Los Filtros FSU. Específicamente, ${f.descripcion}. El incidente ocurrió en el área de ${f.area} a las ${f.horaInc}. ${f.clientes==='Sí'?'Había clientes presentes al momento del incidente, lo cual afectó la imagen y reputación del establecimiento.':''} ${f.testigos?`El/la testigo ${f.testigos} estuvo presente y ${f.testigoDecl==='Sí'?'está dispuesto/a a declarar sobre los hechos.':'fue notificado/a del incidente.'}`:''} ${f.dano?`Como consecuencia, ${f.dano}.`:''} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
 
-      'Inocuidad de Alimentos / Seguridad Alimentaria': `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la Política de Inocuidad de Alimentos y Seguridad Alimentaria de Los Filtros FSU. Específicamente, se violó la siguiente regulación o política: ${f.regulacion}. El producto, equipo o área involucrada fue: ${f.productoArea}. ${f.riesgo === 'Sí' ? 'Existió un riesgo directo de contaminación o daño al cliente.' : 'No se identificó riesgo directo al consumidor en este momento.'} ${f.temperatura ? `La temperatura registrada del producto fue de ${f.temperatura}.` : ''} ${f.descarto === 'Sí' ? 'El producto fue descartado conforme al protocolo de inocuidad.' : ''} ${f.entrenado === 'Sí' ? 'El/la empleado/a había recibido entrenamiento sobre esta regulación con anterioridad.' : 'Esta situación evidencia una deficiencia en la aplicación de los protocolos de inocuidad aprendidos.'} ${f.corrigioMom === 'Sí' ? 'La situación fue corregida al momento de ser identificada.' : 'La situación no fue corregida de inmediato.'} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
+      'Inocuidad de Alimentos / Seguridad Alimentaria':
+        `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la Política de Inocuidad de Alimentos y Seguridad Alimentaria de Los Filtros FSU. Específicamente, se violó la siguiente regulación: ${f.regulacion}. El producto, equipo o área involucrada fue: ${f.productoArea}. ${f.riesgo==='Sí'?'Existió un riesgo directo de contaminación o daño al cliente.':'No se identificó riesgo directo al consumidor en este momento.'} ${f.temperatura?`La temperatura registrada del producto fue de ${f.temperatura}.`:''} ${f.descarto==='Sí'?'El producto fue descartado conforme al protocolo de inocuidad.':''} ${f.entrenado==='Sí'?'El/la empleado/a había recibido entrenamiento sobre esta regulación con anterioridad.':'Esta situación evidencia una deficiencia en la aplicación de los protocolos de inocuidad aprendidos.'} ${f.corrigioMom==='Sí'?'La situación fue corregida al momento de ser identificada.':'La situación no fue corregida de inmediato.'} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
 
-      'Deberes y Responsabilidades del Puesto': `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a sus Deberes y Responsabilidades del Puesto en Los Filtros FSU. Específicamente, no cumplió con la siguiente tarea o responsabilidad: ${f.tarea}. ${f.enDescripcion === 'Sí' ? 'Dicha responsabilidad forma parte de la descripción oficial de su puesto.' : ''} ${f.instruccionDir === 'Sí' ? `Se le dio instrucción directa de realizarla por ${f.quienInstruyo}.` : ''} Como consecuencia directa, ${f.impacto}. ${f.quejaCliente === 'Sí' ? 'Se generó una queja de cliente o incidente relacionado a raíz de este incumplimiento.' : ''} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
+      'Deberes y Responsabilidades del Puesto':
+        `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a sus Deberes y Responsabilidades del Puesto en Los Filtros FSU. Específicamente, no cumplió con la siguiente tarea o responsabilidad: ${f.tarea}. ${f.enDescripcion==='Sí'?'Dicha responsabilidad forma parte de la descripción oficial de su puesto.':''} ${f.instruccionDir==='Sí'?`Se le dio instrucción directa de realizarla por ${f.quienInstruyo}.`:''} Como consecuencia directa, ${f.impacto}. ${f.quejaCliente==='Sí'?'Se generó una queja de cliente o incidente relacionado a raíz de este incumplimiento.':''} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
 
-      'Ambiente de Trabajo Civil y Respetuoso': `En fecha ${date}, durante el turno de ${shift}, en el área de ${f.area}, el/la empleado/a ${empName} incurrió en una violación a la Política de Ambiente de Trabajo Civil y Respetuoso de Los Filtros FSU. Específicamente, ${f.descripcion}. Dicha conducta fue dirigida a ${f.dirigidoA}. ${f.testigos ? `El/la testigo ${f.testigos} estuvo presente y ${f.testigoDecl === 'Sí' ? 'está dispuesto/a a declarar.' : 'fue notificado/a del incidente.'}` : ''} ${f.contactoFisico === 'Sí' ? `Hubo contacto físico de la siguiente naturaleza: ${f.tipoContacto}.` : ''} ${f.quejaFormal === 'Sí' ? 'La parte afectada presentó queja formal.' : ''} ${f.hostigamiento === 'Sí' ? 'Los hechos descritos pueden constituir hostigamiento, discriminación o acoso en el lugar de trabajo.' : ''} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
+      'Ambiente de Trabajo Civil y Respetuoso':
+        `En fecha ${date}, durante el turno de ${shift}, en el área de ${f.area}, el/la empleado/a ${empName} incurrió en una violación a la Política de Ambiente de Trabajo Civil y Respetuoso de Los Filtros FSU. Específicamente, ${f.descripcion}. Dicha conducta fue dirigida a ${f.dirigidoA}. ${f.testigos?`El/la testigo ${f.testigos} estuvo presente y ${f.testigoDecl==='Sí'?'está dispuesto/a a declarar.':'fue notificado/a del incidente.'}`:''} ${f.contactoFisico==='Sí'?`Hubo contacto físico de la siguiente naturaleza: ${f.tipoContacto}.`:''} ${f.quejaFormal==='Sí'?'La parte afectada presentó queja formal.':''} ${f.hostigamiento==='Sí'?'Los hechos descritos pueden constituir hostigamiento, discriminación o acoso en el lugar de trabajo.':''} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
 
-      'Apariencia y Aseo Personal': `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la Política de Apariencia y Aseo Personal de Los Filtros FSU. Específicamente, no cumplió con el siguiente requisito del código de apariencia: ${f.articulo}. ${f.tenia === 'Sí' ? 'El/la empleado/a tenía el artículo en su poder ese día.' : 'El/la empleado/a no contaba con el artículo requerido.'} ${f.oportunidad === 'Sí' ? 'Se le brindó la oportunidad de corregir la situación antes de la formalización de esta amonestación.' : ''} ${f.corrigio === 'Sí' ? 'El/la empleado/a procedió a corregir la situación cuando se le indicó.' : 'El/la empleado/a no procedió a corregir la situación.'} ${f.impactoCliente === 'Sí' ? 'Dicha situación tuvo impacto en la interacción con clientes del establecimiento.' : ''} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
+      'Apariencia y Aseo Personal':
+        `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la Política de Apariencia y Aseo Personal de Los Filtros FSU. Específicamente, no cumplió con el siguiente requisito del código de apariencia: ${f.articulo}. ${f.tenia==='Sí'?'El/la empleado/a tenía el artículo en su poder ese día.':'El/la empleado/a no contaba con el artículo requerido.'} ${f.oportunidad==='Sí'?'Se le brindó la oportunidad de corregir la situación antes de la formalización de esta amonestación.':''} ${f.corrigio==='Sí'?'El/la empleado/a procedió a corregir la situación cuando se le indicó.':'El/la empleado/a no procedió a corregir la situación.'} ${f.impactoCliente==='Sí'?'Dicha situación tuvo impacto en la interacción con clientes del establecimiento.':''} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
 
-      'Seguridad en el Lugar de Trabajo': `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la Política de Seguridad en el Lugar de Trabajo de Los Filtros FSU. Específicamente, violó la siguiente regla o procedimiento de seguridad: ${f.regla}. El incidente ocurrió en ${f.lugar} a las ${f.horaInc}. ${f.riesgoLesion === 'Sí' ? 'Existió riesgo de lesión para el/la empleado/a u otras personas.' : ''} ${f.entrenado === 'Sí' ? `El/la empleado/a había recibido entrenamiento en este procedimiento el ${f.fechaEntren}.` : ''} ${f.camara === 'Sí' ? 'Existe registro en cámara u otro sistema de vigilancia.' : ''} ${f.reportoGerente === 'Sí' ? 'El incidente fue reportado al gerente de turno inmediatamente.' : 'El incidente no fue reportado al gerente de turno de forma inmediata.'} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
+      'Seguridad en el Lugar de Trabajo':
+        `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la Política de Seguridad en el Lugar de Trabajo de Los Filtros FSU. Específicamente, violó la siguiente regla o procedimiento de seguridad: ${f.regla}. El incidente ocurrió en ${f.lugar} a las ${f.horaInc}. ${f.riesgoLesion==='Sí'?'Existió riesgo de lesión para el/la empleado/a u otras personas.':''} ${f.entrenado==='Sí'?`El/la empleado/a había recibido entrenamiento en este procedimiento el ${f.fechaEntren}.`:''} ${f.camara==='Sí'?'Existe registro en cámara u otro sistema de vigilancia.':''} ${f.reportoGerente==='Sí'?'El incidente fue reportado al gerente de turno inmediatamente.':'El incidente no fue reportado al gerente de turno de forma inmediata.'} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
 
-      'Responsabilidad de Efectivo y Cupones': `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la Política de Responsabilidad de Efectivo y Cupones de Los Filtros FSU. Al realizarse el conteo a las ${f.horaConteo} en la caja o terminal ${f.caja}, se identificó una discrepancia de $${f.discrepancia}, siendo esta un ${f.tipoDisc}. ${f.soloEnCaja === 'Sí' ? 'El/la empleado/a estuvo solo/a en dicha caja durante el turno.' : 'Otros empleados tuvieron acceso a la caja durante el turno.'} ${f.reviso === 'Sí' ? 'El conteo fue revisado con el/la empleado/a presente.' : 'El conteo no fue revisado con el/la empleado/a presente.'} ${f.firmoConteo === 'Sí' ? 'El/la empleado/a firmó el conteo.' : 'El/la empleado/a no firmó el conteo.'} ${f.registroPOS === 'Sí' ? 'Existe registro del sistema POS que respalda esta discrepancia.' : ''} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
+      'Responsabilidad de Efectivo y Cupones':
+        `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la Política de Responsabilidad de Efectivo y Cupones de Los Filtros FSU. Al realizarse el conteo a las ${f.horaConteo} en la caja o terminal ${f.caja}, se identificó una discrepancia de $${f.discrepancia}, siendo esta un ${f.tipoDisc}. ${f.soloEnCaja==='Sí'?'El/la empleado/a estuvo solo/a en dicha caja durante el turno.':'Otros empleados tuvieron acceso a la caja durante el turno.'} ${f.reviso==='Sí'?'El conteo fue revisado con el/la empleado/a presente.':'El conteo no fue revisado con el/la empleado/a presente.'} ${f.firmoConteo==='Sí'?'El/la empleado/a firmó el conteo.':'El/la empleado/a no firmó el conteo.'} ${f.registroPOS==='Sí'?'Existe registro del sistema POS que respalda esta discrepancia.':''} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
 
-      'Política de Uniformes': `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la Política de Uniformes de Los Filtros FSU. Específicamente, el siguiente artículo del uniforme faltaba o no cumplía con la política: ${f.articulo}. ${f.orientado === 'Sí' ? 'El/la empleado/a fue notificado/a de la Política de Uniformes durante su orientación.' : ''} ${f.tenia === 'Sí' ? 'El/la empleado/a tenía el artículo disponible ese día.' : 'El/la empleado/a no contaba con el artículo disponible.'} ${f.oportunidad === 'Sí' ? 'Se le brindó la oportunidad de corregir la situación.' : ''} ${f.corrigio === 'Sí' ? 'El/la empleado/a procedió a corregir la situación.' : 'El/la empleado/a no corrigió la situación.'} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
+      'Política de Uniformes':
+        `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la Política de Uniformes de Los Filtros FSU. Específicamente, el siguiente artículo del uniforme faltaba o no cumplía con la política: ${f.articulo}. ${f.orientado==='Sí'?'El/la empleado/a fue notificado/a de la Política de Uniformes durante su orientación.':''} ${f.tenia==='Sí'?'El/la empleado/a tenía el artículo disponible ese día.':'El/la empleado/a no contaba con el artículo disponible.'} ${f.oportunidad==='Sí'?'Se le brindó la oportunidad de corregir la situación.':''} ${f.corrigio==='Sí'?'El/la empleado/a procedió a corregir la situación.':'El/la empleado/a no corrigió la situación.'} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
 
-      'Comunicaciones Telefónicas': `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la Política de Comunicaciones Telefónicas de Los Filtros FSU. Específicamente, violó la siguiente política: ${f.politica}. El incidente ocurrió en el área de ${f.area}, ${f.horasTrabajo === 'Horas activas de trabajo' ? 'durante horas activas de trabajo' : 'durante su período de descanso'}. ${f.afectoServicio === 'Sí' ? 'Dicha conducta afectó directamente el servicio al cliente.' : ''} ${f.clienteTestigo === 'Sí' ? 'Un cliente u otro testigo estuvo presente durante el incidente.' : ''} ${f.camara === 'Sí' ? 'Existe registro en cámara del incidente.' : ''} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`
+      'Comunicaciones Telefónicas':
+        `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la Política de Comunicaciones Telefónicas de Los Filtros FSU. Específicamente, violó la siguiente política: ${f.politica}. El incidente ocurrió en el área de ${f.area}, ${f.horasTrabajo==='Horas activas de trabajo'?'durante horas activas de trabajo':'durante su período de descanso'}. ${f.afectoServicio==='Sí'?'Dicha conducta afectó directamente el servicio al cliente.':''} ${f.clienteTestigo==='Sí'?'Un cliente u otro testigo estuvo presente durante el incidente.':''} ${f.camara==='Sí'?'Existe registro en cámara del incidente.':''} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`
     };
-
-    return templates[category] || `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la política de ${category} de Los Filtros FSU. El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`;
+    return t[category] || `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la política de ${category} de Los Filtros FSU. El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`;
   },
 
-  buildCorrectiva(empName, category, f) {
-    const templates = {
+  buildCorrectiva(empName, category) {
+    const t = {
       'Asistencia y Puntualidad': `Se le requiere al/a la empleado/a ${empName} reportarse a su turno en el horario asignado, sin excepción. Cualquier situación que pueda afectar su puntualidad debe ser comunicada al supervisor correspondiente antes del inicio del turno. El incumplimiento de esta directiva constituye una violación directa a la Política de Asistencia y Puntualidad de Los Filtros FSU y no será tolerado.`,
-
       'Normas de Conducta': `Se le requiere al/a la empleado/a ${empName} mantener en todo momento una conducta profesional, respetuosa y acorde con las Normas de Conducta de Los Filtros FSU. Toda interacción con compañeros, supervisores y clientes debe realizarse dentro del marco de respeto y profesionalismo que exige esta empresa. El incumplimiento de esta directiva no será tolerado.`,
-
       'Inocuidad de Alimentos / Seguridad Alimentaria': `Se le requiere al/a la empleado/a ${empName} cumplir estrictamente con todos los protocolos de inocuidad y seguridad alimentaria establecidos por Los Filtros FSU y las regulaciones aplicables. El manejo adecuado de alimentos es una responsabilidad no negociable que protege la salud de nuestros clientes y la integridad de la operación. El incumplimiento de estos protocolos no será tolerado bajo ninguna circunstancia.`,
-
       'Deberes y Responsabilidades del Puesto': `Se le requiere al/a la empleado/a ${empName} cumplir a cabalidad con todas las tareas y responsabilidades inherentes a su puesto, conforme a las instrucciones recibidas de la gerencia. La ejecución efectiva de sus funciones es fundamental para el buen funcionamiento de la operación. El incumplimiento de sus responsabilidades no será tolerado.`,
-
       'Ambiente de Trabajo Civil y Respetuoso': `Se le requiere al/a la empleado/a ${empName} mantener en todo momento un comportamiento civil, respetuoso y profesional hacia todos los compañeros, supervisores y clientes de Los Filtros FSU. Toda conducta que atente contra el ambiente de trabajo respetuoso que esta empresa promueve constituye una violación grave a nuestra política y no será tolerada.`,
-
       'Apariencia y Aseo Personal': `Se le requiere al/a la empleado/a ${empName} reportarse a su turno cumpliendo en su totalidad con el Código de Apariencia y Aseo Personal de Los Filtros FSU. El cumplimiento de estos estándares es una condición de empleo y refleja los valores de la empresa. El incumplimiento de esta política no será tolerado.`,
-
       'Seguridad en el Lugar de Trabajo': `Se le requiere al/a la empleado/a ${empName} cumplir en todo momento con todos los procedimientos y normas de seguridad establecidos por Los Filtros FSU. La seguridad en el lugar de trabajo es una responsabilidad compartida y su cumplimiento es obligatorio. El incumplimiento de los protocolos de seguridad no será tolerado y puede resultar en consecuencias disciplinarias inmediatas.`,
-
       'Responsabilidad de Efectivo y Cupones': `Se le requiere al/a la empleado/a ${empName} manejar el efectivo y cupones bajo su responsabilidad con la máxima diligencia y conforme a los procedimientos establecidos por Los Filtros FSU. Cualquier discrepancia en el manejo de efectivo es tomada con seriedad por esta empresa. El incumplimiento de esta política no será tolerado.`,
-
       'Política de Uniformes': `Se le requiere al/a la empleado/a ${empName} reportarse a cada turno con el uniforme completo y en las condiciones establecidas por la Política de Uniformes de Los Filtros FSU. El uso correcto del uniforme es una condición de empleo y parte de la imagen profesional de la empresa. El incumplimiento de esta política no será tolerado.`,
-
       'Comunicaciones Telefónicas': `Se le requiere al/a la empleado/a ${empName} cumplir estrictamente con la Política de Comunicaciones Telefónicas de Los Filtros FSU durante las horas de trabajo. El uso indebido de dispositivos de comunicación personal durante el turno interfiere con la operación y el servicio al cliente. El incumplimiento de esta política no será tolerado.`
     };
-
-    return templates[category] || `Se le requiere al/a la empleado/a ${empName} cumplir estrictamente con todas las políticas y normas de Los Filtros FSU. El incumplimiento de estas directivas no será tolerado.`;
+    return t[category] || `Se le requiere al/a la empleado/a ${empName} cumplir estrictamente con todas las políticas y normas de Los Filtros FSU. El incumplimiento de estas directivas no será tolerado.`;
   },
 
-  // Category-specific structured fields config
   CATEGORY_FIELDS: {
     'Asistencia y Puntualidad': [
-      { id:'horaProgram',    label:'Hora exacta programada de entrada',              type:'time', required:true },
-      { id:'horaLlegada',    label:'Hora exacta de llegada (según sistema de marcaje)', type:'time', required:true },
-      { id:'minutosT',       label:'Minutos totales de tardanza',                   type:'number', required:true },
-      { id:'reloj',          label:'¿El sistema de reloj registró la entrada?',     type:'yesno', required:true },
-      { id:'llamo',          label:'¿Llamó para avisar antes de su turno?',         type:'yesno', required:true },
-      { id:'horaLlamo',      label:'Si llamó — ¿a qué hora?',                      type:'time',   required:false, showIf:{id:'llamo',val:'Sí'} },
-      { id:'quienAtendio',   label:'Si llamó — ¿a quién?',                         type:'text',   required:false, showIf:{id:'llamo',val:'Sí'} },
+      { id:'horaProgram',  label:'Hora exacta programada de entrada',                type:'time',   required:true },
+      { id:'horaLlegada',  label:'Hora exacta de llegada (según sistema de marcaje)',type:'time',   required:true },
+      { id:'minutosT',     label:'Minutos totales de tardanza',                      type:'number', required:true },
+      { id:'reloj',        label:'¿El sistema de reloj registró la entrada?',        type:'yesno',  required:true },
+      { id:'llamo',        label:'¿Llamó para avisar antes de su turno?',            type:'yesno',  required:true },
+      { id:'horaLlamo',    label:'Si llamó — ¿a qué hora?',                         type:'time',   required:false, showIf:{id:'llamo',val:'Sí'} },
+      { id:'quienAtendio', label:'Si llamó — ¿a quién?',                            type:'text',   required:false, showIf:{id:'llamo',val:'Sí'} },
     ],
     'Normas de Conducta': [
-      { id:'descripcion',   label:'Descripción exacta (palabras textuales si aplica)', type:'textarea', required:true },
-      { id:'area',          label:'Área específica donde ocurrió',                  type:'text',   required:true },
-      { id:'horaInc',       label:'Hora exacta del incidente',                      type:'time',   required:true },
-      { id:'clientes',      label:'¿Hubo clientes presentes?',                      type:'yesno',  required:true },
-      { id:'testigos',      label:'Nombre(s) de testigo(s) presentes',              type:'text',   required:false },
-      { id:'testigoDecl',   label:'¿El testigo está dispuesto a declarar?',         type:'yesno',  required:false, showIf:{id:'testigos',notEmpty:true} },
-      { id:'dano',          label:'¿Hubo daño a la operación, reputación o persona? Describa', type:'text', required:false },
+      { id:'descripcion',  label:'Descripción exacta (palabras textuales si aplica)',type:'textarea',required:true },
+      { id:'area',         label:'Área específica donde ocurrió',                   type:'text',   required:true },
+      { id:'horaInc',      label:'Hora exacta del incidente',                        type:'time',   required:true },
+      { id:'clientes',     label:'¿Hubo clientes presentes?',                        type:'yesno',  required:true },
+      { id:'testigos',     label:'Nombre(s) de testigo(s) presentes',               type:'text',   required:false },
+      { id:'testigoDecl',  label:'¿El testigo está dispuesto a declarar?',           type:'yesno',  required:false, showIf:{id:'testigos',notEmpty:true} },
+      { id:'dano',         label:'¿Hubo daño a la operación, reputación o persona? Describa', type:'text', required:false },
     ],
     'Inocuidad de Alimentos / Seguridad Alimentaria': [
-      { id:'regulacion',    label:'Regulación o política específica violada (citar la regla)', type:'textarea', required:true },
-      { id:'productoArea',  label:'Producto, equipo o área involucrada',            type:'text',   required:true },
-      { id:'riesgo',        label:'¿Hubo riesgo directo de contaminación o daño al cliente?', type:'yesno', required:true },
-      { id:'temperatura',   label:'Temperatura del producto (si aplica)',            type:'text',   required:false },
-      { id:'descarto',      label:'¿Se descartó el producto?',                      type:'yesno',  required:false },
-      { id:'entrenado',     label:'¿El empleado había recibido entrenamiento en esta regla?', type:'yesno', required:true },
-      { id:'corrigioMom',   label:'¿Fue corregido en el momento?',                  type:'yesno',  required:true },
+      { id:'regulacion',   label:'Regulación o política específica violada (citar la regla)', type:'textarea', required:true },
+      { id:'productoArea', label:'Producto, equipo o área involucrada',              type:'text',   required:true },
+      { id:'riesgo',       label:'¿Hubo riesgo directo de contaminación o daño al cliente?', type:'yesno', required:true },
+      { id:'temperatura',  label:'Temperatura del producto (si aplica)',              type:'text',   required:false },
+      { id:'descarto',     label:'¿Se descartó el producto?',                        type:'yesno',  required:false },
+      { id:'entrenado',    label:'¿El empleado había recibido entrenamiento en esta regla?', type:'yesno', required:true },
+      { id:'corrigioMom',  label:'¿Fue corregido en el momento?',                    type:'yesno',  required:true },
     ],
     'Deberes y Responsabilidades del Puesto': [
-      { id:'tarea',         label:'Tarea o responsabilidad específica no cumplida', type:'textarea', required:true },
-      { id:'enDescripcion', label:'¿Estaba en la descripción oficial del puesto?',  type:'yesno',  required:true },
+      { id:'tarea',        label:'Tarea o responsabilidad específica no cumplida',  type:'textarea',required:true },
+      { id:'enDescripcion',label:'¿Estaba en la descripción oficial del puesto?',   type:'yesno',  required:true },
       { id:'instruccionDir',label:'¿Se le dio instrucción directa de realizarla ese día?', type:'yesno', required:true },
-      { id:'quienInstruyo', label:'¿Por quién se le instruyó?',                     type:'text',   required:false, showIf:{id:'instruccionDir',val:'Sí'} },
-      { id:'impacto',       label:'Impacto directo en la operación',                type:'textarea', required:true },
-      { id:'quejaCliente',  label:'¿Hubo queja de cliente o incidente relacionado?', type:'yesno', required:true },
+      { id:'quienInstruyo',label:'¿Por quién se le instruyó?',                      type:'text',   required:false, showIf:{id:'instruccionDir',val:'Sí'} },
+      { id:'impacto',      label:'Impacto directo en la operación',                 type:'textarea',required:true },
+      { id:'quejaCliente', label:'¿Hubo queja de cliente o incidente relacionado?', type:'yesno',  required:true },
     ],
     'Ambiente de Trabajo Civil y Respetuoso': [
-      { id:'descripcion',   label:'¿Qué dijo o hizo exactamente? (palabras textuales si aplica)', type:'textarea', required:true },
-      { id:'dirigidoA',     label:'¿Fue dirigido a compañero, supervisor, o cliente?', type:'select', options:['Compañero de trabajo','Supervisor','Cliente','Varios'], required:true },
-      { id:'area',          label:'Área donde ocurrió',                             type:'text',   required:true },
-      { id:'horaInc',       label:'Hora del incidente',                             type:'time',   required:true },
-      { id:'testigos',      label:'Nombre(s) de testigo(s)',                        type:'text',   required:false },
-      { id:'testigoDecl',   label:'¿El testigo está dispuesto a declarar?',         type:'yesno',  required:false, showIf:{id:'testigos',notEmpty:true} },
-      { id:'contactoFisico',label:'¿Hubo contacto físico?',                         type:'yesno',  required:true },
-      { id:'tipoContacto',  label:'Si hubo contacto físico — ¿de qué tipo?',       type:'text',   required:false, showIf:{id:'contactoFisico',val:'Sí'} },
-      { id:'quejaFormal',   label:'¿La otra persona presentó queja formal?',        type:'yesno',  required:true },
-      { id:'hostigamiento', label:'¿Constituyó hostigamiento, discriminación o acoso?', type:'yesno', required:true },
+      { id:'descripcion',  label:'¿Qué dijo o hizo exactamente? (palabras textuales si aplica)', type:'textarea', required:true },
+      { id:'dirigidoA',    label:'¿Fue dirigido a compañero, supervisor, o cliente?', type:'select', options:['Compañero de trabajo','Supervisor','Cliente','Varios'], required:true },
+      { id:'area',         label:'Área donde ocurrió',                              type:'text',   required:true },
+      { id:'horaInc',      label:'Hora del incidente',                               type:'time',   required:true },
+      { id:'testigos',     label:'Nombre(s) de testigo(s)',                          type:'text',   required:false },
+      { id:'testigoDecl',  label:'¿El testigo está dispuesto a declarar?',           type:'yesno',  required:false, showIf:{id:'testigos',notEmpty:true} },
+      { id:'contactoFisico',label:'¿Hubo contacto físico?',                          type:'yesno',  required:true },
+      { id:'tipoContacto', label:'Si hubo contacto físico — ¿de qué tipo?',         type:'text',   required:false, showIf:{id:'contactoFisico',val:'Sí'} },
+      { id:'quejaFormal',  label:'¿La otra persona presentó queja formal?',          type:'yesno',  required:true },
+      { id:'hostigamiento',label:'¿Constituyó hostigamiento, discriminación o acoso?', type:'yesno', required:true },
     ],
     'Apariencia y Aseo Personal': [
-      { id:'articulo',      label:'Artículo o requisito específico no cumplido',    type:'text',   required:true },
-      { id:'tenia',         label:'¿Tenía el empleado el artículo en su poder ese día?', type:'yesno', required:true },
-      { id:'oportunidad',   label:'¿Se le dio oportunidad de corregirlo antes de la amonestación?', type:'yesno', required:true },
-      { id:'corrigio',      label:'¿Lo corrigió cuando se le indicó?',              type:'yesno',  required:true },
+      { id:'articulo',     label:'Artículo o requisito específico no cumplido',     type:'text',   required:true },
+      { id:'tenia',        label:'¿Tenía el empleado el artículo en su poder ese día?', type:'yesno', required:true },
+      { id:'oportunidad',  label:'¿Se le dio oportunidad de corregirlo antes de la amonestación?', type:'yesno', required:true },
+      { id:'corrigio',     label:'¿Lo corrigió cuando se le indicó?',               type:'yesno',  required:true },
       { id:'impactoCliente',label:'¿Hubo impacto en la interacción con clientes?',  type:'yesno',  required:true },
     ],
     'Seguridad en el Lugar de Trabajo': [
-      { id:'regla',         label:'Regla o procedimiento de seguridad violado (citar específicamente)', type:'textarea', required:true },
-      { id:'lugar',         label:'Lugar exacto donde ocurrió',                     type:'text',   required:true },
-      { id:'horaInc',       label:'Hora del incidente',                             type:'time',   required:true },
-      { id:'riesgoLesion',  label:'¿Hubo riesgo de lesión para el empleado u otros?', type:'yesno', required:true },
-      { id:'entrenado',     label:'¿El empleado había recibido entrenamiento en este procedimiento?', type:'yesno', required:true },
-      { id:'fechaEntren',   label:'¿Cuándo recibió el entrenamiento?',              type:'date',   required:false, showIf:{id:'entrenado',val:'Sí'} },
-      { id:'camara',        label:'¿Hay registro en cámara u otro sistema?',        type:'yesno',  required:true },
-      { id:'reportoGerente',label:'¿Se reportó al gerente de turno inmediatamente?', type:'yesno', required:true },
+      { id:'regla',        label:'Regla o procedimiento de seguridad violado (citar específicamente)', type:'textarea', required:true },
+      { id:'lugar',        label:'Lugar exacto donde ocurrió',                      type:'text',   required:true },
+      { id:'horaInc',      label:'Hora del incidente',                               type:'time',   required:true },
+      { id:'riesgoLesion', label:'¿Hubo riesgo de lesión para el empleado u otros?',type:'yesno',  required:true },
+      { id:'entrenado',    label:'¿El empleado había recibido entrenamiento en este procedimiento?', type:'yesno', required:true },
+      { id:'fechaEntren',  label:'¿Cuándo recibió el entrenamiento?',               type:'date',   required:false, showIf:{id:'entrenado',val:'Sí'} },
+      { id:'camara',       label:'¿Hay registro en cámara u otro sistema?',         type:'yesno',  required:true },
+      { id:'reportoGerente',label:'¿Se reportó al gerente de turno inmediatamente?',type:'yesno',  required:true },
     ],
     'Responsabilidad de Efectivo y Cupones': [
-      { id:'discrepancia',  label:'Discrepancia exacta en dólares y centavos ($)',  type:'number', required:true },
-      { id:'tipoDisc',      label:'Tipo de discrepancia',                           type:'select', options:['Faltante','Sobrante'], required:true },
-      { id:'caja',          label:'Caja o terminal donde ocurrió',                  type:'text',   required:true },
-      { id:'horaConteo',    label:'Hora en que se hizo el conteo',                  type:'time',   required:true },
-      { id:'soloEnCaja',    label:'¿Estuvo el empleado solo/a en esa caja durante el turno?', type:'yesno', required:true },
-      { id:'reviso',        label:'¿Se revisó el conteo con el empleado presente?', type:'yesno',  required:true },
-      { id:'firmoConteo',   label:'¿El empleado firmó el conteo?',                  type:'yesno',  required:true },
-      { id:'registroPOS',   label:'¿Hay registro del sistema POS?',                 type:'yesno',  required:true },
+      { id:'discrepancia', label:'Discrepancia exacta en dólares y centavos ($)',   type:'number', required:true },
+      { id:'tipoDisc',     label:'Tipo de discrepancia',                             type:'select', options:['Faltante','Sobrante'], required:true },
+      { id:'caja',         label:'Caja o terminal donde ocurrió',                   type:'text',   required:true },
+      { id:'horaConteo',   label:'Hora en que se hizo el conteo',                   type:'time',   required:true },
+      { id:'soloEnCaja',   label:'¿Estuvo el empleado solo/a en esa caja durante el turno?', type:'yesno', required:true },
+      { id:'reviso',       label:'¿Se revisó el conteo con el empleado presente?',  type:'yesno',  required:true },
+      { id:'firmoConteo',  label:'¿El empleado firmó el conteo?',                   type:'yesno',  required:true },
+      { id:'registroPOS',  label:'¿Hay registro del sistema POS?',                  type:'yesno',  required:true },
     ],
     'Política de Uniformes': [
-      { id:'articulo',      label:'Artículo específico faltante o incorrecto',      type:'text',   required:true },
-      { id:'orientado',     label:'¿Se le notificó la política de uniformes en su orientación?', type:'yesno', required:true },
-      { id:'tenia',         label:'¿Tenía el artículo disponible ese día?',         type:'yesno',  required:true },
-      { id:'oportunidad',   label:'¿Se le dio oportunidad de corregirlo?',          type:'yesno',  required:true },
-      { id:'corrigio',      label:'¿Lo corrigió?',                                  type:'yesno',  required:true },
+      { id:'articulo',     label:'Artículo específico faltante o incorrecto',       type:'text',   required:true },
+      { id:'orientado',    label:'¿Se le notificó la política de uniformes en su orientación?', type:'yesno', required:true },
+      { id:'tenia',        label:'¿Tenía el artículo disponible ese día?',          type:'yesno',  required:true },
+      { id:'oportunidad',  label:'¿Se le dio oportunidad de corregirlo?',           type:'yesno',  required:true },
+      { id:'corrigio',     label:'¿Lo corrigió?',                                   type:'yesno',  required:true },
     ],
     'Comunicaciones Telefónicas': [
-      { id:'politica',      label:'Política específica de uso de teléfono violada', type:'textarea', required:true },
-      { id:'area',          label:'Área donde estaba el empleado',                  type:'text',   required:true },
-      { id:'horasTrabajo',  label:'¿Estaba en horas activas o en descanso?',        type:'select', options:['Horas activas de trabajo','Período de descanso'], required:true },
-      { id:'afectoServicio',label:'¿Afectó directamente el servicio al cliente?',   type:'yesno',  required:true },
+      { id:'politica',     label:'Política específica de uso de teléfono violada',  type:'textarea',required:true },
+      { id:'area',         label:'Área donde estaba el empleado',                   type:'text',   required:true },
+      { id:'horasTrabajo', label:'¿Estaba en horas activas o en descanso?',         type:'select', options:['Horas activas de trabajo','Período de descanso'], required:true },
+      { id:'afectoServicio',label:'¿Afectó directamente el servicio al cliente?',  type:'yesno',  required:true },
       { id:'clienteTestigo',label:'¿Hubo un cliente afectado o testigo?',           type:'yesno',  required:true },
-      { id:'camara',        label:'¿Hay registro en cámara?',                       type:'yesno',  required:true },
+      { id:'camara',       label:'¿Hay registro en cámara?',                        type:'yesno',  required:true },
     ],
   },
 
@@ -3190,6 +2968,16 @@ const WU = {
       all.push(rec);
       localStorage.setItem('wu_records', JSON.stringify(all));
       return rec;
+    }
+  },
+
+  async deleteAllRecords(empKey) {
+    try {
+      const { error } = await getSupa().from('wu_records').delete().eq('emp_id', empKey);
+      if (error) throw error;
+    } catch {
+      const all = JSON.parse(localStorage.getItem('wu_records') || '[]');
+      localStorage.setItem('wu_records', JSON.stringify(all.filter(r => r.emp_id !== empKey)));
     }
   }
 };
@@ -3259,6 +3047,43 @@ function wuRenderHistory(records) {
     }).join('') + '</div>';
 }
 
+// ── Delete with DOUBLE verification ───────────────────────────
+function wuDeleteAllConfirm() {
+  if (!WU.currentEmpKey || !WU.currentEmpName) return;
+  if (WU.currentRecords.length === 0) {
+    alert('Este empleado no tiene amonestaciones registradas.');
+    return;
+  }
+  // First confirmation
+  const first = confirm(
+    `⚠️ ¿Está seguro que desea eliminar TODAS las amonestaciones de ${WU.currentEmpName}?\n\n` +
+    `Se eliminarán ${WU.currentRecords.length} registro(s). Esta acción NO se puede deshacer.\n\n` +
+    `Haga clic en ACEPTAR para continuar con la verificación.`
+  );
+  if (!first) return;
+
+  // Second confirmation — must type the employee name
+  const typed = prompt(
+    `VERIFICACIÓN FINAL\n\n` +
+    `Para confirmar la eliminación permanente, escriba exactamente el nombre del empleado:\n\n` +
+    `"${WU.currentEmpName}"`
+  );
+  if (typed === null) return; // cancelled
+  if (typed.trim() !== WU.currentEmpName.trim()) {
+    alert('❌ El nombre no coincide. No se eliminaron los registros.');
+    return;
+  }
+
+  // Confirmed — delete
+  WU.deleteAllRecords(WU.currentEmpKey).then(() => {
+    WU.currentRecords = [];
+    wuRenderHistory([]);
+    document.getElementById('wuFormPanel').style.display = 'none';
+    document.getElementById('wuDocOutput').style.display = 'none';
+    alert(`✅ Se eliminaron todos los registros de amonestaciones de ${WU.currentEmpName}.`);
+  }).catch(err => alert('Error al eliminar: ' + err.message));
+}
+
 function wuOpenNewForm() {
   if (!WU.currentEmpKey) { alert('Por favor, seleccione un empleado primero.'); return; }
   document.getElementById('wuLevel').value = 'verbal';
@@ -3284,16 +3109,9 @@ function wuOpenNewForm() {
 function wuOnCategoryChange() {
   const category = document.getElementById('wuCategory').value;
   document.getElementById('wuDocOutput').style.display = 'none';
-  if (!category) {
-    document.getElementById('wuCategoryFields').innerHTML = '';
-    return;
-  }
-
-  // Auto-suggest level based on this category's history
+  if (!category) { document.getElementById('wuCategoryFields').innerHTML = ''; return; }
   const suggested = WU.suggestLevel(WU.currentRecords, category);
   document.getElementById('wuLevel').value = suggested;
-
-  // Show hint about this category's history
   const catRecords = (WU.currentRecords||[]).filter(r => r.category === category);
   const hintEl = document.getElementById('wuCategoryHint');
   if (hintEl) {
@@ -3301,14 +3119,13 @@ function wuOnCategoryChange() {
       hintEl.textContent = 'Sin historial en esta categoría — nivel sugerido: Amonestación Verbal';
       hintEl.style.color = '#16a34a';
     } else {
-      const last = [...catRecords].sort((a,b) => new Date(b.created_at)-new Date(a.created_at))[0];
+      const last = [...catRecords].sort((a,b)=>new Date(b.created_at)-new Date(a.created_at))[0];
       const d = last.date ? new Date(last.date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'short',day:'numeric'}) : '';
       hintEl.textContent = `${catRecords.length} amonestación(es) en esta categoría. Última: ${WU.LEVELS[last.level]} (${d})`;
       hintEl.style.color = '#92400e';
     }
     hintEl.style.display = 'block';
   }
-
   wuUpdateFaltaMejora();
   wuRenderCategoryFields(category);
 }
@@ -3316,15 +3133,14 @@ function wuOnCategoryChange() {
 function wuRenderCategoryFields(category) {
   const container = document.getElementById('wuCategoryFields');
   const fields = WU.CATEGORY_FIELDS[category] || [];
-  if (fields.length === 0) { container.innerHTML = ''; return; }
-
+  if (!fields.length) { container.innerHTML=''; return; }
   container.innerHTML = `
     <div style="margin-top:16px;border-top:1px solid #e5e7eb;padding-top:16px">
       <div style="font-size:.8rem;font-weight:700;color:var(--navy);margin-bottom:12px">
         📋 Información Requerida — ${category}
-        <span style="font-weight:400;color:#6b7280;font-size:.75rem"> (todos los campos marcados * son obligatorios)</span>
+        <span style="font-weight:400;color:#6b7280;font-size:.75rem"> (campos marcados * son obligatorios)</span>
       </div>
-      ${fields.map(f => wuFieldHtml(f)).join('')}
+      ${fields.map(wuFieldHtml).join('')}
     </div>`;
 }
 
@@ -3332,57 +3148,46 @@ function wuFieldHtml(f) {
   const req = f.required ? '<span style="color:#dc2626"> *</span>' : '';
   const showIfAttr = f.showIf ? `data-showif='${JSON.stringify(f.showIf)}'` : '';
   const wrapStyle = f.showIf ? 'display:none;' : '';
-
   let input = '';
-  if (f.type === 'yesno') {
+  if (f.type==='yesno') {
     input = `<div style="display:flex;gap:16px;margin-top:4px">
-      <label style="display:flex;align-items:center;gap:6px;font-size:.875rem;cursor:pointer">
-        <input type="radio" name="wuf_${f.id}" value="Sí" onchange="wuCheckConditionals()" style="accent-color:var(--navy)"> Sí
-      </label>
-      <label style="display:flex;align-items:center;gap:6px;font-size:.875rem;cursor:pointer">
-        <input type="radio" name="wuf_${f.id}" value="No" onchange="wuCheckConditionals()" style="accent-color:var(--navy)"> No
-      </label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:.875rem;cursor:pointer"><input type="radio" name="wuf_${f.id}" value="Sí" onchange="wuCheckConditionals()" style="accent-color:var(--navy)"> Sí</label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:.875rem;cursor:pointer"><input type="radio" name="wuf_${f.id}" value="No" onchange="wuCheckConditionals()" style="accent-color:var(--navy)"> No</label>
     </div>`;
-  } else if (f.type === 'select') {
+  } else if (f.type==='select') {
     input = `<select id="wuf_${f.id}" onchange="wuCheckConditionals()" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-top:4px">
-      <option value="">Seleccionar...</option>
-      ${(f.options||[]).map(o => `<option>${o}</option>`).join('')}
-    </select>`;
-  } else if (f.type === 'textarea') {
+      <option value="">Seleccionar...</option>${(f.options||[]).map(o=>`<option>${o}</option>`).join('')}</select>`;
+  } else if (f.type==='textarea') {
     input = `<textarea id="wuf_${f.id}" rows="3" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;line-height:1.5;resize:vertical;margin-top:4px" placeholder="Ingrese detalles..."></textarea>`;
-  } else if (f.type === 'time') {
+  } else if (f.type==='time') {
     input = `<input type="time" id="wuf_${f.id}" style="padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-top:4px"/>`;
-  } else if (f.type === 'date') {
+  } else if (f.type==='date') {
     input = `<input type="date" id="wuf_${f.id}" style="padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-top:4px"/>`;
-  } else if (f.type === 'number') {
+  } else if (f.type==='number') {
     input = `<input type="number" id="wuf_${f.id}" min="0" step="0.01" style="width:160px;padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-top:4px" placeholder="0"/>`;
   } else {
     input = `<input type="text" id="wuf_${f.id}" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-top:4px" placeholder="Ingrese información..."/>`;
   }
-
   return `<div id="wuf_wrap_${f.id}" ${showIfAttr} style="${wrapStyle}margin-bottom:12px">
     <label style="font-size:.8rem;font-weight:600;color:var(--text-mid);display:block">${f.label}${req}</label>
-    ${input}
-  </div>`;
+    ${input}</div>`;
 }
 
 function wuCheckConditionals() {
   const category = document.getElementById('wuCategory').value;
-  const fields = WU.CATEGORY_FIELDS[category] || [];
-  fields.forEach(f => {
+  (WU.CATEGORY_FIELDS[category]||[]).forEach(f => {
     if (!f.showIf) return;
     const wrap = document.getElementById(`wuf_wrap_${f.id}`);
     if (!wrap) return;
-    const si = f.showIf;
     let show = false;
+    const si = f.showIf;
     if (si.val !== undefined) {
-      const radios = document.querySelectorAll(`[name="wuf_${si.id}"]`);
-      radios.forEach(r => { if (r.checked && r.value === si.val) show = true; });
+      document.querySelectorAll(`[name="wuf_${si.id}"]`).forEach(r => { if (r.checked && r.value===si.val) show=true; });
       const sel = document.getElementById(`wuf_${si.id}`);
-      if (sel && sel.value === si.val) show = true;
+      if (sel && sel.value===si.val) show=true;
     } else if (si.notEmpty) {
       const el = document.getElementById(`wuf_${si.id}`);
-      if (el && el.value.trim()) show = true;
+      if (el && el.value.trim()) show=true;
     }
     wrap.style.display = show ? 'block' : 'none';
   });
@@ -3390,10 +3195,9 @@ function wuCheckConditionals() {
 
 function wuGetFieldValues() {
   const category = document.getElementById('wuCategory').value;
-  const fields = WU.CATEGORY_FIELDS[category] || [];
   const vals = {};
-  fields.forEach(f => {
-    if (f.type === 'yesno') {
+  (WU.CATEGORY_FIELDS[category]||[]).forEach(f => {
+    if (f.type==='yesno') {
       const checked = document.querySelector(`[name="wuf_${f.id}"]:checked`);
       vals[f.id] = checked ? checked.value : '';
     } else {
@@ -3406,18 +3210,14 @@ function wuGetFieldValues() {
 
 function wuValidateFields() {
   const category = document.getElementById('wuCategory').value;
-  const fields = WU.CATEGORY_FIELDS[category] || [];
   const vals = wuGetFieldValues();
   const missing = [];
-
-  fields.forEach(f => {
+  (WU.CATEGORY_FIELDS[category]||[]).forEach(f => {
     if (!f.required) return;
-    // Check if visible (not hidden by conditional)
     const wrap = document.getElementById(`wuf_wrap_${f.id}`);
-    if (wrap && wrap.style.display === 'none') return;
-    if (!vals[f.id] || vals[f.id] === '') missing.push(f.label);
+    if (wrap && wrap.style.display==='none') return;
+    if (!vals[f.id] || vals[f.id]==='') missing.push(f.label);
   });
-
   return missing;
 }
 
@@ -3431,49 +3231,34 @@ function wuCancelForm() {
 }
 
 function wuCloseHistory() {
-  WU.currentEmpKey = null; WU.currentEmpName = null; WU.currentRecords = [];
-  document.getElementById('wuHistoryPanel').style.display = 'none';
-  document.getElementById('wuFormPanel').style.display    = 'none';
-  document.getElementById('wuDocOutput').style.display    = 'none';
+  WU.currentEmpKey=null; WU.currentEmpName=null; WU.currentRecords=[];
+  ['wuHistoryPanel','wuFormPanel','wuDocOutput'].forEach(id => document.getElementById(id).style.display='none');
 }
 
 function wuGenerateDocument() {
-  const category   = document.getElementById('wuCategory').value;
-  const supervisor = document.getElementById('wuSupervisor').value.trim();
-  const date       = document.getElementById('wuDate').value;
-
+  const category  = document.getElementById('wuCategory').value;
+  const supervisor= document.getElementById('wuSupervisor').value.trim();
+  const date      = document.getElementById('wuDate').value;
   if (!category)   { alert('Por favor seleccione una categoría.'); return; }
   if (!supervisor) { alert('Por favor ingrese el nombre del supervisor.'); return; }
   if (!date)       { alert('Por favor seleccione la fecha del incidente.'); return; }
-
-  // Validate all required category fields
   const missing = wuValidateFields();
-  if (missing.length > 0) {
-    alert('Por favor complete los siguientes campos obligatorios:\n\n• ' + missing.join('\n• '));
-    return;
-  }
-
-  const level       = document.getElementById('wuLevel').value;
-  const shift       = WU.getShiftString();
-  const fields      = wuGetFieldValues();
+  if (missing.length>0) { alert('Por favor complete los siguientes campos obligatorios:\n\n• '+missing.join('\n• ')); return; }
+  const level = document.getElementById('wuLevel').value;
+  const shift = WU.getShiftString();
+  const fields = wuGetFieldValues();
   const dateFormatted = new Date(date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'});
-
-  const doc = WU.buildDocument({
-    empName: WU.currentEmpName, category, level, supervisor,
-    dateFormatted, shift, fields
-  });
-
+  const doc = WU.buildDocument({ empName:WU.currentEmpName, category, level, supervisor, dateFormatted, shift, fields });
   document.getElementById('wuOutIncidente').value    = doc.incidente;
   document.getElementById('wuOutCorrectiva').value   = doc.correctiva;
   document.getElementById('wuOutConsecuencia').value = doc.consecuencia;
-  document.getElementById('wuDocOutput').style.display = 'block';
+  document.getElementById('wuDocOutput').style.display='block';
   document.getElementById('wuDocOutput').scrollIntoView({behavior:'smooth',block:'start'});
 }
 
 async function wuSaveRecord() {
   const record = {
-    emp_id:      WU.currentEmpKey,
-    emp_name:    WU.currentEmpName,
+    emp_id: WU.currentEmpKey, emp_name: WU.currentEmpName,
     date:        document.getElementById('wuDate').value,
     level:       document.getElementById('wuLevel').value,
     category:    document.getElementById('wuCategory').value,
@@ -3488,49 +3273,43 @@ async function wuSaveRecord() {
     await WU.saveRecord(record);
     WU.currentRecords = await WU.fetchRecords(WU.currentEmpKey);
     wuRenderHistory(WU.currentRecords);
-    document.getElementById('wuFormPanel').style.display = 'none';
-    document.getElementById('wuDocOutput').style.display = 'none';
+    document.getElementById('wuFormPanel').style.display='none';
+    document.getElementById('wuDocOutput').style.display='none';
     document.getElementById('wuHistoryPanel').scrollIntoView({behavior:'smooth'});
-    alert('✅ Amonestación guardada en el expediente de ' + WU.currentEmpName + '.');
-  } catch(err) { alert('Error al guardar: ' + err.message); }
+    alert('✅ Amonestación guardada en el expediente de '+WU.currentEmpName+'.');
+  } catch(err) { alert('Error al guardar: '+err.message); }
 }
 
 function wuPrintRecord() {
-  const level       = document.getElementById('wuLevel').value;
-  const category    = document.getElementById('wuCategory').value;
-  const supervisor  = document.getElementById('wuSupervisor').value.trim();
-  const date        = document.getElementById('wuDate').value;
-  const shift       = WU.getShiftString();
-  const incident    = document.getElementById('wuOutIncidente').value;
-  const corrective  = document.getElementById('wuOutCorrectiva').value;
-  const consequence = document.getElementById('wuOutConsecuencia').value;
-  const today       = new Date().toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'});
-  const incDateFmt  = date ? new Date(date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'}) : '';
-
+  const level      = document.getElementById('wuLevel').value;
+  const category   = document.getElementById('wuCategory').value;
+  const supervisor = document.getElementById('wuSupervisor').value.trim();
+  const date       = document.getElementById('wuDate').value;
+  const shift      = WU.getShiftString();
+  const incident   = document.getElementById('wuOutIncidente').value;
+  const corrective = document.getElementById('wuOutCorrectiva').value;
+  const consequence= document.getElementById('wuOutConsecuencia').value;
+  const today      = new Date().toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'});
+  const incDateFmt = date ? new Date(date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'}) : '';
   const allCats = [
     ['Política de Salud','Funciones, Responsabilidades y Requisitos de Liderazgo','Asistencia y Puntualidad','Pausas y Comidas de Empleados','Deberes y Responsabilidades del Puesto','Normas de Conducta','Ambiente de Trabajo Civil y Respetuoso','Inocuidad de Alimentos / Seguridad Alimentaria'],
     ['Apariencia y Aseo Personal','Igualdad de Oportunidad de Empleo y Política de No Acoso','Seguridad en el Lugar de Trabajo','Comunicaciones Telefónicas','Responsabilidad de Efectivo y Cupones','Política de Uniformes']
   ];
-
   const catItem = cat => {
-    const chk = cat === category;
+    const chk = cat===category;
     return `<div style="display:flex;align-items:center;gap:6px;padding:1.5px 0;font-size:9pt;${chk?'font-weight:700;color:#004f71;':''}">
       <div style="width:13px;height:13px;border:1.5px solid #004f71;border-radius:2px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:9pt;${chk?'background:#e0f2fe;color:#c1121f;font-weight:900;':''}">${chk?'✓':''}</div>
       <span>${cat}</span></div>`;
   };
-
-  const faltaMap = {verbal:'escrita',escrita:'final',final:'terminacion',terminacion:'terminacion'};
-  const faltaKey = faltaMap[level];
-  const levelRows = [{key:'verbal',label:'Amonestación Verbal'},{key:'escrita',label:'Amonestación Escrita'},{key:'final',label:'Amonestación Final Escrita'}];
-  const faltaRows = [{key:'escrita',label:'Amonestación Escrita'},{key:'final',label:'Amonestación Final Escrita'},{key:'terminacion',label:'Terminación'}];
-  const chkRow = (rows, active) => rows.map(r =>
-    `<div style="display:flex;align-items:center;gap:7px;font-size:9pt;${r.key===active?'font-weight:700;':''}">
-      <div style="width:14px;height:14px;border:1.5px solid #004f71;border-radius:2px;flex-shrink:0;display:flex;align-items:center;justify-content:center;${r.key===active?'background:#fff0f0;color:#c1121f;font-size:10pt;font-weight:900;':''}">${r.key===active?'✓':''}</div>
-      <span>${r.label}</span></div>`).join('');
-
-  const win = window.open('','_blank');
-  win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/>
-<title>Amonestación — ${WU.currentEmpName}</title>
+  const faltaMap={verbal:'escrita',escrita:'final',final:'terminacion',terminacion:'terminacion'};
+  const faltaKey=faltaMap[level];
+  const levelRows=[{key:'verbal',label:'Amonestación Verbal'},{key:'escrita',label:'Amonestación Escrita'},{key:'final',label:'Amonestación Final Escrita'}];
+  const faltaRows=[{key:'escrita',label:'Amonestación Escrita'},{key:'final',label:'Amonestación Final Escrita'},{key:'terminacion',label:'Terminación'}];
+  const chkRow=(rows,active)=>rows.map(r=>`<div style="display:flex;align-items:center;gap:7px;font-size:9pt;${r.key===active?'font-weight:700;':''}">
+    <div style="width:14px;height:14px;border:1.5px solid #004f71;border-radius:2px;flex-shrink:0;display:flex;align-items:center;justify-content:center;${r.key===active?'background:#fff0f0;color:#c1121f;font-size:10pt;font-weight:900;':''}">${r.key===active?'✓':''}</div>
+    <span>${r.label}</span></div>`).join('');
+  const win=window.open('','_blank');
+  win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/><title>Amonestación — ${WU.currentEmpName}</title>
 <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:10pt;color:#1a1a2e;padding:22px 26px}
 .hdr{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px}
 .title{font-size:20pt;font-weight:900;color:#004f71;line-height:1.1}
@@ -3592,9 +3371,8 @@ function wuPrintRecord() {
   win.document.close();
 }
 
-// Hook goTab to refresh employee list
 (function(){
   const _orig = goTab;
-  goTab = function(t) { _orig(t); if (t==='writeups') wuRefreshEmpList(); };
+  goTab = function(t) { _orig(t); if(t==='writeups') wuRefreshEmpList(); };
 })();
 
