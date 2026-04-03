@@ -3040,6 +3040,8 @@ function parseMealTimeDetail(lines) {
 // WRITE-UPS MODULE — Sistema de Amonestaciones Disciplinarias
 // ══════════════════════════════════════════════════════════════════
 
+const WU_PROXY_URL = `${SUPABASE_URL}/functions/v1/claude-proxy`;
+
 const WU = {
   currentEmpKey:  null,
   currentEmpName: null,
@@ -3062,7 +3064,7 @@ const WU = {
   suggestLevel(records) {
     if (!records || records.length === 0) return 'verbal';
     const sorted = [...records].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-    const progression = { verbal: 'escrita', escrita: 'final', final: 'terminacion', terminacion: 'terminacion' };
+    const progression = { verbal:'escrita', escrita:'final', final:'terminacion', terminacion:'terminacion' };
     return progression[sorted[0].level] || 'verbal';
   },
 
@@ -3155,13 +3157,13 @@ function wuRenderHistory(records) {
   listEl.innerHTML = '<div style="display:flex;flex-direction:column;gap:8px">' +
     records.map(r => {
       const lc = LC[r.level] || LC.verbal;
-      const d  = r.date ? new Date(r.date + 'T12:00:00').toLocaleDateString('es-PR', { year:'numeric', month:'short', day:'numeric' }) : '';
+      const d  = r.date ? new Date(r.date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'short',day:'numeric'}) : '';
       return `<div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
         <div style="display:flex;align-items:center;gap:10px;padding:9px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;flex-wrap:wrap">
-          <span style="background:${lc.bg};color:${lc.color};padding:2px 8px;border-radius:12px;font-size:.75rem;font-weight:700">${WU.LEVELS[r.level] || r.level}</span>
+          <span style="background:${lc.bg};color:${lc.color};padding:2px 8px;border-radius:12px;font-size:.75rem;font-weight:700">${WU.LEVELS[r.level]||r.level}</span>
           <span style="font-size:.82rem;color:var(--text-mid)">${d}</span>
-          ${r.shift ? `<span style="font-size:.82rem;color:var(--text-mid)">🕐 ${r.shift}</span>` : ''}
-          <span style="font-size:.82rem;color:var(--text-mid);margin-left:auto">${r.category || ''}</span>
+          ${r.shift?`<span style="font-size:.82rem;color:var(--text-mid)">🕐 ${r.shift}</span>`:''}
+          <span style="font-size:.82rem;color:var(--text-mid);margin-left:auto">${r.category||''}</span>
         </div>
         <div style="padding:10px 14px;font-size:.82rem;line-height:1.5;color:#374151">${(r.incident||'').substring(0,200)}${(r.incident||'').length>200?'…':''}</div>
       </div>`;
@@ -3205,12 +3207,12 @@ function wuCloseHistory() {
 }
 
 async function wuGenerateWithAI() {
-  const level    = document.getElementById('wuLevel').value;
-  const category = document.getElementById('wuCategory').value;
+  const level      = document.getElementById('wuLevel').value;
+  const category   = document.getElementById('wuCategory').value;
   const supervisor = document.getElementById('wuSupervisor').value.trim();
-  const date     = document.getElementById('wuDate').value;
-  const shift    = WU.getShiftString();
-  const rawDesc  = document.getElementById('wuRawDescription').value.trim();
+  const date       = document.getElementById('wuDate').value;
+  const shift      = WU.getShiftString();
+  const rawDesc    = document.getElementById('wuRawDescription').value.trim();
 
   if (!category)   { alert('Por favor seleccione una categoría de violación.'); return; }
   if (!supervisor) { alert('Por favor ingrese el nombre del supervisor.'); return; }
@@ -3238,21 +3240,35 @@ Devuelve SOLAMENTE un objeto JSON válido sin backticks ni texto adicional, con 
 
   const btn = document.getElementById('wuGenerateBtn');
   btn.textContent = '⏳ Generando...'; btn.disabled = true;
+
   try {
-    const res  = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetch(WU_PROXY_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:1000, messages:[{ role:'user', content:prompt }] })
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${SUPABASE_ANON}`
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        messages: [{ role: 'user', content: prompt }]
+      })
     });
+
+    if (!res.ok) throw new Error(`Proxy error ${res.status}: ${await res.text()}`);
+
     const data   = await res.json();
     const parsed = JSON.parse((data.content?.[0]?.text || '').replace(/```json|```/g,'').trim());
+
     document.getElementById('wuGenIncidente').value    = parsed.incidente    || '';
     document.getElementById('wuGenCorrectiva').value   = parsed.correctiva   || '';
     document.getElementById('wuGenConsecuencia').value = parsed.consecuencia || '';
     document.getElementById('wuAIOutput').style.display = 'block';
     document.getElementById('wuAIOutput').scrollIntoView({ behavior:'smooth', block:'start' });
+
   } catch(err) {
     alert('Error al generar con IA: ' + err.message);
+    console.error(err);
   } finally {
     btn.textContent = '✨ Generar con IA'; btn.disabled = false;
   }
@@ -3260,12 +3276,13 @@ Devuelve SOLAMENTE un objeto JSON válido sin backticks ni texto adicional, con 
 
 async function wuSaveRecord() {
   const record = {
-    emp_id: WU.currentEmpKey, emp_name: WU.currentEmpName,
-    date: document.getElementById('wuDate').value,
-    level: document.getElementById('wuLevel').value,
-    category: document.getElementById('wuCategory').value,
-    supervisor: document.getElementById('wuSupervisor').value.trim(),
-    shift: WU.getShiftString(),
+    emp_id:      WU.currentEmpKey,
+    emp_name:    WU.currentEmpName,
+    date:        document.getElementById('wuDate').value,
+    level:       document.getElementById('wuLevel').value,
+    category:    document.getElementById('wuCategory').value,
+    supervisor:  document.getElementById('wuSupervisor').value.trim(),
+    shift:       WU.getShiftString(),
     incident:    document.getElementById('wuGenIncidente').value,
     corrective:  document.getElementById('wuGenCorrectiva').value,
     consequence: document.getElementById('wuGenConsecuencia').value,
@@ -3283,9 +3300,8 @@ async function wuSaveRecord() {
 }
 
 function wuPrintRecord() {
-  const level      = document.getElementById('wuLevel').value;
-  const faltaLabel = WU.FALTA_MAP[level];
-  const date       = document.getElementById('wuDate').value;
+  const level = document.getElementById('wuLevel').value;
+  const date  = document.getElementById('wuDate').value;
   const dateFormatted = date ? new Date(date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'}) : '';
   const win = window.open('','_blank');
   win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/>
@@ -3312,7 +3328,7 @@ p{font-size:.87rem;line-height:1.7;margin-bottom:18px}
   <div class="gi"><label>Fecha del Incidente</label><span>${dateFormatted}</span></div>
   <div class="gi"><label>Turno</label><span>${WU.getShiftString()}</span></div>
   <div class="gi"><label>Supervisor</label><span>${document.getElementById('wuSupervisor').value}</span></div>
-  <div class="gi"><label>Falta de Mejora</label><span>${faltaLabel}</span></div>
+  <div class="gi"><label>Falta de Mejora</label><span>${WU.FALTA_MAP[level]}</span></div>
 </div>
 <h2>Descripción del Incidente</h2><p>${document.getElementById('wuGenIncidente').value.replace(/\n/g,'<br/>')}</p>
 <h2>Acción Correctiva Requerida</h2><p>${document.getElementById('wuGenCorrectiva').value.replace(/\n/g,'<br/>')}</p>
@@ -3321,18 +3337,14 @@ p{font-size:.87rem;line-height:1.7;margin-bottom:18px}
   <div><div class="sl"></div><div class="slb">Firma del Empleado / Fecha</div></div>
   <div><div class="sl"></div><div class="slb">Firma del Supervisor / Fecha</div></div>
   <div><div class="sl"></div><div class="slb">Firma de Recursos Humanos / Fecha</div></div>
-  <div class="note">Al firmar, el empleado reconoce haber recibido y leído este documento. La firma no implica necesariamente acuerdo con el contenido.</div>
+  <div class="note">Al firmar, el empleado reconoce haber recibido y leído este documento. La firma no implica necesariamente acuerdo.</div>
 </div></body></html>`);
   win.document.close();
   setTimeout(() => win.print(), 500);
 }
 
-// Refresh employee list whenever Write-Ups tab is opened
 (function(){
   const _orig = goTab;
-  goTab = function(t) {
-    _orig(t);
-    if (t === 'writeups') wuRefreshEmpList();
-  };
+  goTab = function(t) { _orig(t); if (t === 'writeups') wuRefreshEmpList(); };
 })();
 
