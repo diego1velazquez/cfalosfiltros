@@ -3040,7 +3040,8 @@ function parseMealTimeDetail(lines) {
 // WRITE-UPS MODULE — Sistema de Amonestaciones Disciplinarias
 // ══════════════════════════════════════════════════════════════════
 
-const WU_PROXY_URL = `${SUPABASE_URL}/functions/v1/claude-proxy`;
+const WU_PROXY_URL    = `${SUPABASE_URL}/functions/v1/claude-proxy`;
+const WU_PDF_URL      = `${SUPABASE_URL}/functions/v1/fill-wu-form`;
 
 const WU = {
   currentEmpKey:  null,
@@ -3061,11 +3062,16 @@ const WU = {
     terminacion: 'N/A — Nivel máximo'
   },
 
-  suggestLevel(records) {
-    if (!records || records.length === 0) return 'verbal';
-    const sorted = [...records].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  suggestLevel(records, category) {
+    // Progression is per-category — each category tracks its own discipline ladder
+    if (!records || records.length === 0 || !category) return 'verbal';
     const progression = { verbal:'escrita', escrita:'final', final:'terminacion', terminacion:'terminacion' };
-    return progression[sorted[0].level] || 'verbal';
+    // Filter to only records matching this category, sorted newest first
+    const catRecords = records
+      .filter(r => r.category === category)
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    if (catRecords.length === 0) return 'verbal';
+    return progression[catRecords[0].level] || 'verbal';
   },
 
   getShiftString() {
@@ -3172,7 +3178,8 @@ function wuRenderHistory(records) {
 
 function wuOpenNewForm() {
   if (!WU.currentEmpKey) { alert('Por favor, seleccione un empleado primero.'); return; }
-  document.getElementById('wuLevel').value = WU.suggestLevel(WU.currentRecords);
+  // Don't suggest level yet — wait until category is selected
+  document.getElementById('wuLevel').value = 'verbal';
   document.getElementById('wuFormEmpName').textContent = WU.currentEmpName;
   document.getElementById('wuDate').value = new Date().toISOString().split('T')[0];
   document.getElementById('wuCategory').value = '';
@@ -3188,6 +3195,32 @@ function wuOpenNewForm() {
   wuUpdateFaltaMejora();
   document.getElementById('wuFormPanel').style.display = 'block';
   document.getElementById('wuFormPanel').scrollIntoView({ behavior:'smooth', block:'start' });
+}
+
+function wuOnCategoryChange() {
+  const category = document.getElementById('wuCategory').value;
+  if (category) {
+    // Auto-suggest the correct discipline level for this category
+    const suggested = WU.suggestLevel(WU.currentRecords, category);
+    document.getElementById('wuLevel').value = suggested;
+
+    // Show a hint about history for this category
+    const catRecords = (WU.currentRecords || []).filter(r => r.category === category);
+    const hintEl = document.getElementById('wuCategoryHint');
+    if (hintEl) {
+      if (catRecords.length === 0) {
+        hintEl.textContent = 'Sin historial en esta categoría — nivel sugerido: Amonestación Verbal';
+        hintEl.style.color = '#16a34a';
+      } else {
+        const last = [...catRecords].sort((a,b) => new Date(b.created_at)-new Date(a.created_at))[0];
+        const d = last.date ? new Date(last.date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'short',day:'numeric'}) : '';
+        hintEl.textContent = `Historial: ${catRecords.length} amonestación(es) en esta categoría. Última: ${WU.LEVELS[last.level]} (${d})`;
+        hintEl.style.color = '#92400e';
+      }
+      hintEl.style.display = 'block';
+    }
+  }
+  wuUpdateFaltaMejora();
 }
 
 function wuUpdateFaltaMejora() {
@@ -3244,28 +3277,17 @@ Devuelve SOLAMENTE un objeto JSON válido sin backticks ni texto adicional, con 
   try {
     const res = await fetch(WU_PROXY_URL, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${SUPABASE_ANON}`
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        messages: [{ role: 'user', content: prompt }]
-      })
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON}` },
+      body: JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:1000, messages:[{ role:'user', content:prompt }] })
     });
-
     if (!res.ok) throw new Error(`Proxy error ${res.status}: ${await res.text()}`);
-
     const data   = await res.json();
     const parsed = JSON.parse((data.content?.[0]?.text || '').replace(/```json|```/g,'').trim());
-
     document.getElementById('wuGenIncidente').value    = parsed.incidente    || '';
     document.getElementById('wuGenCorrectiva').value   = parsed.correctiva   || '';
     document.getElementById('wuGenConsecuencia').value = parsed.consecuencia || '';
     document.getElementById('wuAIOutput').style.display = 'block';
     document.getElementById('wuAIOutput').scrollIntoView({ behavior:'smooth', block:'start' });
-
   } catch(err) {
     alert('Error al generar con IA: ' + err.message);
     console.error(err);
@@ -3276,8 +3298,7 @@ Devuelve SOLAMENTE un objeto JSON válido sin backticks ni texto adicional, con 
 
 async function wuSaveRecord() {
   const record = {
-    emp_id:      WU.currentEmpKey,
-    emp_name:    WU.currentEmpName,
+    emp_id: WU.currentEmpKey, emp_name: WU.currentEmpName,
     date:        document.getElementById('wuDate').value,
     level:       document.getElementById('wuLevel').value,
     category:    document.getElementById('wuCategory').value,
@@ -3299,48 +3320,50 @@ async function wuSaveRecord() {
   } catch(err) { alert('Error al guardar: ' + err.message); }
 }
 
-function wuPrintRecord() {
-  const level = document.getElementById('wuLevel').value;
-  const date  = document.getElementById('wuDate').value;
-  const dateFormatted = date ? new Date(date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'}) : '';
-  const win = window.open('','_blank');
-  win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/>
-<title>Amonestación — ${WU.currentEmpName}</title>
-<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;color:#1e293b;padding:36px}
-.hdr{text-align:center;border-bottom:3px solid #1e3a5f;padding-bottom:18px;margin-bottom:24px}
-.hdr h1{font-size:1.15rem;color:#1e3a5f}.hdr p{font-size:.78rem;color:#64748b;margin-top:4px}
-.badge{display:inline-block;background:#1e3a5f;color:#fff;padding:5px 16px;border-radius:4px;font-size:.85rem;font-weight:700;margin-top:8px}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:14px;margin-bottom:20px}
-.gi label{font-size:.68rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:2px}
-.gi span{font-size:.87rem;font-weight:500}
-h2{font-size:.7rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.07em;border-bottom:1px solid #e2e8f0;padding-bottom:5px;margin:0 0 8px}
-p{font-size:.87rem;line-height:1.7;margin-bottom:18px}
-.sigs{display:grid;grid-template-columns:1fr 1fr;gap:36px;margin-top:44px;padding-top:20px;border-top:1px solid #e2e8f0}
-.sl{border-bottom:1px solid #94a3b8;height:30px;margin-bottom:5px}.slb{font-size:.7rem;color:#64748b}
-.note{font-size:.7rem;color:#64748b;line-height:1.5;margin-top:8px}
-@media print{body{padding:20px}}</style></head><body>
-<div class="hdr"><h1>LOS FILTROS FSU — DOCUMENTO DE ACCIÓN DISCIPLINARIA</h1>
-<p>Expediente Confidencial de Recursos Humanos</p>
-<div class="badge">${WU.LEVELS[level]}</div></div>
-<div class="grid">
-  <div class="gi"><label>Empleado</label><span>${WU.currentEmpName}</span></div>
-  <div class="gi"><label>Categoría</label><span>${document.getElementById('wuCategory').value}</span></div>
-  <div class="gi"><label>Fecha del Incidente</label><span>${dateFormatted}</span></div>
-  <div class="gi"><label>Turno</label><span>${WU.getShiftString()}</span></div>
-  <div class="gi"><label>Supervisor</label><span>${document.getElementById('wuSupervisor').value}</span></div>
-  <div class="gi"><label>Falta de Mejora</label><span>${WU.FALTA_MAP[level]}</span></div>
-</div>
-<h2>Descripción del Incidente</h2><p>${document.getElementById('wuGenIncidente').value.replace(/\n/g,'<br/>')}</p>
-<h2>Acción Correctiva Requerida</h2><p>${document.getElementById('wuGenCorrectiva').value.replace(/\n/g,'<br/>')}</p>
-<h2>Consecuencias en Caso de No Mejora</h2><p>${document.getElementById('wuGenConsecuencia').value.replace(/\n/g,'<br/>')}</p>
-<div class="sigs">
-  <div><div class="sl"></div><div class="slb">Firma del Empleado / Fecha</div></div>
-  <div><div class="sl"></div><div class="slb">Firma del Supervisor / Fecha</div></div>
-  <div><div class="sl"></div><div class="slb">Firma de Recursos Humanos / Fecha</div></div>
-  <div class="note">Al firmar, el empleado reconoce haber recibido y leído este documento. La firma no implica necesariamente acuerdo.</div>
-</div></body></html>`);
-  win.document.close();
-  setTimeout(() => win.print(), 500);
+async function wuPrintRecord() {
+  const level    = document.getElementById('wuLevel').value;
+  const date     = document.getElementById('wuDate').value;
+  const dateFormatted = date ? new Date(date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'2-digit',day:'2-digit'}) : '';
+
+  const payload = {
+    emp_name:    WU.currentEmpName,
+    inc_date:    dateFormatted,
+    doc_date:    dateFormatted,
+    supervisor:  document.getElementById('wuSupervisor').value.trim(),
+    category:    document.getElementById('wuCategory').value,
+    level:       level,
+    incident:    document.getElementById('wuGenIncidente').value,
+    corrective:  document.getElementById('wuGenCorrectiva').value,
+    consequence: document.getElementById('wuGenConsecuencia').value,
+  };
+
+  const btn = document.querySelector('button[onclick="wuPrintRecord()"]');
+  if (btn) { btn.textContent = '⏳ Generando PDF...'; btn.disabled = true; }
+
+  try {
+    const res = await fetch(WU_PDF_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON}` },
+      body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) throw new Error(`Error ${res.status}: ${await res.text()}`);
+
+    // Download the PDF
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `Amonestacion_${WU.currentEmpName.replace(/[^a-zA-Z0-9]/g,'_')}.pdf`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+  } catch(err) {
+    alert('Error al generar PDF: ' + err.message);
+    console.error(err);
+  } finally {
+    if (btn) { btn.textContent = '🖨 Imprimir'; btn.disabled = false; }
+  }
 }
 
 (function(){

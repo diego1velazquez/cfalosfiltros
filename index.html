@@ -502,25 +502,12 @@
         <div class="ccard">
           <h3 style="margin:0 0 18px;font-size:1rem;color:var(--navy)">📝 Nueva Amonestación — <span id="wuFormEmpName" style="font-weight:400"></span></h3>
 
-          <div class="frow" style="margin-bottom:14px">
-            <div class="field" style="flex:1">
-              <label>Nivel de Acción Disciplinaria</label>
-              <select id="wuLevel" onchange="wuUpdateFaltaMejora()">
-                <option value="verbal">Amonestación Verbal</option>
-                <option value="escrita">Amonestación Escrita</option>
-                <option value="final">Amonestación Final Escrita</option>
-                <option value="terminacion">Terminación</option>
-              </select>
-            </div>
-            <div class="field" style="flex:1">
-              <label>Falta de Mejora (Auto-calculado)</label>
-              <input type="text" id="wuFaltaMejora" readonly style="background:#f1f5f9;color:var(--text-mid);cursor:not-allowed;font-style:italic"/>
-            </div>
-          </div>
-
-          <div style="margin-bottom:14px">
-            <label style="font-size:.8rem;font-weight:600;color:var(--text-mid);display:block;margin-bottom:4px">Categoría de Violación</label>
-            <select id="wuCategory" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:.875rem">
+          <!-- Category — pick this FIRST, it drives the level suggestion -->
+          <div style="margin-bottom:6px">
+            <label style="font-size:.8rem;font-weight:600;color:var(--text-mid);display:block;margin-bottom:4px">
+              Categoría de Violación <span style="font-weight:400;color:#6b7280">(seleccionar primero)</span>
+            </label>
+            <select id="wuCategory" onchange="wuOnCategoryChange()" style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:.875rem">
               <option value="">Seleccionar categoría...</option>
               <option>Asistencia y Puntualidad</option>
               <option>Normas de Conducta</option>
@@ -533,6 +520,24 @@
               <option>Política de Uniformes</option>
               <option>Comunicaciones Telefónicas</option>
             </select>
+            <div id="wuCategoryHint" style="display:none;font-size:.78rem;margin-top:5px;padding:6px 10px;background:#fef9c3;border-radius:6px;border-left:3px solid #d97706"></div>
+          </div>
+
+          <!-- Discipline level + Falta de Mejora — auto-set after category -->
+          <div class="frow" style="margin-bottom:14px">
+            <div class="field" style="flex:1">
+              <label>Nivel de Acción Disciplinaria <span style="font-weight:400;font-size:.75rem;color:#6b7280">(auto-sugerido por categoría)</span></label>
+              <select id="wuLevel" onchange="wuUpdateFaltaMejora()">
+                <option value="verbal">Amonestación Verbal</option>
+                <option value="escrita">Amonestación Escrita</option>
+                <option value="final">Amonestación Final Escrita</option>
+                <option value="terminacion">Terminación</option>
+              </select>
+            </div>
+            <div class="field" style="flex:1">
+              <label>Falta de Mejora (Auto-calculado)</label>
+              <input type="text" id="wuFaltaMejora" readonly style="background:#f1f5f9;color:var(--text-mid);cursor:not-allowed;font-style:italic"/>
+            </div>
           </div>
 
           <div class="frow" style="margin-bottom:14px">
