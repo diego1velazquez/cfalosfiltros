@@ -95,6 +95,7 @@ function goTab(t) {
   if (t === 'timeoff')   renderTimeOffRequests();
   if (t === 'employees') updateEmployeesTab();
   if (t === 'gastos')    gastosInit();
+  if (t === 'eom')       eomInit();
 }
 
 // ══════════════════════════════════════════
@@ -3591,6 +3592,599 @@ function wuPrintRecord(){const level=document.getElementById('wuLevel').value,ca
     _orig(t);
     if(t==='writeups') wuRefreshEmpList();
     if(t==='gastos')   gastosInit();
+    if(t==='eom')      eomInit();
   };
 })();
 
+
+// ══════════════════════════════════════════════════════════════════
+// EOM PACKAGE GENERATOR MODULE
+// Generates CFA Digital Package PDF from Gastos CSV + receipt images
+// File format: 30014_YYYY_MM_PR.pdf
+// ══════════════════════════════════════════════════════════════════
+
+let _eomInited = false;
+let _eomState = {
+  payments: [],
+  month: null,
+  csvLoaded: false,
+};
+
+function eomInit() {
+  if (_eomInited) { eomUpdateStats(); return; }
+  _eomInited = true;
+  document.getElementById('eomApp').innerHTML = eomBuildHTML();
+  eomSetupDnD();
+}
+
+function eomBuildHTML() {
+  return `
+<style>
+  #eomApp * { box-sizing: border-box; }
+  .eom-layout { display: grid; grid-template-columns: 300px 1fr; min-height: calc(100vh - 120px); gap: 0; }
+  .eom-left { background: #f8f9fa; border-right: 1px solid var(--border); padding: 18px; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
+  .eom-right { padding: 20px 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+  .eom-section-label { font-family: monospace; font-size: .68rem; color: var(--text-light); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 6px; }
+  .eom-upload-zone { border: 1.5px dashed var(--border); border-radius: 10px; padding: 16px 12px; text-align: center; cursor: pointer; transition: all .15s; background: #fff; }
+  .eom-upload-zone:hover, .eom-upload-zone.drag-over { border-color: var(--navy); background: rgba(0,32,91,.04); }
+  .eom-upload-zone .eom-uz-icon { font-size: 1.5rem; margin-bottom: 4px; opacity: .7; }
+  .eom-upload-zone .eom-uz-title { font-size: .82rem; font-weight: 600; }
+  .eom-upload-zone .eom-uz-sub { font-size: .72rem; color: var(--text-light); margin-top: 2px; }
+  .eom-stats-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .eom-stat-card { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .eom-stat-val { font-family: monospace; font-size: 1.25rem; font-weight: 700; color: var(--navy); line-height: 1; }
+  .eom-stat-lbl { font-size: .68rem; color: var(--text-light); margin-top: 2px; }
+  .eom-progress-bar { background: #e5e7eb; border-radius: 999px; height: 6px; overflow: hidden; margin-top: 8px; }
+  .eom-progress-fill { height: 100%; background: var(--navy); border-radius: 999px; transition: width .4s; }
+  .eom-progress-label { font-family: monospace; font-size: .7rem; color: var(--text-light); margin-top: 4px; }
+  .eom-btn-generate { background: var(--navy); color: #fff; border: none; border-radius: 8px; padding: 11px; font-size: .88rem; font-weight: 700; cursor: pointer; width: 100%; transition: all .15s; display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .eom-btn-generate:hover:not(:disabled) { background: #001a5e; }
+  .eom-btn-generate:disabled { opacity: .45; cursor: not-allowed; }
+  .eom-tbl-wrap { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: #fff; }
+  .eom-tbl-header { padding: 11px 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); background: #f8f9fa; font-size: .82rem; font-weight: 600; }
+  .eom-table { width: 100%; border-collapse: collapse; font-size: .78rem; }
+  .eom-table th { background: #f8f9fa; padding: 8px 10px; text-align: left; font-family: monospace; font-size: .67rem; color: var(--text-light); letter-spacing: .06em; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .eom-table td { padding: 8px 10px; border-bottom: 1px solid rgba(0,0,0,.05); vertical-align: middle; }
+  .eom-table tr:last-child td { border-bottom: none; }
+  .eom-table tr:hover td { background: rgba(0,32,91,.02); }
+  .eom-pmt-id { font-family: monospace; color: var(--navy); font-size: .75rem; }
+  .eom-amount { font-family: monospace; text-align: right; }
+  .eom-amount.pos { color: #16a34a; }
+  .eom-amount.neg { color: var(--red); }
+  .eom-receipt-slot { display: inline-flex; align-items: center; gap: 5px; font-size: .72rem; cursor: pointer; transition: color .15s; }
+  .eom-receipt-slot.has { color: #16a34a; }
+  .eom-receipt-slot.none { color: var(--text-light); }
+  .eom-receipt-slot:hover { color: var(--navy); }
+  .eom-badge { display: inline-block; padding: 2px 7px; border-radius: 99px; font-size: .67rem; font-family: monospace; font-weight: 700; }
+  .eom-badge-ok { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+  .eom-badge-miss { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+  .eom-badge-wh { background: #f3f4f6; color: #6b7280; border: 1px solid #e5e7eb; }
+  .eom-log { background: #f8f9fa; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-family: monospace; font-size: .72rem; max-height: 150px; overflow-y: auto; display: none; }
+  .eom-log.visible { display: block; }
+  .eom-log-line { color: var(--text-mid); line-height: 1.7; }
+  .eom-log-line.ok { color: #16a34a; }
+  .eom-log-line.err { color: var(--red); }
+  .eom-log-line.info { color: var(--navy); font-weight: 700; }
+  .eom-wh-row td { opacity: .5; font-style: italic; }
+  .eom-tbl-footer { padding: 9px 14px; display: flex; justify-content: flex-end; gap: 18px; border-top: 1px solid var(--border); background: #f8f9fa; }
+  .eom-tbl-footer .fs { font-family: monospace; font-size: .76rem; color: var(--text-light); }
+  .eom-tbl-footer .fs span { color: var(--text); font-weight: 700; }
+  .eom-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; }
+  .eom-search { background: #f8f9fa; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: .78rem; padding: 6px 10px; outline: none; width: 200px; }
+  .eom-search:focus { border-color: var(--navy); }
+  .eom-empty { text-align: center; padding: 50px 20px; color: var(--text-light); }
+  .eom-empty .big { font-size: 2.5rem; margin-bottom: 10px; }
+  input[type=month].eom-month { background: #f8f9fa; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: monospace; font-size: .8rem; padding: 7px 10px; outline: none; width: 100%; }
+  input[type=month].eom-month:focus { border-color: var(--navy); }
+</style>
+
+<div class="eom-layout">
+  <!-- LEFT PANEL -->
+  <div class="eom-left">
+
+    <div>
+      <div class="eom-section-label">① Cargar GASTOS CSV</div>
+      <div class="eom-upload-zone" id="eomCsvZone" onclick="document.getElementById('eomCsvInput').click()">
+        <div class="eom-uz-icon">📄</div>
+        <div class="eom-uz-title">GASTOS_PMT_DTL_EXPORT</div>
+        <div class="eom-uz-sub">Arrastra o haz clic · .CSV</div>
+        <input type="file" id="eomCsvInput" accept=".csv" style="display:none" onchange="eomHandleCSV(event)">
+      </div>
+    </div>
+
+    <div id="eomStatsArea" style="display:none">
+      <div class="eom-section-label">Resumen del Mes</div>
+      <div class="eom-stats-row">
+        <div class="eom-stat-card"><div class="eom-stat-val" id="eomStatPmt">0</div><div class="eom-stat-lbl">Payment IDs</div></div>
+        <div class="eom-stat-card"><div class="eom-stat-val" id="eomStatTotal">$0</div><div class="eom-stat-lbl">Total Gastos</div></div>
+        <div class="eom-stat-card"><div class="eom-stat-val" id="eomStatReady" style="color:#16a34a">0</div><div class="eom-stat-lbl">Recibos listos</div></div>
+        <div class="eom-stat-card"><div class="eom-stat-val" id="eomStatMiss" style="color:var(--red)">0</div><div class="eom-stat-lbl">Sin recibo</div></div>
+      </div>
+      <div class="eom-progress-bar"><div class="eom-progress-fill" id="eomProgressFill" style="width:0%"></div></div>
+      <div class="eom-progress-label" id="eomProgressLabel">0 de 0 listos</div>
+    </div>
+
+    <div id="eomMonthArea" style="display:none">
+      <div class="eom-section-label">② Período del Paquete</div>
+      <input type="month" id="eomMonthPicker" class="eom-month" onchange="eomUpdateMonth()">
+      <div style="margin-top:6px;font-size:.71rem;color:var(--text-light)">
+        Archivo: <span style="color:var(--navy);font-family:monospace" id="eomFilenamePrev">30014_YYYY_MM_PR.pdf</span>
+      </div>
+    </div>
+
+    <div id="eomBulkArea" style="display:none">
+      <div class="eom-section-label">③ Subir Recibos (Bulk)</div>
+      <div class="eom-upload-zone" id="eomBulkZone" onclick="document.getElementById('eomBulkInput').click()">
+        <div class="eom-uz-icon">🖼</div>
+        <div class="eom-uz-title">Subir todos los recibos</div>
+        <div class="eom-uz-sub">JPG, PNG, PDF · múltiples archivos<br>Nombra con el Payment ID para auto-asignación</div>
+        <input type="file" id="eomBulkInput" accept="image/*,.pdf" multiple style="display:none" onchange="eomHandleBulkReceipts(event)">
+      </div>
+    </div>
+
+    <div id="eomGenArea" style="display:none">
+      <div class="eom-section-label">④ Generar Paquete</div>
+      <button class="eom-btn-generate" id="eomGenBtn" onclick="eomGeneratePackage()">
+        ⬇ Generar PDF EOM
+      </button>
+      <div id="eomLogPanel" class="eom-log" style="margin-top:10px"></div>
+    </div>
+
+    <div>
+      <button class="btn btn-sm" onclick="eomReset()" style="width:100%;color:var(--red);border-color:var(--red)">↺ Reset</button>
+    </div>
+
+  </div><!-- /eom-left -->
+
+  <!-- RIGHT PANEL -->
+  <div class="eom-right" id="eomRight">
+    <div class="eom-empty">
+      <div class="big">📂</div>
+      <p>Carga el CSV de Gastos para comenzar.<br>Los Payment IDs se mostrarán aquí.</p>
+    </div>
+  </div>
+</div>`;
+}
+
+// ── CSV Parsing ────────────────────────────────────────────────
+async function eomHandleCSV(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const ab = await file.arrayBuffer();
+  const text = new TextDecoder('windows-1252').decode(ab);
+  eomParseCSV(text);
+}
+
+function eomParseCSV(text) {
+  const lines = text.trim().split(/\r?\n/);
+  if (!lines.length) return;
+
+  const headers = eomParseLine(lines[0]);
+  const rows = lines.slice(1).map(l => {
+    const vals = eomParseLine(l);
+    const obj = {};
+    headers.forEach((h, i) => obj[h.trim()] = (vals[i] || '').trim());
+    return obj;
+  }).filter(r => r.PAYMENT_ID);
+
+  const pmtMap = new Map();
+  rows.forEach(r => {
+    const id = r.PAYMENT_ID;
+    if (!pmtMap.has(id)) {
+      pmtMap.set(id, { pmtId: id, vendor: r.VENDOR, date: r.PAYMENT_DATE, invoices: [], receipts: [], totalNet: 0 });
+    }
+    const p = pmtMap.get(id);
+    const amt = parseFloat(r.AMOUNT) || 0;
+    p.invoices.push({ invNum: r.INVOICE_NUMBER, invDate: r.INVOICE_DATE, category: r.EXPENSE_CATEGORY, description: r.DESCRIPTION, amount: amt });
+    p.totalNet += amt;
+  });
+
+  _eomState.payments = Array.from(pmtMap.values()).sort((a, b) => a.pmtId.localeCompare(b.pmtId));
+  _eomState.csvLoaded = true;
+
+  eomDetectMonth();
+  eomRenderTable();
+  eomUpdateStats();
+  eomShowPanels();
+
+  const zone = document.getElementById('eomCsvZone');
+  if (zone) { zone.style.borderColor = '#16a34a'; zone.querySelector('.eom-uz-title').textContent = `✓ ${_eomState.payments.length} Payment IDs`; }
+  showToast(`✅ CSV cargado — ${_eomState.payments.length} Payment IDs`, 'success');
+}
+
+function eomParseLine(line) {
+  const result = [];
+  let inQ = false, cur = '';
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') { inQ = !inQ; continue; }
+    if (c === ',' && !inQ) { result.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  result.push(cur);
+  return result;
+}
+
+function eomDetectMonth() {
+  if (!_eomState.payments.length) return;
+  const mmap = { JAN:'01',FEB:'02',MAR:'03',APR:'04',MAY:'05',JUN:'06',JUL:'07',AUG:'08',SEP:'09',OCT:'10',NOV:'11',DEC:'12' };
+  const date = _eomState.payments[0].date; // e.g. "03-NOV-2025"
+  if (!date) return;
+  const parts = date.split('-');
+  if (parts.length === 3) {
+    const yr = parts[2], mo = mmap[parts[1].toUpperCase()] || '01';
+    const val = `${yr}-${mo}`;
+    const picker = document.getElementById('eomMonthPicker');
+    if (picker) picker.value = val;
+    _eomState.month = val;
+    eomUpdateMonth();
+  }
+}
+
+function eomUpdateMonth() {
+  const val = document.getElementById('eomMonthPicker')?.value;
+  if (!val) return;
+  _eomState.month = val;
+  const [yr, mo] = val.split('-');
+  const prev = document.getElementById('eomFilenamePrev');
+  if (prev) prev.textContent = `30014_${yr}_${mo}_PR.pdf`;
+}
+
+// ── Bulk Receipt Upload ────────────────────────────────────────
+async function eomHandleBulkReceipts(e) {
+  const files = Array.from(e.target.files);
+  let matched = 0, unmatched = 0;
+  files.forEach(file => {
+    const name = file.name.replace(/\.[^.]+$/, '');
+    const pmtId = name.replace(/[^0-9]/g, '');
+    const payment = _eomState.payments.find(p => p.pmtId === pmtId);
+    if (payment) { payment.receipts = [file]; matched++; }
+    else unmatched++;
+  });
+  eomUpdateStats();
+  eomRenderTable();
+  showToast(`📎 ${matched} asignados${unmatched ? `, ${unmatched} sin coincidencia` : ''}`, 'info');
+}
+
+// ── Per-Row Receipt Upload ─────────────────────────────────────
+function eomHandleRowReceipt(pmtId, input) {
+  const file = input.files[0];
+  if (!file) return;
+  const payment = _eomState.payments.find(p => p.pmtId === pmtId);
+  if (!payment) return;
+  payment.receipts = [file];
+  eomUpdateStats();
+  eomRenderTable();
+}
+
+// ── Render Table ───────────────────────────────────────────────
+function eomRenderTable() {
+  const right = document.getElementById('eomRight');
+  if (!right) return;
+
+  const totals = eomCalcTotals();
+
+  right.innerHTML = `
+    <div class="eom-toolbar">
+      <input type="search" class="eom-search" id="eomSearch" placeholder="Vendor, Payment ID..." oninput="eomFilterTable(this.value)">
+      <button class="btn btn-sm" onclick="eomFilterTable(''); document.getElementById('eomSearch').value=''">Todos</button>
+      <button class="btn btn-sm" onclick="eomFilterMissing()">Sin recibo</button>
+      <span style="margin-left:auto;font-size:.75rem;color:var(--text-light)" id="eomFilterInfo"></span>
+    </div>
+    <div class="eom-tbl-wrap">
+      <div class="eom-tbl-header">
+        <span>Invoices por Payment ID</span>
+        <span style="font-size:.72rem;font-weight:400;color:var(--text-light)">Orden: <span style="font-family:monospace;color:var(--navy)">Payment ID ↑</span></span>
+      </div>
+      <div style="max-height:calc(100vh - 280px);overflow-y:auto">
+        <table class="eom-table">
+          <thead><tr>
+            <th>PAYMENT ID</th><th>VENDOR</th><th>FECHA PMT</th>
+            <th>INVOICE #</th><th>CATEGORÍA</th><th style="text-align:right">MONTO</th><th>RECIBO</th>
+          </tr></thead>
+          <tbody id="eomTableBody"></tbody>
+        </table>
+      </div>
+      <div class="eom-tbl-footer">
+        <span class="fs">Positivo: <span style="color:#16a34a">$${totals.positive.toFixed(2)}</span></span>
+        <span class="fs">Withholding: <span style="color:var(--red)">$${Math.abs(totals.negative).toFixed(2)}</span></span>
+        <span class="fs">Net: <span>$${totals.net.toFixed(2)}</span></span>
+      </div>
+    </div>`;
+
+  eomPopulateBody(_eomState.payments);
+}
+
+function eomPopulateBody(payments) {
+  const tbody = document.getElementById('eomTableBody');
+  if (!tbody) return;
+  let html = '';
+  payments.forEach(p => {
+    const hasR = p.receipts.length > 0;
+    const isWH = p.totalNet <= 0;
+    const badge = isWH ? `<span class="eom-badge eom-badge-wh">WH</span>` :
+                  hasR  ? `<span class="eom-badge eom-badge-ok">✓ Listo</span>` :
+                          `<span class="eom-badge eom-badge-miss">Falta</span>`;
+    const rowClass = isWH ? 'eom-wh-row' : '';
+    const receiptCell = hasR
+      ? `<label class="eom-receipt-slot has" title="Cambiar recibo"><span>📎 ${p.receipts[0].name.substring(0,14)}…</span><input type="file" accept="image/*,.pdf" style="display:none" onchange="eomHandleRowReceipt('${p.pmtId}',this)"></label>`
+      : `<label class="eom-receipt-slot none"><span>＋ Subir</span><input type="file" accept="image/*,.pdf" style="display:none" onchange="eomHandleRowReceipt('${p.pmtId}',this)"></label>`;
+
+    p.invoices.forEach((inv, idx) => {
+      const isFirst = idx === 0;
+      const rspan = p.invoices.length;
+      html += `<tr class="${rowClass}" data-pmtid="${p.pmtId}">
+        ${isFirst ? `<td class="eom-pmt-id" rowspan="${rspan}">${p.pmtId}</td>` : ''}
+        ${isFirst ? `<td rowspan="${rspan}" style="max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.vendor}">${p.vendor}</td>` : ''}
+        ${isFirst ? `<td rowspan="${rspan}" style="font-size:.74rem;white-space:nowrap">${p.date}</td>` : ''}
+        <td style="font-family:monospace;font-size:.74rem">${inv.invNum || '—'}</td>
+        <td style="font-size:.72rem;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${inv.category}">${inv.category || '—'}</td>
+        <td class="eom-amount ${inv.amount < 0 ? 'neg' : 'pos'}">${inv.amount < 0 ? '-' : ''}$${Math.abs(inv.amount).toFixed(2)}</td>
+        ${isFirst ? `<td rowspan="${rspan}">${badge}<br><div style="margin-top:4px">${receiptCell}</div></td>` : ''}
+      </tr>`;
+    });
+  });
+  tbody.innerHTML = html || '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text-light)">Sin resultados</td></tr>';
+}
+
+function eomFilterTable(query) {
+  const lq = (query || '').toLowerCase();
+  const filtered = lq
+    ? _eomState.payments.filter(p => p.pmtId.includes(lq) || p.vendor.toLowerCase().includes(lq) || p.invoices.some(i => (i.invNum||'').toLowerCase().includes(lq)))
+    : _eomState.payments;
+  eomPopulateBody(filtered);
+  const info = document.getElementById('eomFilterInfo');
+  if (info) info.textContent = filtered.length < _eomState.payments.length ? `Mostrando ${filtered.length} de ${_eomState.payments.length}` : '';
+}
+
+function eomFilterMissing() {
+  const el = document.getElementById('eomSearch');
+  if (el) el.value = '';
+  const filtered = _eomState.payments.filter(p => p.receipts.length === 0 && p.totalNet > 0);
+  eomPopulateBody(filtered);
+  const info = document.getElementById('eomFilterInfo');
+  if (info) info.textContent = `${filtered.length} sin recibo`;
+}
+
+function eomCalcTotals() {
+  let positive = 0, negative = 0;
+  _eomState.payments.forEach(p => p.invoices.forEach(inv => {
+    if (inv.amount >= 0) positive += inv.amount;
+    else negative += inv.amount;
+  }));
+  return { positive, negative, net: positive + negative };
+}
+
+// ── Stats ──────────────────────────────────────────────────────
+function eomUpdateStats() {
+  if (!_eomState.payments.length) return;
+  const totals = eomCalcTotals();
+  const ready = _eomState.payments.filter(p => p.receipts.length > 0 || p.totalNet <= 0).length;
+  const missing = _eomState.payments.filter(p => p.receipts.length === 0 && p.totalNet > 0).length;
+  const total = totals.positive;
+
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+  set('eomStatPmt', _eomState.payments.length);
+  set('eomStatTotal', '$' + total.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}));
+  set('eomStatReady', ready);
+  set('eomStatMiss', missing);
+
+  const pct = Math.round((ready / _eomState.payments.length) * 100);
+  const fill = document.getElementById('eomProgressFill');
+  if (fill) fill.style.width = pct + '%';
+  const lbl = document.getElementById('eomProgressLabel');
+  if (lbl) lbl.textContent = `${ready} de ${_eomState.payments.length} listos (${pct}%)`;
+}
+
+function eomShowPanels() {
+  ['eomStatsArea','eomMonthArea','eomBulkArea','eomGenArea'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'block';
+  });
+}
+
+// ── PDF Generation ─────────────────────────────────────────────
+async function eomGeneratePackage() {
+  if (!window.PDFLib) { showToast('pdf-lib no cargado. Recarga la página.', 'error'); return; }
+  const btn = document.getElementById('eomGenBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Generando…'; }
+
+  const log = document.getElementById('eomLogPanel');
+  if (log) { log.innerHTML = ''; log.classList.add('visible'); }
+
+  function addLog(msg, type = '') {
+    if (!log) return;
+    const d = document.createElement('div');
+    d.className = `eom-log-line ${type}`;
+    d.textContent = msg;
+    log.appendChild(d);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  try {
+    const { PDFDocument, StandardFonts, rgb } = PDFLib;
+    addLog('▶ Iniciando generación del paquete EOM…', 'info');
+
+    const pdfDoc = await PDFDocument.create();
+    const font = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    const fontReg = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+    const sorted = [..._eomState.payments].sort((a, b) => parseInt(a.pmtId) - parseInt(b.pmtId));
+
+    addLog('📄 Portada…');
+    await eomAddCoverPage(pdfDoc, font, fontReg, rgb);
+    addLog('📋 Resumen…');
+    await eomAddSummaryPage(pdfDoc, font, fontReg, rgb, sorted);
+
+    let processed = 0, skipped = 0;
+
+    for (const payment of sorted) {
+      if (payment.totalNet <= 0) { skipped++; continue; }
+      if (!payment.receipts.length) {
+        addLog(`⚠ Sin recibo: PMT ${payment.pmtId} — ${payment.vendor}`, 'err');
+        await eomAddPlaceholderPage(pdfDoc, font, fontReg, rgb, payment);
+        continue;
+      }
+      addLog(`✓ PMT ${payment.pmtId} — ${payment.vendor}`, 'ok');
+      const file = payment.receipts[0];
+      try {
+        if (file.type === 'application/pdf') await eomAddReceiptPDF(pdfDoc, font, rgb, file, payment);
+        else await eomAddReceiptImage(pdfDoc, font, fontReg, rgb, file, payment);
+        processed++;
+      } catch (err) {
+        addLog(`  ✗ Error: ${err.message}`, 'err');
+        await eomAddPlaceholderPage(pdfDoc, font, fontReg, rgb, payment);
+      }
+    }
+
+    addLog(`\n✅ ${processed} recibos procesados, ${skipped} withholding omitidos`, 'ok');
+    addLog('📦 Guardando PDF…', 'info');
+
+    const pdfBytes = await pdfDoc.save();
+    const mb = (pdfBytes.length / 1024 / 1024).toFixed(2);
+    addLog(`📊 Tamaño: ${mb} MB ${parseFloat(mb) > 50 ? '⚠ EXCEDE 50MB!' : '✓'}`, parseFloat(mb) > 50 ? 'err' : 'ok');
+
+    const [yr, mo] = (_eomState.month || '2025-01').split('-');
+    const filename = `30014_${yr}_${mo}_PR.pdf`;
+    eomDownloadPDF(pdfBytes, filename);
+    addLog(`⬇ Descargado: ${filename}`, 'ok');
+    showToast(`✅ Paquete EOM generado — ${mb} MB`, 'success');
+
+  } catch (err) {
+    addLog(`✗ Error: ${err.message}`, 'err');
+    showToast('Error al generar el PDF: ' + err.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '⬇ Generar PDF EOM'; }
+  }
+}
+
+async function eomAddCoverPage(pdfDoc, font, fontReg, rgb) {
+  const page = pdfDoc.addPage([612, 792]);
+  const { width, height } = page.getSize();
+  page.drawRectangle({ x:0,y:0,width,height, color:rgb(0.05,0.08,0.22) });
+  page.drawRectangle({ x:0,y:height-8,width,height:8, color:rgb(0.75,0.19,0.22) });
+  page.drawText('END OF MONTH PACKAGE', { x:50,y:height-70,size:24,font,color:rgb(1,1,1) });
+  page.drawText('Los Filtros FSU — Store #30014', { x:50,y:height-98,size:13,font:fontReg,color:rgb(0.8,0.85,0.9) });
+  const [yr,mo] = (_eomState.month||'2025-01').split('-');
+  const mNames=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  page.drawText(`${mNames[parseInt(mo)]||mo} ${yr}`, { x:50,y:height-125,size:17,font,color:rgb(0.92,0.63,0.13) });
+  page.drawLine({ start:{x:50,y:height-148},end:{x:width-50,y:height-148},thickness:1,color:rgb(0.15,0.18,0.35) });
+  const totals = eomCalcTotals();
+  const ready = _eomState.payments.filter(p=>p.receipts.length>0).length;
+  const stats = [
+    ['Payment IDs', _eomState.payments.length.toString()],
+    ['Total Gastos', '$'+totals.positive.toLocaleString('en-US',{minimumFractionDigits:2})],
+    ['Withholding', '$'+Math.abs(totals.negative).toLocaleString('en-US',{minimumFractionDigits:2})],
+    ['Net Total', '$'+totals.net.toLocaleString('en-US',{minimumFractionDigits:2})],
+    ['Recibos Incluidos', ready.toString()],
+  ];
+  let y = height-190;
+  stats.forEach(([lbl,val]) => {
+    page.drawText(lbl+':', {x:50,y,size:11,font:fontReg,color:rgb(0.5,0.55,0.65)});
+    page.drawText(val, {x:240,y,size:11,font,color:rgb(0.9,0.92,0.95)});
+    y -= 22;
+  });
+  page.drawText(`Generado: ${new Date().toLocaleDateString('es-PR')} · GlobalDigitalFCRPackage@chick-fil-a.com`, {x:50,y:28,size:8,font:fontReg,color:rgb(0.4,0.45,0.55)});
+}
+
+async function eomAddSummaryPage(pdfDoc, font, fontReg, rgb, payments) {
+  const page = pdfDoc.addPage([612, 792]);
+  const { width, height } = page.getSize();
+  page.drawRectangle({ x:0,y:0,width,height,color:rgb(1,1,1) });
+  page.drawText('RESUMEN DE PAYMENT IDs', {x:50,y:height-48,size:15,font,color:rgb(0.05,0.08,0.22)});
+  page.drawLine({start:{x:50,y:height-62},end:{x:width-50,y:height-62},thickness:1,color:rgb(0.85,0.87,0.9)});
+  let y = height-86;
+  const cols = [[50,'PAYMENT ID'],[140,'VENDOR'],[285,'FECHA'],[360,'NET'],[430,'RECIBO']];
+  cols.forEach(([x,lbl]) => page.drawText(lbl,{x,y,size:8,font,color:rgb(0.55,0.58,0.65)}));
+  y-=5; page.drawLine({start:{x:50,y},end:{x:width-50,y},thickness:.5,color:rgb(0.85,0.87,0.9)}); y-=12;
+  for (const p of payments) {
+    if (y < 50) { const np=pdfDoc.addPage([612,792]); np.drawRectangle({x:0,y:0,width:612,height:792,color:rgb(1,1,1)}); y=742; }
+    const hasR=p.receipts.length>0, isWH=p.totalNet<=0;
+    const rCol=isWH?rgb(0.6,0.63,0.7):hasR?rgb(0.09,0.67,0.28):rgb(0.86,0.14,0.16);
+    const vendor=p.vendor.length>22?p.vendor.substring(0,22)+'…':p.vendor;
+    page.drawText(p.pmtId,{x:50,y,size:8,font,color:rgb(0.05,0.08,0.22)});
+    page.drawText(vendor,{x:140,y,size:8,font:fontReg,color:rgb(0.2,0.22,0.28)});
+    page.drawText(p.date,{x:285,y,size:8,font:fontReg,color:rgb(0.35,0.38,0.45)});
+    page.drawText('$'+p.totalNet.toFixed(2),{x:360,y,size:8,font,color:p.totalNet<0?rgb(0.86,0.14,0.16):rgb(0.09,0.67,0.28)});
+    page.drawText(isWH?'WH':hasR?'✓':'✗',{x:430,y,size:8,font,color:rCol});
+    y-=13;
+  }
+}
+
+async function eomAddReceiptImage(pdfDoc, font, fontReg, rgb, file, payment) {
+  const page = pdfDoc.addPage([612, 792]);
+  const { width, height } = page.getSize();
+  page.drawRectangle({x:0,y:0,width,height,color:rgb(1,1,1)});
+  page.drawRectangle({x:0,y:height-46,width,height:46,color:rgb(0.05,0.08,0.22)});
+  page.drawText(`PMT ID: ${payment.pmtId}`,{x:12,y:height-22,size:12,font,color:rgb(0.92,0.63,0.13)});
+  page.drawText(payment.vendor.substring(0,42),{x:12,y:height-36,size:8,font:fontReg,color:rgb(0.8,0.85,0.9)});
+  page.drawText('$'+Math.abs(payment.totalNet).toFixed(2),{x:width-80,y:height-24,size:11,font,color:rgb(0.09,0.67,0.28)});
+  page.drawText(payment.date,{x:width-90,y:height-37,size:8,font:fontReg,color:rgb(0.6,0.65,0.72)});
+
+  const ab = await file.arrayBuffer();
+  let img;
+  if (file.type === 'image/png') img = await pdfDoc.embedPng(ab);
+  else img = await pdfDoc.embedJpg(ab);
+  const dim = img.scaleToFit(width-40, height-100);
+  const imgX = (width-dim.width)/2, imgY = 18;
+  page.drawImage(img,{x:imgX,y:imgY,width:dim.width,height:dim.height});
+  page.drawText(payment.pmtId,{x:imgX+4,y:imgY+dim.height-18,size:13,font,color:rgb(0.92,0.63,0.13),opacity:0.95});
+}
+
+async function eomAddReceiptPDF(pdfDoc, font, rgb, file, payment) {
+  const ab = await file.arrayBuffer();
+  const src = await PDFLib.PDFDocument.load(ab);
+  const count = src.getPageCount();
+  for (let i = 0; i < count; i++) {
+    const [pg] = await pdfDoc.copyPages(src,[i]);
+    pdfDoc.addPage(pg);
+    if (i===0) {
+      const last = pdfDoc.getPage(pdfDoc.getPageCount()-1);
+      const {width,height} = last.getSize();
+      last.drawRectangle({x:0,y:height-30,width,height:30,color:rgb(0.05,0.08,0.22),opacity:0.9});
+      last.drawText(`PMT ID: ${payment.pmtId} — ${payment.vendor.substring(0,35)} — $${payment.totalNet.toFixed(2)}`,{x:10,y:height-20,size:10,font,color:rgb(0.92,0.63,0.13)});
+    }
+  }
+}
+
+async function eomAddPlaceholderPage(pdfDoc, font, fontReg, rgb, payment) {
+  const page = pdfDoc.addPage([612, 792]);
+  const { width, height } = page.getSize();
+  page.drawRectangle({x:0,y:0,width,height,color:rgb(1,1,1)});
+  page.drawRectangle({x:0,y:height-46,width,height:46,color:rgb(0.95,0.3,0.3)});
+  page.drawText(`PMT ID: ${payment.pmtId} — RECIBO FALTANTE`,{x:12,y:height-22,size:11,font,color:rgb(1,1,1)});
+  page.drawText(payment.vendor,{x:12,y:height-37,size:8,font:fontReg,color:rgb(1,1,1)});
+  page.drawText('RECIBO NO CARGADO',{x:width/2-80,y:height/2,size:16,font,color:rgb(0.8,0.25,0.25)});
+}
+
+function eomDownloadPDF(bytes, filename) {
+  const blob = new Blob([bytes],{type:'application/pdf'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href=url; a.download=filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),5000);
+}
+
+// ── Reset ──────────────────────────────────────────────────────
+function eomReset() {
+  _eomState = { payments: [], month: null, csvLoaded: false };
+  _eomInited = false;
+  document.getElementById('eomApp').innerHTML = '';
+  eomInit();
+  showToast('Reset completo', 'info');
+}
+
+// ── Drag & Drop ────────────────────────────────────────────────
+function eomSetupDnD() {
+  const zone = document.getElementById('eomCsvZone');
+  if (!zone) return;
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault(); zone.classList.remove('drag-over');
+    const files = e.dataTransfer.files;
+    if (files.length) eomHandleCSV({ target: { files } });
+  });
+}

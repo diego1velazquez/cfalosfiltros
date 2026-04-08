@@ -62,6 +62,7 @@
     <div class="tab" onclick="goTab('recon')" id="t-recon">Reconciliation</div>
     <div class="tab" onclick="goTab('gastos')" id="t-gastos">Gastos</div>
     <div class="tab" onclick="goTab('writeups')" id="t-writeups">Write-Ups</div>
+    <div class="tab" onclick="goTab('eom')" id="t-eom">EOM Package</div>
   </div>
 
   <!-- Employee tab nav -->
@@ -508,6 +509,11 @@
       </div>
     </div><!-- /p-writeups -->
 
+    <!-- ════ EOM PACKAGE GENERATOR ════ -->
+    <div class="page" id="p-eom">
+      <div id="eomApp"></div>
+    </div><!-- /p-eom -->
+
   </div><!-- /main -->
 </div><!-- /appShell -->
 
@@ -606,6 +612,7 @@
   </div>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="assets/js/app.js"></script>
 </body>
