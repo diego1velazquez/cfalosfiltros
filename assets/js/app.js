@@ -1826,9 +1826,8 @@ function exportMealsCSV() {
 }
 
 // ══════════════════════════════════════════
-// PERSISTENCE — tardiness + meals + slack
+// PERSISTENCE — meals
 // ══════════════════════════════════════════
-}
 function saveMealData() {
   try { localStorage.setItem('cfa_losfiltros_meals', JSON.stringify(MEAL_PENALTIES)); } catch(e){}
 }
