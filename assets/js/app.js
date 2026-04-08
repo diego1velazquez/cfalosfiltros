@@ -94,6 +94,7 @@ function goTab(t) {
   // Trigger renders on tab switch
   if (t === 'timeoff')   renderTimeOffRequests();
   if (t === 'employees') updateEmployeesTab();
+  if (t === 'gastos')    gastosInit();
 }
 
 // ══════════════════════════════════════════
@@ -882,9 +883,7 @@ function _cacheToLocal() {
     localStorage.setItem('cfa_losfiltros_employees', JSON.stringify(EMPLOYEES));
     localStorage.setItem('cfa_losfiltros_periods',   JSON.stringify(IMPORTED_PERIODS));
     localStorage.setItem('cfa_losfiltros_requests',  JSON.stringify(TIME_OFF_REQUESTS));
-    localStorage.setItem('cfa_losfiltros_tardiness', JSON.stringify(TARDINESS_LOG));
     localStorage.setItem('cfa_losfiltros_meals',     JSON.stringify(MEAL_PENALTIES));
-    localStorage.setItem('cfa_losfiltros_slack',     JSON.stringify(SLACK_SETTINGS));
   } catch(e) { console.warn('localStorage cache failed:', e); }
 }
 
@@ -895,9 +894,7 @@ async function saveToCloud() {
       employees: EMPLOYEES,
       periods:   IMPORTED_PERIODS,
       requests:  TIME_OFF_REQUESTS,
-      tardiness: TARDINESS_LOG,
       meals:     MEAL_PENALTIES,
-      slack:     SLACK_SETTINGS,
       saved_at:  new Date().toISOString(),
     };
     const { error } = await getSupa().from('app_data').upsert(payload, { onConflict: 'key' });
@@ -921,9 +918,7 @@ async function loadFromStorage() {
       if (data.employees)  Object.assign(EMPLOYEES, data.employees);
       if (data.periods)    Object.assign(IMPORTED_PERIODS, data.periods);
       if (data.requests)   { TIME_OFF_REQUESTS.length = 0; TIME_OFF_REQUESTS.push(...data.requests); }
-      if (data.tardiness)  { TARDINESS_LOG.length  = 0; TARDINESS_LOG.push(...data.tardiness); }
       if (data.meals)      { MEAL_PENALTIES.length  = 0; MEAL_PENALTIES.push(...data.meals); }
-      if (data.slack)      Object.assign(SLACK_SETTINGS, data.slack);
       _cacheToLocal();
       console.log('✅ Loaded from Supabase cloud');
     } else throw new Error('no cloud data');
@@ -936,12 +931,8 @@ async function loadFromStorage() {
       if (periodData) Object.assign(IMPORTED_PERIODS, JSON.parse(periodData));
       const reqData = localStorage.getItem('cfa_losfiltros_requests');
       if (reqData) { TIME_OFF_REQUESTS.length = 0; TIME_OFF_REQUESTS.push(...JSON.parse(reqData)); }
-      const td = localStorage.getItem('cfa_losfiltros_tardiness');
-      if (td) { TARDINESS_LOG.length = 0; TARDINESS_LOG.push(...JSON.parse(td)); }
-      const mp = localStorage.getItem('cfa_losfiltros_meals');
+        const mp = localStorage.getItem('cfa_losfiltros_meals');
       if (mp) { MEAL_PENALTIES.length = 0; MEAL_PENALTIES.push(...JSON.parse(mp)); }
-      const sl = localStorage.getItem('cfa_losfiltros_slack');
-      if (sl) Object.assign(SLACK_SETTINGS, JSON.parse(sl));
     } catch(e2) { console.warn('localStorage load failed:', e2); }
   }
 
@@ -1577,38 +1568,7 @@ function exportToPrint() {
     <tbody>${rows}</tbody>
   </table>
   <script>window.onload=()=>window.print()<\/script>
-  
-<!-- ADD TARDINESS MODAL -->
-<div class="moverlay" id="addTardModal">
-  <div class="modal" style="max-width:520px">
-    <h3>Log Tardiness Incident</h3>
-    <div id="tardErr" style="display:none;background:#fee2e2;color:#991b1b;border-radius:7px;padding:9px 12px;font-size:.82rem;margin-bottom:12px"></div>
-    <div class="frow full"><div class="field"><label>Employee</label>
-      <select id="tardEmpSel"><option value="">Select employee...</option></select>
-    </div></div>
-    <div class="frow"><div class="field"><label>Date</label>
-      <input type="date" id="tardDate"/>
-    </div><div class="field"><label>Type</label>
-      <select id="tardType">
-        <option>Late Arrival</option>
-        <option>No-Show</option>
-        <option>Early Departure</option>
-      </select>
-    </div></div>
-    <div class="frow"><div class="field"><label>Scheduled Time</label>
-      <input type="time" id="tardScheduled"/>
-    </div><div class="field"><label>Actual Time</label>
-      <input type="time" id="tardActual"/>
-    </div></div>
-    <div class="frow full"><div class="field"><label>Notes (optional)</label>
-      <input type="text" id="tardNotes" placeholder="e.g. called out, traffic, no call no show..."/>
-    </div></div>
-    <div class="mfooter">
-      <button class="btn" onclick="cm('addTardModal')">Cancel</button>
-      <button class="btn btn-red2" onclick="submitTardiness()">Log Incident</button>
-    </div>
-  </div>
-</div>
+
 
 <!-- ADD MEAL PENALTY MODAL -->
 <div class="moverlay" id="addMealModal">
@@ -1645,98 +1605,6 @@ function exportToPrint() {
   </div>
 </div>
 
-<!-- SLACK + NOTIFICATIONS SETUP MODAL -->
-<div class="moverlay" id="slackModal">
-  <div class="modal" style="max-width:560px">
-    <h3>🔔 Notifications & Slack Setup</h3>
-
-    <!-- Slack section -->
-    <div style="background:#f8f9fa;border-radius:10px;padding:16px;margin-bottom:16px">
-      <div style="font-weight:700;font-size:.9rem;margin-bottom:4px">Slack Webhook</div>
-      <p style="font-size:.8rem;color:var(--text-light);margin-bottom:10px">Paste your Slack Incoming Webhook URL to receive alerts when employees submit time-off requests.</p>
-      <input type="url" id="slackWebhookUrl" placeholder="https://hooks.slack.com/services/..." style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:.85rem;margin-bottom:8px"/>
-      <button class="btn btn-sm btn-navy" onclick="testSlackWebhook()" id="slackTestBtn">Send Test Message</button>
-      <div id="slackTestResult" style="margin-top:8px;font-size:.8rem"></div>
-
-      <!-- Setup instructions -->
-      <details style="margin-top:12px">
-        <summary style="cursor:pointer;font-size:.82rem;font-weight:600;color:var(--navy)">📖 How to get your webhook URL</summary>
-        <ol style="font-size:.78rem;color:var(--text-mid);margin:8px 0 0 16px;line-height:2">
-          <li>Go to <strong>slack.com</strong> → create a free workspace</li>
-          <li>Create a channel, e.g. <strong>#time-off-requests</strong></li>
-          <li>Go to <strong>api.slack.com/apps</strong> → Create New App → From Scratch</li>
-          <li>Click <strong>Incoming Webhooks</strong> → toggle On</li>
-          <li>Click <strong>Add New Webhook to Workspace</strong> → select your channel</li>
-          <li>Copy the webhook URL and paste it above</li>
-        </ol>
-      </details>
-    </div>
-
-    <!-- Notification preferences -->
-    <div style="font-weight:700;font-size:.9rem;margin-bottom:10px">Notify me when:</div>
-    <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px">
-      <label style="display:flex;align-items:center;gap:10px;font-size:.87rem;cursor:pointer">
-        <input type="checkbox" id="notifOnRequest" checked style="width:16px;height:16px;accent-color:var(--navy)"/>
-        Employee submits a time-off request
-      </label>
-      <label style="display:flex;align-items:center;gap:10px;font-size:.87rem;cursor:pointer">
-        <input type="checkbox" id="notifOnApprove" checked style="width:16px;height:16px;accent-color:var(--navy)"/>
-        A request is approved or rejected
-      </label>
-      <label style="display:flex;align-items:center;gap:10px;font-size:.87rem;cursor:pointer">
-        <input type="checkbox" id="notifOnTardiness" checked style="width:16px;height:16px;accent-color:var(--navy)"/>
-        An employee is flagged for tardiness pattern (3+ in 30 days)
-      </label>
-    </div>
-
-    <div class="mfooter">
-      <button class="btn" onclick="cm('slackModal')">Cancel</button>
-      <button class="btn btn-navy" onclick="saveSlackSettings()">Save Settings</button>
-    </div>
-  </div>
-</div>
-
-<!-- HOSTING GUIDE MODAL -->
-<div class="moverlay" id="hostingModal">
-  <div class="modal" style="max-width:560px;max-height:90vh;overflow-y:auto">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
-      <h3 style="margin:0">🌐 Host This App Online</h3>
-      <button class="btn btn-sm" onclick="cm('hostingModal')">✕ Close</button>
-    </div>
-    <p style="font-size:.85rem;color:var(--text-mid);margin-bottom:16px">Get this app accessible from any device — phone, tablet, computer — with a real URL. <strong>Free, no coding required.</strong></p>
-
-    <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:16px;margin-bottom:14px">
-      <div style="font-weight:700;color:#1e40af;margin-bottom:8px">⭐ Recommended: Netlify (Free)</div>
-      <ol style="font-size:.83rem;color:#1e40af;margin:0 0 0 16px;line-height:2.2">
-        <li>Go to <strong>netlify.com</strong> → Sign up free (use Google)</li>
-        <li>Click <strong>"Add new site"</strong> → <strong>"Deploy manually"</strong></li>
-        <li>Drag and drop your <strong>admin_hub.html</strong> file into the box</li>
-        <li>Netlify gives you a free URL like <strong>random-name.netlify.app</strong></li>
-        <li>Share that link with your team — done!</li>
-      </ol>
-      <div style="margin-top:10px;font-size:.78rem;color:#3b82f6">💡 To get a custom domain (cfalosfiltros.com): buy it at Namecheap (~$12/yr) then connect it in Netlify Settings → Domain Management.</div>
-    </div>
-
-    <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:14px;margin-bottom:14px">
-      <div style="font-weight:700;color:#166534;margin-bottom:6px">📱 Add to Home Screen (Mobile App Feel)</div>
-      <div style="font-size:.82rem;color:#166534;line-height:1.8">
-        Once hosted on Netlify:<br>
-        <strong>iPhone:</strong> Open in Safari → Share button → "Add to Home Screen"<br>
-        <strong>Android:</strong> Open in Chrome → Menu (⋮) → "Add to Home Screen"<br>
-        It will appear as an app icon on your phone — no App Store needed.
-      </div>
-    </div>
-
-    <div style="background:#faf5ff;border:1px solid #e9d5ff;border-radius:10px;padding:14px">
-      <div style="font-weight:700;color:#6b21a8;margin-bottom:6px">🔒 Important Note on Data</div>
-      <div style="font-size:.82rem;color:#6b21a8;line-height:1.8">
-        Your data is saved in the browser's local storage on each device. If multiple people need to see the same data, each device will need to import the same reports.<br><br>
-        For true multi-user sync (everyone sees the same data), we'd need to add a backend database — that's the next step when you're ready.
-      </div>
-    </div>
-  </div>
-</div>
-
 </body></html>`);
   win.document.close();
 }
@@ -1744,155 +1612,7 @@ function exportToPrint() {
 // ══════════════════════════════════════════
 // DATA STORES
 // ══════════════════════════════════════════
-let TARDINESS_LOG  = [];
 let MEAL_PENALTIES = [];
-let SLACK_SETTINGS = { webhookUrl: '', notifOnRequest: true, notifOnApprove: true, notifOnTardiness: true };
-
-// ══════════════════════════════════════════
-// TARDINESS — submit, render, patterns
-// ══════════════════════════════════════════
-function submitTardiness() {
-  const empKey    = document.getElementById('tardEmpSel').value;
-  const date      = document.getElementById('tardDate').value;
-  const type      = document.getElementById('tardType').value;
-  const scheduled = document.getElementById('tardScheduled').value;
-  const actual    = document.getElementById('tardActual').value;
-  const notes     = document.getElementById('tardNotes').value;
-  const errEl     = document.getElementById('tardErr');
-
-  if (!empKey) { errEl.textContent='Please select an employee.'; errEl.style.display='block'; return; }
-  if (!date)   { errEl.textContent='Please select a date.';      errEl.style.display='block'; return; }
-  errEl.style.display = 'none';
-
-  // Calculate minutes late
-  let minutesLate = 0;
-  if (type === 'Late Arrival' && scheduled && actual) {
-    const [sh,sm] = scheduled.split(':').map(Number);
-    const [ah,am] = actual.split(':').map(Number);
-    minutesLate = Math.max(0, (ah * 60 + am) - (sh * 60 + sm));
-  }
-
-  const emp = EMPLOYEES[empKey];
-  TARDINESS_LOG.push({
-    id: Date.now(), empKey, empName: emp?.name || empKey,
-    date, type, scheduled, actual, minutesLate, notes,
-    loggedAt: new Date().toISOString()
-  });
-
-  saveTardinessData();
-  renderTardiness();
-  checkTardinessPatterns();
-  cm('addTardModal');
-
-  // Reset form
-  ['tardEmpSel','tardDate','tardScheduled','tardActual','tardNotes'].forEach(id => {
-    const el = document.getElementById(id); if(el) el.value = '';
-  });
-
-  showToast(`⏰ Incident logged for ${emp?.name || empKey}`);
-
-  // Slack alert if flagged
-  const count = getTardinessCount30Days(empKey);
-  if (count >= 3 && SLACK_SETTINGS.notifOnTardiness) {
-    sendSlackMessage(`⚠️ *Tardiness Alert* — ${emp?.name} has ${count} incidents in the last 30 days.`);
-  }
-}
-
-function getTardinessCount30Days(empKey) {
-  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  return TARDINESS_LOG.filter(t => t.empKey === empKey && new Date(t.date).getTime() >= cutoff).length;
-}
-
-function renderTardiness() {
-  const tbody      = document.getElementById('tardTbody');
-  if (!tbody) return;
-  const search     = (document.getElementById('tardSearch')?.value || '').toLowerCase();
-  const typeFilter = document.getElementById('tardTypeFilter')?.value || '';
-  const dayFilter  = parseInt(document.getElementById('tardMonthFilter')?.value || '0');
-  const cutoff     = dayFilter ? Date.now() - dayFilter * 24 * 60 * 60 * 1000 : 0;
-
-  const filtered = TARDINESS_LOG.filter(t => {
-    if (typeFilter && t.type !== typeFilter) return false;
-    if (cutoff && new Date(t.date).getTime() < cutoff) return false;
-    if (search && !t.empName.toLowerCase().includes(search)) return false;
-    return true;
-  }).sort((a,b) => b.date.localeCompare(a.date));
-
-  if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="9"><div class="empty"><div class="ei">⏰</div><p>No incidents match.</p></div></td></tr>';
-  } else {
-    const now30 = Date.now() - 30*24*60*60*1000;
-    tbody.innerHTML = filtered.map(t => {
-      const count30 = TARDINESS_LOG.filter(x => x.empKey === t.empKey && new Date(x.date).getTime() >= now30).length;
-      const flagged = count30 >= 3;
-      return `<tr style="${flagged?'background:#fff3f3':''}">
-        <td><strong>${t.empName}</strong></td>
-        <td>${t.date}</td>
-        <td><span class="badge ${t.type==='No-Show'?'bg-red':t.type==='Late Arrival'?'bg-yellow':'bg-gray'}">${t.type}</span></td>
-        <td style="font-size:.8rem">${t.scheduled||'—'}</td>
-        <td style="font-size:.8rem">${t.actual||'—'}</td>
-        <td style="font-weight:600;color:${t.minutesLate>15?'var(--red)':t.minutesLate>0?'#d97706':'#888'}">${t.minutesLate>0?t.minutesLate+' min':'—'}</td>
-        <td style="font-size:.78rem;color:#888">${t.notes||'—'}</td>
-        <td><span style="font-size:.78rem;padding:3px 8px;border-radius:10px;background:${flagged?'#fee2e2':'#f0f0f0'};color:${flagged?'#dc2626':'#666'};font-weight:600">${count30}${flagged?' ⚠️':''}</span></td>
-        <td><button class="btn btn-red2 btn-sm" onclick="deleteTardiness(${t.id})">✕</button></td>
-      </tr>`;
-    }).join('');
-  }
-
-  // Update stats
-  const now = new Date(); const thisMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
-  const monthItems = TARDINESS_LOG.filter(t => t.date.startsWith(thisMonth));
-  document.getElementById('tardMonthCount').textContent = monthItems.length;
-  document.getElementById('tardNoShowCount').textContent = monthItems.filter(t=>t.type==='No-Show').length;
-  document.getElementById('tardTotalCount').textContent = TARDINESS_LOG.length;
-  checkTardinessPatterns();
-}
-
-function checkTardinessPatterns() {
-  const now30 = Date.now() - 30*24*60*60*1000;
-  const empCounts = {};
-  const dayPatterns = {};
-
-  for (const t of TARDINESS_LOG) {
-    if (new Date(t.date).getTime() < now30) continue;
-    empCounts[t.empKey] = (empCounts[t.empKey] || { name: t.empName, count: 0, days: {} });
-    empCounts[t.empKey].count++;
-    const dow = new Date(t.date).toLocaleDateString('en-US',{weekday:'long'});
-    empCounts[t.empKey].days[dow] = (empCounts[t.empKey].days[dow]||0) + 1;
-  }
-
-  const flagged = Object.values(empCounts).filter(e => e.count >= 3);
-  document.getElementById('tardFlagCount').textContent = flagged.length;
-
-  const panel = document.getElementById('tardFlagPanel');
-  const list  = document.getElementById('tardFlagList');
-  if (!flagged.length) { panel.style.display='none'; return; }
-
-  panel.style.display = 'block';
-  list.innerHTML = flagged.map(e => {
-    const topDay = Object.entries(e.days).sort((a,b)=>b[1]-a[1])[0];
-    const dayNote = topDay && topDay[1] >= 2 ? ` — often on <strong>${topDay[0]}</strong>` : '';
-    return `<div style="margin-bottom:4px">• <strong>${e.name}</strong>: ${e.count} incidents in last 30 days${dayNote}</div>`;
-  }).join('');
-}
-
-function deleteTardiness(id) {
-  if (!confirm('Delete this incident?')) return;
-  TARDINESS_LOG = TARDINESS_LOG.filter(t => t.id !== id);
-  saveTardinessData();
-  renderTardiness();
-  showToast('🗑 Incident deleted.');
-}
-
-function exportTardinessCSV() {
-  const rows = [['Employee','Date','Type','Scheduled','Actual','Minutes Late','Notes']];
-  TARDINESS_LOG.forEach(t => rows.push([t.empName,t.date,t.type,t.scheduled||'',t.actual||'',t.minutesLate||0,t.notes||'']));
-  const csv = rows.map(r=>r.map(v=>`"${v}"`).join(',')).join('\n');
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
-  a.download = 'tardiness_' + new Date().toISOString().slice(0,10) + '.csv';
-  a.click();
-}
 
 // ══════════════════════════════════════════
 // MEAL PENALTIES — PR Act 379 engine
@@ -2029,7 +1749,7 @@ function submitMealPenalty() {
   });
   document.getElementById('mealViolationBanner').style.display='none';
   document.getElementById('mealCalcResult').style.display='none';
-  showToast(`🥪 Meal penalty logged for ${emp?.name || empKey}${penaltyAmount>0?' — $'+penaltyAmount+' owed':''}`);
+  showToast(`✅ Meal penalty logged for ${emp?.name || empKey}${penaltyAmount>0?' — $'+penaltyAmount+' owed':''}`);
 }
 
 function renderMealPenalties() {
@@ -2037,7 +1757,7 @@ function renderMealPenalties() {
   if (!tbody) return;
 
   if (!MEAL_PENALTIES.length) {
-    tbody.innerHTML = '<tr><td colspan="11"><div class="empty"><div class="ei">🥪</div><p>No violations logged.</p></div></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11"><div class="empty"><div class="ei">🍽</div><p>No violations logged.</p></div></td></tr>';
   } else {
     tbody.innerHTML = [...MEAL_PENALTIES].sort((a,b)=>b.date.localeCompare(a.date)).map(p => `<tr>
       <td><strong>${p.empName}</strong></td>
@@ -2106,68 +1826,8 @@ function exportMealsCSV() {
 }
 
 // ══════════════════════════════════════════
-// SLACK INTEGRATION
-// ══════════════════════════════════════════
-async function sendSlackMessage(text) {
-  if (!SLACK_SETTINGS.webhookUrl) return;
-  try {
-    await fetch(SLACK_SETTINGS.webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text })
-    });
-  } catch(e) { console.warn('Slack send failed:', e); }
-}
-
-async function testSlackWebhook() {
-  const url    = document.getElementById('slackWebhookUrl').value.trim();
-  const btn    = document.getElementById('slackTestBtn');
-  const result = document.getElementById('slackTestResult');
-  if (!url) { result.textContent = '❌ Please enter a webhook URL first.'; result.style.color='var(--red)'; return; }
-  btn.textContent = 'Sending...'; btn.disabled = true;
-  try {
-    await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: '✅ *CFA Los Filtros Admin Hub* — Slack notifications are connected!' })
-    });
-    result.textContent = '✅ Test message sent! Check your Slack channel.';
-    result.style.color = '#16a34a';
-  } catch(e) {
-    result.textContent = '❌ Failed — double-check your webhook URL. (CORS errors are normal; if Slack received it, you\'re good)';
-    result.style.color = 'var(--red)';
-  }
-  btn.textContent = 'Send Test Message'; btn.disabled = false;
-}
-
-function saveSlackSettings() {
-  SLACK_SETTINGS.webhookUrl        = document.getElementById('slackWebhookUrl').value.trim();
-  SLACK_SETTINGS.notifOnRequest    = document.getElementById('notifOnRequest').checked;
-  SLACK_SETTINGS.notifOnApprove    = document.getElementById('notifOnApprove').checked;
-  SLACK_SETTINGS.notifOnTardiness  = document.getElementById('notifOnTardiness').checked;
-  try { localStorage.setItem('cfa_losfiltros_slack', JSON.stringify(SLACK_SETTINGS)); } catch(e){}
-  cm('slackModal');
-  showToast('✅ Notification settings saved!');
-}
-
-function loadSlackSettings() {
-  try {
-    const s = localStorage.getItem('cfa_losfiltros_slack');
-    if (s) Object.assign(SLACK_SETTINGS, JSON.parse(s));
-    const urlEl = document.getElementById('slackWebhookUrl');
-    if (urlEl && SLACK_SETTINGS.webhookUrl) urlEl.value = SLACK_SETTINGS.webhookUrl;
-    ['notifOnRequest','notifOnApprove','notifOnTardiness'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) el.checked = SLACK_SETTINGS[id] !== false;
-    });
-  } catch(e){}
-}
-
-// ══════════════════════════════════════════
 // PERSISTENCE — tardiness + meals + slack
 // ══════════════════════════════════════════
-function saveTardinessData() {
-  try { localStorage.setItem('cfa_losfiltros_tardiness', JSON.stringify(TARDINESS_LOG)); } catch(e){}
 }
 function saveMealData() {
   try { localStorage.setItem('cfa_losfiltros_meals', JSON.stringify(MEAL_PENALTIES)); } catch(e){}
@@ -2178,11 +1838,8 @@ const _origLFS = loadFromStorage;
 loadFromStorage = function() {
   _origLFS();
   try {
-    const td = localStorage.getItem('cfa_losfiltros_tardiness');
-    if (td) { TARDINESS_LOG.length=0; TARDINESS_LOG.push(...JSON.parse(td)); }
     const mp = localStorage.getItem('cfa_losfiltros_meals');
     if (mp) { MEAL_PENALTIES.length=0; MEAL_PENALTIES.push(...JSON.parse(mp)); }
-    loadSlackSettings();
   } catch(e) { console.warn('Extended load failed:', e); }
 };
 
@@ -2206,7 +1863,6 @@ populateEmployeeDropdowns = function() {
 const _origGoTab = goTab;
 goTab = function(t) {
   _origGoTab(t);
-  if (t === 'tardiness') { renderTardiness(); populateEmployeeDropdowns(); }
   if (t === 'meals')     { renderMealPenalties(); populateEmployeeDropdowns(); }
   if (t === 'recon')     { initReconciliationUI(); renderReconReport(); }
 };
@@ -2497,7 +2153,7 @@ async function handleMealPdfImport(file) {
     dropzone.style.borderColor = vCount > 0 ? 'var(--red)' : '#16a34a';
     document.getElementById('mealPdfFile').value = '';
 
-    if (vCount > 0) showToast(`🥪 Found ${vCount} meal penalty violations!`);
+    if (vCount > 0) showToast(`✅ Found ${vCount} meal penalty violations!`);
     else showToast('✅ No meal penalty violations found.');
 
   } catch(e) {
@@ -2745,634 +2401,1197 @@ function parseMealTimeDetail(lines) {
 
 
 // ══════════════════════════════════════════════════════════════════
+// GASTOS AUTOFILL MODULE
+// ══════════════════════════════════════════════════════════════════
+
+const GASTOS_PROXY = `${SUPABASE_URL}/functions/v1/claude-proxy`;
+
+const GASTOS_CATEGORIES = [
+  "Auto Liability Insurance","Bank Charges","Business Interruption Insrnc","CFA Kiosk",
+  "Catering Expense","Catering Mileage - Team Member","Cell Phone - Team Members",
+  "Change Fund","Cleaning Supplies","Commissions Paid on Sales",
+  "Contents and Inventory Insrnc","Crime Insurance","Cyber Insurance",
+  "Distributor - Fuel Surcharge","Drive-Thru TM Experience","Dues & Subscriptions",
+  "Electric Salad Spinners","Electric Utility - Utility Co.","Floor Scrubbers",
+  "Food - Beverages","Food - Bread","Food - Breakfast","Food - Chicken - Breakfast",
+  "Food - Chicken - Filets","Food - Chicken - Grld Filet","Food - Chicken - Grld Nggts",
+  "Food - Chicken - Nuggets","Food - Chicken - Spicy","Food - Chicken - Strips",
+  "Food - Coater","Food - Condiments","Food - Dessert","Food - Distributor",
+  "Food - Miscellaneous","Food - Oil","Food - Other Food","Food - Produce",
+  "Food - Test Ingredients","Food - Waffle Potato Fries","Food Giveaways",
+  "General Liability","General Miscellaneous","Health Insurance - Team Member",
+  "Health Insurance Administrative Fees","Kitchen Supplies","Legal Fees - Restaurant Ops",
+  "License","Life Insurance-Team Member","Linen","Maint Bldg - Door/Glass/HW",
+  "Maint Bldg - Electrical","Maint Bldg - Exhaust","Maint Bldg - Finishes/Paint",
+  "Maint Bldg - HVAC","Maint Bldg - Lighting","Maint Bldg - Lndscp/Lawn/Irrig",
+  "Maint Bldg - Miscellaneous","Maint Bldg - Playground","Maint Bldg - Plumbing",
+  "Maint Bldg - Prev/Sched Maint","Maint Bldg - Seating","Maint Bldg - Signage",
+  "Maint Equip- Beverage","Maint Equip- DriveThru Equip","Maint Equip- Food Prep/Hold",
+  "Maint Equip- Frig/Freezer/Thaw","Maint Equip- Grill","Maint Equip- I.T.",
+  "Maint Equip- Ice Cream","Maint Equip- Ice Machine","Maint Equip- Miscellaneous",
+  "Maint Equip- Open Fryer","Maint Equip- Other","Maint Equip- Pressure Fryer",
+  "Maint Equip- Prev/Sched Maint","Maint Equip- Shelving","Maint Equip- Walkin Frig/Frzr",
+  "Maint Equip- Water Filtration","Maintenance","Marketing - Fundraisers",
+  "Marketing - Rest. Advertising","Marketing - Services","Marketing - Sponsorships",
+  "Meals - Operator","Meals - Team Member","Music Expense","NSF Check Collection",
+  "Office Supplies","Offsite Office Space","Offsite Space/Storage",
+  "Operator Business Mileage","Operator Development Expense","Operator EPLI",
+  "Operator cell phone","Other Business Insurance","Other Team Member Benefits",
+  "Paper","Paper Giveaways","Party/Outing Expense",
+  "Payroll - Wages - bonus/vacation/sick time","Payroll - Workers Comp Insurance",
+  "Payroll- Wages","Pension - Team Member","Pest Control",
+  "Phone-Landline/Internet/Wifi","Products and Premise Liability Insurance",
+  "Profit Sharing - Team Member","Property Tax Expense","Property Tax-Opr/Entity Owned",
+  "R&M Equip - Music","R&M Equip - Security","Recruiting Expense",
+  "Repair Bldg - Door/Glass/HW","Repair Bldg - Electrical","Repair Bldg - Exhaust",
+  "Repair Bldg - Finishes/Paint","Repair Bldg - HVAC","Repair Bldg - Lighting",
+  "Repair Bldg - Miscellaneous","Repair Bldg - Playground","Repair Bldg - Plumbing",
+  "Repair Bldg - Prev/Sched Maint","Repair Bldg - Seating","Repair Bldg - Signage",
+  "Repair Bldg -Land/Lawn/Irrig","Repair Equip - Beverage","Repair Equip - Drive-Thr Equip",
+  "Repair Equip - Food Prep/Hold","Repair Equip - Frig/Frzer/Thaw","Repair Equip - Grill",
+  "Repair Equip - I.T.","Repair Equip - Ice Cream","Repair Equip - Ice Machine",
+  "Repair Equip - Miscellaneous","Repair Equip - Open Fryer","Repair Equip - Other",
+  "Repair Equip - Pressure Fryer","Repair Equip - Prev/Sch Maint","Repair Equip - Shelving",
+  "Repair Equip - Water Filtr.","Repair Equip - Wlk-in Frig/Frz","Repair General - Other",
+  "Repairs","Replacement Check","Retirement Admin Fees","Security Expense",
+  "Service Amenities","Swiped Credit Card Fees","TM Bus. Mileage(Non-Delivery)",
+  "Team Member Retirement","Team Member Training Expense","Theft Liability Insurance",
+  "Third Party Staffing","Trailers","Trash Compactors","Travel - Operators",
+  "Travel - Team Member","Uniforms","Utilities - Deposit Paid","Utilities - Gas",
+  "Utilities - Trash Service","Water & Sewage - Utility Co.","Fuel Surcharge"
+  // NOTE: "Withholding Tax- COR Only" intentionally excluded per spec
+];
+
+// ── Module State ───────────────────────────────────────────────
+const G = {
+  mode: 'single',        // 'single' | 'batch'
+  batch: [],             // [{file, index, status, extracted, blob, dupFound}]
+  sameVendor: false,
+  sameVendorName: '',
+  currentEntry: null,    // data being reviewed in step 2
+  currentBlob: null,     // compressed image blob for current entry
+  historyFilter: 'all',
+  dupFound: null,
+  forceOverride: false,
+};
+let _gastosFiles = [];
+
+// ── Category Lookup ────────────────────────────────────────────
+function getCategoryForVendor(vendorName) {
+  const name = (vendorName || '').toUpperCase().trim();
+
+  const tier1 = {
+    "FRESHPOINT PUERTO RICO":"Food - Produce","COCA-COLA PR":"Food - Beverages",
+    "HOLSUM PR":"Food - Bread","TRES MONJITAS":"Food - Beverages",
+    "PR COFFEE":"Food - Beverages","ERS GRAPHICS":"Marketing - Rest. Advertising",
+    "PARTS TOWN":"Kitchen Supplies","DANNY DETAILING":"Maint Bldg - Prev/Sched Maint",
+    "META":"Marketing - Rest. Advertising",
+    "MICHAELANGELO PEREZ BURGOS":"Maint Bldg - Lndscp/Lawn/Irrig",
+    "RENTOKIL":"Pest Control","HALO":"Marketing - Rest. Advertising",
+    "ANGEL BERRIOS GARCIA OSO":"Offsite Space/Storage","LOOMIS":"Change Fund",
+    "LUMA":"Electric Utility - Utility Co.","ACUEDUCTOS":"Water & Sewage - Utility Co.",
+    "YCS":"Maint Equip- I.T.","EC WASTE":"Trash Compactors",
+    "CANVA":"Dues & Subscriptions","OFFICE DEPOT":"Office Supplies",
+    "EL COQUI":"Food - Beverages","SAMS CLUB":"Meals - Team Member",
+    "WALGREENS":"General Miscellaneous","DATE LABEL":"Kitchen Supplies",
+    "PLI":"Marketing - Rest. Advertising","ECOLAB":"Cleaning Supplies",
+    "STARBUCKS":"Meals - Team Member","SHRM":"Team Member Training Expense",
+    "MOOD MEDIA":"Music Expense","SIGNATURE CONTRACTOR":"Maint Bldg - Lndscp/Lawn/Irrig",
+    "OFFICE MAX":"Paper","INDEED":"Recruiting Expense",
+    "SSP AMERICA THE KITCHEN":"Meals - Team Member","SHOES FOR CREWS":"Uniforms",
+    "JW MARRIOTT":"Team Member Training Expense","ABBYS PIZZA":"Party/Outing Expense",
+    "OOBE":"Uniforms","AMBITEK FURNITURE":"Offsite Space/Storage",
+    "THE APPROACH":"Team Member Training Expense","QDOBA":"Meals - Team Member",
+    "CLARK":"Kitchen Supplies","KINGS UNIFORMS":"Linen",
+    "T-MOBILE":"Phone-Landline/Internet/Wifi","CASA DE TORNILLOS":"Maintenance",
+  };
+  const tier2 = {
+    "AMAZON":"General Miscellaneous","COSTCO":"General Miscellaneous",
+    "WALMART":"General Miscellaneous","SUPERMAX":"General Miscellaneous",
+    "HOME DEPOT":"General Miscellaneous","SPECTRUM INDUSTRIAL":"Dues & Subscriptions",
+    "PROGRESSIVE":"Maintenance","ME SALVE":"General Miscellaneous",
+    "NIETO REFRIGERATION":"Maint Bldg - Prev/Sched Maint",
+    "RET":"Maint Bldg - Prev/Sched Maint",
+    "INTERNATIONAL MASCOT":"Marketing - Rest. Advertising",
+    "ALBER RAMOS ROMERO":"Maintenance",
+    "ELECTRIC SERVICE CORPORATION":"Maint Equip- Prev/Sched Maint",
+    "LLUCH":"Maint Equip- Prev/Sched Maint","BEST BUY":"Office Supplies",
+    "KRISPY KREME":"Meals - Team Member","IKEA":"Office Supplies",
+    "CHARTER HOUSE":"General Miscellaneous",
+    "VA ELECTRICAL CONTRACTORS":"Maint Bldg - Electrical",
+    "ASORE":"Team Member Training Expense",
+    "TAYLOR SALES AND SERVICES":"Maint Equip- Ice Cream",
+    "UNITED AIRLINES":"Travel - Team Member","HORNOFINO":"Meals - Team Member",
+    "GOOD CENTS R&M":"Kitchen Supplies",
+  };
+
+  if (tier1[name]) return { category: tier1[name], tier: 'locked', confidence: 100 };
+  if (tier2[name]) return { category: tier2[name], tier: 'ai', confidence: 60 };
+  for (const [k, v] of Object.entries(tier1)) {
+    if (name.includes(k) || k.includes(name)) return { category: v, tier: 'locked', confidence: 90 };
+  }
+  for (const [k, v] of Object.entries(tier2)) {
+    if (name.includes(k) || k.includes(name)) return { category: v, tier: 'ai', confidence: 50 };
+  }
+  return { category: '', tier: 'human', confidence: 0 };
+}
+
+function gastosCategoryBadge(tier) {
+  if (tier === 'locked') return '<span class="badge" style="background:#d1fae5;color:#065f46;font-size:.72rem">Auto-fill ✓</span>';
+  if (tier === 'ai')     return '<span class="badge" style="background:#fef3c7;color:#92400e;font-size:.72rem">Sugerido por IA</span>';
+  return                        '<span class="badge" style="background:#fee2e2;color:#991b1b;font-size:.72rem">Requiere revisión</span>';
+}
+
+function gastosStatusBadge(status) {
+  if (status === 'pending')  return '<span class="badge" style="background:#fef3c7;color:#92400e">Pendiente</span>';
+  if (status === 'approved') return '<span class="badge" style="background:#dbeafe;color:#1e40af">Aprobado</span>';
+  if (status === 'entered')  return '<span class="badge" style="background:#dcfce7;color:#166534">Ingresado ✓</span>';
+  return '<span class="badge">—</span>';
+}
+
+// ── Date helpers ───────────────────────────────────────────────
+function gastosParseDate(str) {
+  // MM/DD/YYYY → YYYY-MM-DD
+  if (!str) return null;
+  const p = str.split('/');
+  if (p.length === 3) return `${p[2]}-${p[0].padStart(2,'0')}-${p[1].padStart(2,'0')}`;
+  return str;
+}
+function gastosFormatDate(dbDate) {
+  // YYYY-MM-DD → MM/DD/YYYY
+  if (!dbDate) return '—';
+  try {
+    const d = new Date(dbDate + 'T12:00:00');
+    return `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`;
+  } catch { return dbDate; }
+}
+
+// ── Image helpers ──────────────────────────────────────────────
+async function gastosCompressImage(file) {
+  return new Promise(resolve => {
+    const canvas = document.createElement('canvas');
+    const img = new Image();
+    img.onload = () => {
+      const maxW = 1200;
+      const scale = Math.min(1, maxW / img.width);
+      canvas.width  = img.width  * scale;
+      canvas.height = img.height * scale;
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(blob => resolve(blob), 'image/jpeg', 0.85);
+    };
+    img.src = URL.createObjectURL(file);
+  });
+}
+async function gastosToBase64(blob) {
+  return new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.readAsDataURL(blob);
+  });
+}
+
+// ── Duplicate check ────────────────────────────────────────────
+async function gastosCheckDuplicate(vendor, invoiceNumber) {
+  if (!invoiceNumber) return null;
+  try {
+    const { data } = await getSupa()
+      .from('gastos_entries')
+      .select('id,vendor,invoice_number,invoice_date,amount,status')
+      .ilike('vendor', `%${vendor}%`)
+      .eq('invoice_number', invoiceNumber)
+      .limit(1);
+    return data?.length > 0 ? data[0] : null;
+  } catch { return null; }
+}
+
+// ── Sorting ────────────────────────────────────────────────────
+function sortForGastosEntry(entries) {
+  return entries
+    .filter(e => e.status === 'approved')
+    .sort((a, b) => {
+      if (a.vendor < b.vendor) return -1;
+      if (a.vendor > b.vendor) return 1;
+      return new Date(a.invoice_date) - new Date(b.invoice_date);
+    });
+}
+
+// ── AI calls ───────────────────────────────────────────────────
+async function gastosExtractReceipt(base64Img) {
+  const res = await fetch(GASTOS_PROXY, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON}` },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 600,
+      system: `You are an expense entry assistant for a Chick-fil-A restaurant in Puerto Rico. You will be given a photo of a receipt or invoice. Extract the following fields and return ONLY valid JSON with no markdown, no backticks, no preamble. Return this exact structure: {"vendor":"supplier name in ALL CAPS. Use canonical names: FRESHPOINT PUERTO RICO, COCA-COLA PR, HOLSUM PR, LUMA, ACUEDUCTOS, RENTOKIL, etc. Otherwise return as printed in ALL CAPS.","invoice_number":"invoice/receipt number or null","invoice_date":"MM/DD/YYYY or null","amount":total as number or null,"description":"1 sentence describing what was purchased","raw_vendor":"vendor name exactly as printed"}`,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64Img } },
+          { type: 'text', text: 'Extract the expense data from this receipt.' }
+        ]
+      }]
+    })
+  });
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
+  return JSON.parse(text);
+}
+
+async function gastosExtractSameVendor(base64Img, vendorName) {
+  const res = await fetch(GASTOS_PROXY, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON}` },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 200,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64Img } },
+          { type: 'text', text: `The vendor is already known: ${vendorName}. Extract only: invoice_number, invoice_date (MM/DD/YYYY), and amount (number only). Return ONLY valid JSON: {"invoice_number":"...","invoice_date":"...","amount":0.00}` }
+        ]
+      }]
+    })
+  });
+  if (!res.ok) throw new Error(`API error ${res.status}`);
+  const data = await res.json();
+  const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
+  return JSON.parse(text);
+}
+
+async function gastosAiCategory(vendor, description) {
+  const catList = GASTOS_CATEGORIES.join(', ');
+  const res = await fetch(GASTOS_PROXY, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON}` },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 200,
+      messages: [{
+        role: 'user',
+        content: `You are an expense categorization assistant for a Chick-fil-A restaurant in Puerto Rico. Vendor: "${vendor}". Description: "${description}". Return ONLY valid JSON: {"category":"exact name from the list","reasoning":"one sentence"}. NEVER suggest "Withholding Tax- COR Only". Choose ONLY from this list: ${catList}`
+      }]
+    })
+  });
+  if (!res.ok) throw new Error(`API error ${res.status}`);
+  const data = await res.json();
+  const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
+  return JSON.parse(text);
+}
+
+// ── Supabase CRUD ──────────────────────────────────────────────
+async function gastosSaveEntry(entry) {
+  const { data: { user } } = await getSupa().auth.getUser();
+  const { data, error } = await getSupa()
+    .from('gastos_entries')
+    .insert({ ...entry, created_by: user?.id })
+    .select().single();
+  if (error) throw error;
+  return data;
+}
+
+async function gastosUpdateStatus(id, status) {
+  const { error } = await getSupa().from('gastos_entries').update({ status }).eq('id', id);
+  if (error) throw error;
+}
+
+async function gastosLoadHistory(filterStatus = 'all') {
+  let q = getSupa().from('gastos_entries').select('*').order('created_at', { ascending: false }).limit(150);
+  if (filterStatus !== 'all') q = q.eq('status', filterStatus);
+  const { data, error } = await q;
+  if (error) throw error;
+  return data || [];
+}
+
+async function gastosUploadImage(blob, entryId) {
+  try {
+    const { data: { user } } = await getSupa().auth.getUser();
+    const path = `gastos/${user?.id || 'anon'}/${entryId}.jpg`;
+    await getSupa().storage.from('receipts').upload(path, blob, { contentType: 'image/jpeg', upsert: true });
+    const { data } = getSupa().storage.from('receipts').getPublicUrl(path);
+    return data?.publicUrl || null;
+  } catch (e) { console.warn('Image upload failed:', e); return null; }
+}
+
+// ── MAIN INIT ──────────────────────────────────────────────────
+function gastosInit() {
+  const app = document.getElementById('gastosApp');
+  if (!app || app.dataset.init === '1') {
+    // Already initialized — just refresh queue and history
+    gastosRenderQueue();
+    gastosRenderHistory();
+    return;
+  }
+  app.dataset.init = '1';
+  app.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+      <h2 style="margin:0;font-size:1.2rem;color:var(--navy)">💰 Gastos Autofill</h2>
+      <span style="font-size:.78rem;color:var(--text-mid)">Extrae datos de recibos con IA · Prepara entradas para Gastos</span>
+    </div>
+    <div id="gastosStep1"></div>
+    <div id="gastosStep2" style="display:none"></div>
+    <div id="gastosQueueArea" style="margin-top:20px"></div>
+    <div id="gastosHistoryArea" style="margin-top:20px"></div>`;
+
+  gastosRenderUpload();
+  gastosRenderQueue();
+  gastosRenderHistory();
+}
+
+// ── STEP 1: Upload UI ──────────────────────────────────────────
+function gastosRenderUpload() {
+  document.getElementById('gastosStep1').innerHTML = `
+  <div class="ccard">
+    <div style="font-weight:700;color:var(--navy);font-size:.9rem;margin-bottom:14px">📤 Paso 1 — Subir Recibo(s)</div>
+
+    <div id="gDropZone"
+      style="border:2px dashed #94a3b8;border-radius:10px;padding:36px 20px;text-align:center;cursor:pointer;transition:border-color .2s;margin-bottom:14px"
+      onclick="document.getElementById('gFileInput').click()"
+      ondragover="event.preventDefault();this.style.borderColor='var(--navy)'"
+      ondragleave="this.style.borderColor='#94a3b8'"
+      ondrop="event.preventDefault();this.style.borderColor='#94a3b8';gastosHandleFiles(event.dataTransfer.files)">
+      <div style="font-size:2.2rem;margin-bottom:8px">📷</div>
+      <div style="font-weight:600;color:var(--navy);margin-bottom:4px">Arrastra fotos aquí o haz clic para seleccionar</div>
+      <div style="font-size:.78rem;color:var(--text-mid)">Máximo 15 recibos · JPG / PNG / HEIC · Cámara o galería</div>
+    </div>
+    <input type="file" id="gFileInput" accept="image/*" capture="environment" multiple
+      style="display:none" onchange="gastosHandleFiles(this.files)"/>
+
+    <!-- Same-vendor toggle — shown only in batch mode -->
+    <div id="gSameVendorRow" style="display:none;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:12px 14px;margin-bottom:14px">
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:.875rem;font-weight:600;color:#0369a1">
+        <input type="checkbox" id="gSameVendorChk" onchange="gastosToggleSameVendor()"
+          style="width:18px;height:18px;accent-color:var(--navy)"/>
+        ¿Todos los recibos son del mismo proveedor?
+      </label>
+      <div id="gSameVendorInput" style="display:none;margin-top:10px">
+        <input type="text" id="gVendorNamePreset" class="sinput" style="width:100%"
+          placeholder="Nombre del proveedor (ej. FRESHPOINT PUERTO RICO)"
+          oninput="G.sameVendorName=this.value.trim().toUpperCase()"/>
+      </div>
+    </div>
+
+    <!-- Single preview -->
+    <div id="gSinglePreview" style="display:none;margin-bottom:14px;text-align:center">
+      <img id="gPreviewImg" style="max-width:100%;max-height:280px;border-radius:8px;border:1px solid #e2e8f0;object-fit:contain"/>
+    </div>
+
+    <!-- Batch thumbnail grid -->
+    <div id="gBatchGrid" style="display:none;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:10px;margin-bottom:14px"></div>
+
+    <!-- Progress bar -->
+    <div id="gProgressWrap" style="display:none;margin-bottom:14px">
+      <div style="font-size:.82rem;font-weight:600;color:var(--navy);margin-bottom:6px" id="gProgressLabel">Procesando...</div>
+      <div style="background:#e5e7eb;border-radius:10px;height:8px;overflow:hidden">
+        <div id="gProgressBar" style="height:100%;background:var(--navy);border-radius:10px;transition:width .3s;width:0%"></div>
+      </div>
+    </div>
+
+    <!-- Batch summary (shown after processing) -->
+    <div id="gBatchSummary" style="display:none"></div>
+
+    <!-- Extract button -->
+    <div id="gExtractRow" style="display:none">
+      <button class="btn btn-navy" id="gExtractBtn" onclick="gastosExtract()" style="width:100%;padding:12px;font-size:.95rem">
+        ✨ Extraer datos con IA
+      </button>
+    </div>
+  </div>`;
+}
+
+function gastosHandleFiles(fileList) {
+  const files = Array.from(fileList);
+  if (!files.length) return;
+  if (files.length > 15) {
+    alert('Por favor selecciona máximo 15 recibos a la vez.');
+    return;
+  }
+  _gastosFiles = files;
+  G.mode = files.length > 1 ? 'batch' : 'single';
+  G.batch = [];
+  document.getElementById('gBatchSummary').style.display = 'none';
+
+  if (G.mode === 'single') {
+    document.getElementById('gSameVendorRow').style.display = 'none';
+    document.getElementById('gBatchGrid').style.display = 'none';
+    document.getElementById('gSinglePreview').style.display = 'block';
+    document.getElementById('gPreviewImg').src = URL.createObjectURL(files[0]);
+  } else {
+    document.getElementById('gSameVendorRow').style.display = 'block';
+    document.getElementById('gSinglePreview').style.display = 'none';
+    gastosRenderBatchGrid(files);
+  }
+  document.getElementById('gDropZone').style.borderColor = 'var(--navy)';
+  document.getElementById('gExtractRow').style.display = 'block';
+}
+
+function gastosRenderBatchGrid(files) {
+  const grid = document.getElementById('gBatchGrid');
+  grid.style.display = 'grid';
+  grid.innerHTML = files.map((f, i) => `
+    <div id="gThumb_${i}" style="border:2px solid #e2e8f0;border-radius:8px;overflow:hidden">
+      <img src="${URL.createObjectURL(f)}" style="width:100%;height:86px;object-fit:cover;display:block"/>
+      <div id="gThumbLbl_${i}" style="padding:3px 6px;font-size:.68rem;font-weight:600;text-align:center;background:#f8fafc;color:#64748b">
+        En espera
+      </div>
+    </div>`).join('');
+}
+
+function gastosSetThumbStatus(i, text, bg, color) {
+  const lbl  = document.getElementById(`gThumbLbl_${i}`);
+  const card = document.getElementById(`gThumb_${i}`);
+  if (lbl)  { lbl.textContent = text; lbl.style.background = bg; lbl.style.color = color; }
+  if (card) { card.style.borderColor = color; }
+}
+
+function gastosToggleSameVendor() {
+  G.sameVendor = document.getElementById('gSameVendorChk').checked;
+  document.getElementById('gSameVendorInput').style.display = G.sameVendor ? 'block' : 'none';
+}
+
+// ── EXTRACT dispatcher ─────────────────────────────────────────
+async function gastosExtract() {
+  if (!_gastosFiles.length) return;
+  document.getElementById('gExtractBtn').disabled = true;
+  document.getElementById('gExtractBtn').textContent = '⏳ Procesando...';
+  document.getElementById('gProgressWrap').style.display = 'block';
+
+  if (G.mode === 'single') {
+    await gastosExtractSingleFlow(_gastosFiles[0]);
+  } else {
+    await gastosExtractBatchFlow(_gastosFiles);
+  }
+}
+
+async function gastosExtractSingleFlow(file) {
+  try {
+    gastosSetProgress(20, 'Comprimiendo imagen...');
+    const blob = await gastosCompressImage(file);
+    G.currentBlob = blob;
+    gastosSetProgress(55, 'Extrayendo datos con IA...');
+    const b64  = await gastosToBase64(blob);
+    const data = await gastosExtractReceipt(b64);
+    gastosSetProgress(100, 'Listo ✓');
+    setTimeout(() => {
+      document.getElementById('gProgressWrap').style.display = 'none';
+      gastosShowStep2(data, blob);
+    }, 400);
+  } catch(err) {
+    alert('Error al procesar el recibo: ' + err.message);
+    gastosResetExtractBtn();
+  }
+}
+
+async function gastosExtractBatchFlow(files) {
+  G.batch = files.map((f, i) => ({ file: f, index: i, status: 'pending', extracted: null, blob: null, dupFound: null }));
+  const total = files.length;
+
+  for (let i = 0; i < total; i++) {
+    const item = G.batch[i];
+    gastosSetProgress(Math.round(((i) / total) * 100), `Procesando ${i+1} de ${total}...`);
+    gastosSetThumbStatus(i, '⏳ Procesando...', '#fef3c7', '#92400e');
+    try {
+      item.blob = await gastosCompressImage(item.file);
+      const b64 = await gastosToBase64(item.blob);
+
+      if (G.sameVendor && G.sameVendorName) {
+        const partial = await gastosExtractSameVendor(b64, G.sameVendorName);
+        item.extracted = { vendor: G.sameVendorName, description: '', ...partial };
+      } else {
+        item.extracted = await gastosExtractReceipt(b64);
+      }
+
+      // Duplicate check
+      if (item.extracted.invoice_number && item.extracted.vendor) {
+        item.dupFound = await gastosCheckDuplicate(item.extracted.vendor, item.extracted.invoice_number);
+      }
+
+      const missingCritical = !item.extracted.vendor || item.extracted.amount == null;
+      item.status = item.dupFound ? 'duplicate' : missingCritical ? 'review' : 'ready';
+
+      const statusMap = {
+        ready:     ['Listo ✓',      '#dcfce7', '#166534'],
+        review:    ['Revisar ⚠',   '#fef9c3', '#92400e'],
+        duplicate: ['Duplicado ✗', '#fee2e2', '#991b1b'],
+      };
+      const [t, bg, c] = statusMap[item.status] || ['?', '#f1f5f9', '#64748b'];
+      gastosSetThumbStatus(i, t, bg, c);
+    } catch(err) {
+      item.status = 'error';
+      gastosSetThumbStatus(i, 'Error ✗', '#fee2e2', '#dc2626');
+    }
+    if (i < total - 1) await new Promise(r => setTimeout(r, 500));
+  }
+
+  gastosSetProgress(100, 'Procesamiento completado');
+  gastosRenderBatchSummary();
+}
+
+function gastosSetProgress(pct, label) {
+  const bar = document.getElementById('gProgressBar');
+  const lbl = document.getElementById('gProgressLabel');
+  if (bar) bar.style.width = pct + '%';
+  if (lbl) lbl.textContent = label;
+}
+
+function gastosResetExtractBtn() {
+  const btn = document.getElementById('gExtractBtn');
+  if (btn) { btn.disabled = false; btn.textContent = '✨ Extraer datos con IA'; }
+  document.getElementById('gProgressWrap').style.display = 'none';
+}
+
+function gastosRenderBatchSummary() {
+  const ready = G.batch.filter(b => b.status === 'ready').length;
+  const review = G.batch.filter(b => b.status === 'review').length;
+  const dups   = G.batch.filter(b => b.status === 'duplicate').length;
+  const errors = G.batch.filter(b => b.status === 'error').length;
+
+  const el = document.getElementById('gBatchSummary');
+  el.style.display = 'block';
+  el.innerHTML = `
+    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-top:10px">
+      <div style="font-weight:700;color:var(--navy);margin-bottom:10px">📊 Resultado del procesamiento</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+        <span style="background:#dcfce7;color:#166534;padding:3px 10px;border-radius:20px;font-size:.8rem;font-weight:700">✅ ${ready} listos</span>
+        ${review > 0 ? `<span style="background:#fef9c3;color:#92400e;padding:3px 10px;border-radius:20px;font-size:.8rem;font-weight:700">⚠️ ${review} requieren revisión</span>` : ''}
+        ${dups   > 0 ? `<span style="background:#fee2e2;color:#991b1b;padding:3px 10px;border-radius:20px;font-size:.8rem;font-weight:700">✗ ${dups} duplicados</span>` : ''}
+        ${errors > 0 ? `<span style="background:#f1f5f9;color:#64748b;padding:3px 10px;border-radius:20px;font-size:.8rem;font-weight:700">✗ ${errors} errores</span>` : ''}
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        ${ready > 0 ? `<button class="btn btn-navy" onclick="gastosApproveAllReady()">✅ Aprobar todos los listos (${ready})</button>` : ''}
+        <button class="btn" onclick="gastosReviewOneByOne(0)">Revisar uno por uno →</button>
+      </div>
+    </div>`;
+
+  gastosResetExtractBtn();
+}
+
+// ── STEP 2: Review form ────────────────────────────────────────
+function gastosShowStep2(extracted, blob, batchIndex = null) {
+  G.currentEntry = { ...extracted, _batchIndex: batchIndex };
+  G.currentBlob  = blob;
+  G.dupFound     = null;
+  G.forceOverride = false;
+
+  const catResult = getCategoryForVendor(extracted.vendor || '');
+  G.currentEntry._catResult = catResult;
+
+  const step1 = document.getElementById('gastosStep1');
+  const step2 = document.getElementById('gastosStep2');
+  step1.style.display = 'none';
+  step2.style.display = 'block';
+
+  const hasWarning = !extracted.vendor || extracted.amount == null;
+  const catOpts = GASTOS_CATEGORIES.map(c =>
+    `<option value="${c}" ${c === catResult.category ? 'selected' : ''}>${c}</option>`
+  ).join('');
+  const catBorderColor = catResult.tier === 'locked' ? '#16a34a' : catResult.tier === 'ai' ? '#d97706' : '#dc2626';
+
+  step2.innerHTML = `
+  <div class="ccard">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+      <div style="font-weight:700;color:var(--navy);font-size:.9rem">📝 Paso 2 — Revisar y Confirmar</div>
+      <button class="btn" style="font-size:.78rem" onclick="gastosBackToUpload()">← Nuevo recibo</button>
+    </div>
+
+    ${hasWarning ? `<div style="background:#fef9c3;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;font-size:.82rem;color:#92400e;margin-bottom:12px">
+      ⚠️ No pudimos leer todos los datos. Por favor verifica la foto o ingresa los datos manualmente.</div>` : ''}
+
+    <div id="gDupAlert"></div>
+
+    <div class="frow" style="margin-bottom:12px">
+      <div class="field" style="flex:2">
+        <label style="font-size:.8rem;font-weight:600;color:var(--text-mid)">Proveedor *</label>
+        <input type="text" id="gVendor" value="${extracted.vendor || ''}" class="sinput"
+          style="border-color:${!extracted.vendor ? '#d97706' : '#d1d5db'}"
+          oninput="gastosOnVendorInput(this.value)"/>
+      </div>
+      <div class="field" style="flex:1">
+        <label style="font-size:.8rem;font-weight:600;color:var(--text-mid)">Número de factura</label>
+        <input type="text" id="gInvNum" value="${extracted.invoice_number || ''}" class="sinput"/>
+      </div>
+    </div>
+
+    <div class="frow" style="margin-bottom:12px">
+      <div class="field" style="flex:1">
+        <label style="font-size:.8rem;font-weight:600;color:var(--text-mid)">Fecha de factura</label>
+        <input type="text" id="gInvDate" value="${extracted.invoice_date || ''}" class="sinput" placeholder="MM/DD/YYYY"/>
+      </div>
+      <div class="field" style="flex:1">
+        <label style="font-size:.8rem;font-weight:600;color:var(--text-mid)">Fecha de pago <span style="font-weight:400;color:#94a3b8">(opcional)</span></label>
+        <input type="text" id="gPayDate" value="" class="sinput" placeholder="MM/DD/YYYY"/>
+      </div>
+    </div>
+
+    <div class="frow" style="margin-bottom:12px">
+      <div class="field" style="flex:1">
+        <label style="font-size:.8rem;font-weight:600;color:var(--text-mid)">Monto *</label>
+        <input type="number" id="gAmount" value="${extracted.amount ?? ''}" class="sinput" step="0.01" min="0"
+          style="border-color:${extracted.amount == null ? '#d97706' : '#d1d5db'}"/>
+      </div>
+      <div class="field" style="flex:1">
+        <label style="font-size:.8rem;font-weight:600;color:var(--text-mid)">Divisa</label>
+        <select id="gCurrency" class="sinput">
+          <option value="USD" selected>USD</option>
+          <option value="EUR">EUR</option>
+        </select>
+      </div>
+    </div>
+
+    <div style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <label style="font-size:.8rem;font-weight:600;color:var(--text-mid);margin:0">Categoría de gasto *</label>
+        <span id="gCatBadge">${gastosCategoryBadge(catResult.tier)}</span>
+      </div>
+      <select id="gCat" onchange="gastosOnCatChange()"
+        style="width:100%;padding:9px 10px;border:2px solid ${catBorderColor};border-radius:7px;font-size:.875rem;background:#fff">
+        <option value="">-- Seleccionar categoría --</option>
+        ${catOpts}
+      </select>
+    </div>
+
+    <div style="margin-bottom:14px">
+      <label style="font-size:.8rem;font-weight:600;color:var(--text-mid);display:block;margin-bottom:4px">Descripción</label>
+      <textarea id="gDesc" class="sinput" rows="2" style="width:100%;resize:vertical">${extracted.description || ''}</textarea>
+    </div>
+
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn btn-navy" id="gApproveBtn" onclick="gastosApproveEntry()"
+        ${catResult.tier === 'human' && !catResult.category ? 'disabled' : ''}>
+        ✅ Aprobar y guardar
+      </button>
+      <button class="btn" onclick="gastosBackToUpload()">🗑 Limpiar</button>
+    </div>
+  </div>`;
+
+  // Async: duplicate check + AI category fallback
+  const v = extracted.vendor, n = extracted.invoice_number;
+  if (v && n) gastosCheckAndShowDup(v, n);
+  if (catResult.tier === 'human' && extracted.description) {
+    gastosAiCategory(v, extracted.description).then(r => {
+      if (!r?.category) return;
+      const sel = document.getElementById('gCat');
+      if (sel) {
+        sel.value = r.category;
+        sel.style.borderColor = '#d97706';
+        document.getElementById('gCatBadge').innerHTML = gastosCategoryBadge('ai');
+        gastosOnCatChange();
+      }
+    }).catch(() => {});
+  }
+}
+
+function gastosOnVendorInput(val) {
+  const cat = getCategoryForVendor(val);
+  const sel = document.getElementById('gCat');
+  const badge = document.getElementById('gCatBadge');
+  if (sel && cat.category) {
+    sel.value = cat.category;
+    sel.style.borderColor = cat.tier === 'locked' ? '#16a34a' : cat.tier === 'ai' ? '#d97706' : '#dc2626';
+  }
+  if (badge) badge.innerHTML = gastosCategoryBadge(cat.tier);
+  gastosOnCatChange();
+}
+
+function gastosOnCatChange() {
+  const val = document.getElementById('gCat')?.value;
+  const btn = document.getElementById('gApproveBtn');
+  if (btn) btn.disabled = !val || (G.dupFound && !G.forceOverride);
+}
+
+async function gastosCheckAndShowDup(vendor, invoiceNumber) {
+  const dup = await gastosCheckDuplicate(vendor, invoiceNumber);
+  G.dupFound = dup;
+  const el = document.getElementById('gDupAlert');
+  if (!el) return;
+  if (!dup) { el.innerHTML = ''; return; }
+
+  el.innerHTML = `
+    <div style="background:#fee2e2;border:1px solid #fecaca;border-radius:8px;padding:12px 14px;margin-bottom:12px">
+      <div style="font-weight:700;color:#dc2626;margin-bottom:6px">⚠️ Esta factura ya fue ingresada</div>
+      <div style="font-size:.82rem;color:#7f1d1d;margin-bottom:10px">
+        Proveedor: ${dup.vendor} · Fecha: ${gastosFormatDate(dup.invoice_date)} · Monto: $${parseFloat(dup.amount||0).toFixed(2)} · Estado: ${dup.status}
+      </div>
+      <button class="btn" style="font-size:.78rem;border-color:#dc2626;color:#dc2626" onclick="gastosForceOverride()">
+        Ignorar y guardar de todas formas
+      </button>
+    </div>`;
+  const btn = document.getElementById('gApproveBtn');
+  if (btn) btn.disabled = true;
+}
+
+function gastosForceOverride() {
+  G.forceOverride = true;
+  G.dupFound = null;
+  document.getElementById('gDupAlert').innerHTML = `
+    <div style="background:#fef9c3;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:.82rem;color:#92400e">
+      ⚠️ Guardando como duplicado confirmado — haz clic en "Aprobar y guardar" para confirmar.
+    </div>`;
+  gastosOnCatChange();
+}
+
+async function gastosApproveEntry() {
+  const vendor   = document.getElementById('gVendor')?.value.trim();
+  const invNum   = document.getElementById('gInvNum')?.value.trim();
+  const invDate  = document.getElementById('gInvDate')?.value.trim();
+  const payDate  = document.getElementById('gPayDate')?.value.trim();
+  const amount   = parseFloat(document.getElementById('gAmount')?.value || '');
+  const currency = document.getElementById('gCurrency')?.value || 'USD';
+  const category = document.getElementById('gCat')?.value;
+  const desc     = document.getElementById('gDesc')?.value.trim();
+
+  if (!vendor)   { alert('Por favor ingresa el nombre del proveedor.'); return; }
+  if (!category) { alert('Por favor selecciona una categoría de gasto.'); return; }
+  if (!amount || isNaN(amount)) { alert('Por favor ingresa un monto válido.'); return; }
+
+  const btn = document.getElementById('gApproveBtn');
+  btn.disabled = true; btn.textContent = 'Guardando...';
+
+  try {
+    const catResult = getCategoryForVendor(vendor);
+    const entry = {
+      vendor, invoice_number: invNum || null,
+      invoice_date: invDate ? gastosParseDate(invDate) : null,
+      payment_date: payDate ? gastosParseDate(payDate) : null,
+      currency, amount, expense_category: category,
+      description: desc || null,
+      category_tier: G.currentEntry._catResult?.tier || catResult.tier,
+      category_confidence: G.currentEntry._catResult?.confidence || catResult.confidence,
+      status: 'approved'
+    };
+
+    const saved = await gastosSaveEntry(entry);
+
+    // Upload image async (non-blocking)
+    if (G.currentBlob) {
+      gastosUploadImage(G.currentBlob, saved.id).then(url => {
+        if (url) getSupa().from('gastos_entries').update({ receipt_image_url: url }).eq('id', saved.id);
+      });
+    }
+
+    gastosShowStep3Single(saved);
+    gastosRenderQueue();
+    gastosRenderHistory();
+  } catch(err) {
+    alert('Error al guardar: ' + err.message);
+    btn.disabled = false; btn.textContent = '✅ Aprobar y guardar';
+  }
+}
+
+function gastosBackToUpload() {
+  document.getElementById('gastosStep2').style.display = 'none';
+  document.getElementById('gastosStep1').style.display = 'block';
+  _gastosFiles = [];
+  G.currentEntry = null; G.currentBlob = null; G.dupFound = null; G.forceOverride = false;
+  gastosRenderUpload();
+}
+
+// ── STEP 3: Single entry ready panel ──────────────────────────
+function gastosShowStep3Single(entry) {
+  const step2 = document.getElementById('gastosStep2');
+  step2.innerHTML = `
+  <div class="ccard">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+      <div style="font-weight:700;color:var(--navy);font-size:.9rem">✅ Listo para ingresar en Gastos</div>
+      <button class="btn" style="font-size:.78rem" onclick="gastosBackToUpload()">+ Nuevo recibo</button>
+    </div>
+
+    <!-- Status pill row -->
+    <div style="display:flex;margin-bottom:18px;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">
+      ${['Pendiente','Aprobado','Ingresado'].map((s,i) => `
+        <div style="flex:1;padding:10px 8px;text-align:center;font-size:.75rem;font-weight:700;
+          background:${i===1?'var(--navy)':'#f8fafc'};color:${i===1?'#fff':'var(--text-mid)'};
+          border-right:${i<2?'1px solid #e2e8f0':'none'}">
+          ${['○','★','✓'][i]} ${s}
+        </div>`).join('')}
+    </div>
+
+    <div style="font-size:.72rem;font-weight:700;color:var(--text-mid);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Página 1 — Add Invoice</div>
+    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:10px">
+      ${gastosRORow('Supplier', entry.vendor)}
+      ${gastosRORow('Invoice Number', entry.invoice_number || '—')}
+      ${gastosRORow('Invoice Date', gastosFormatDate(entry.invoice_date))}
+      ${gastosRORow('Currency', entry.currency || 'USD')}
+    </div>
+    <div style="font-size:.72rem;font-weight:700;color:var(--text-mid);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Página 2 — Add Invoice Detail</div>
+    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:10px">
+      ${gastosRORow('Expense Category', entry.expense_category || '—')}
+      ${gastosRORow('Amount', `$${parseFloat(entry.amount||0).toFixed(2)}`)}
+      ${gastosRORow('Description', entry.description || '—')}
+    </div>
+    <div style="font-size:.72rem;font-weight:700;color:var(--text-mid);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Página 3 — Edit Invoice</div>
+    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:16px">
+      ${gastosRORow('Payment Date', gastosFormatDate(entry.payment_date))}
+    </div>
+
+    <button class="btn btn-navy" id="gMarkEnteredBtn_${entry.id}"
+      onclick="gastosMarkEntered('${entry.id}', this)" style="width:100%;padding:12px">
+      ✅ Marcar como ingresado en Gastos
+    </button>
+  </div>`;
+}
+
+function gastosRORow(label, value) {
+  return `<div style="display:flex;align-items:baseline;gap:12px;padding:5px 0;border-bottom:1px solid #f1f5f9">
+    <span style="font-size:.75rem;font-weight:700;color:var(--text-mid);min-width:140px;flex-shrink:0">${label}</span>
+    <span style="font-size:.9rem;font-weight:600;color:var(--navy)">${value}</span>
+  </div>`;
+}
+
+async function gastosMarkEntered(id, btn) {
+  btn.disabled = true; btn.textContent = 'Actualizando...';
+  try {
+    await gastosUpdateStatus(id, 'entered');
+    btn.textContent = '✓ Ingresado en Gastos';
+    btn.style.background = '#16a34a';
+    btn.style.borderColor = '#16a34a';
+    gastosRenderQueue();
+    gastosRenderHistory();
+  } catch(err) {
+    alert('Error: ' + err.message);
+    btn.disabled = false; btn.textContent = '✅ Marcar como ingresado en Gastos';
+  }
+}
+
+// ── Batch approve all ready ────────────────────────────────────
+async function gastosApproveAllReady() {
+  const readyItems = G.batch.filter(b => b.status === 'ready');
+  if (!readyItems.length) return;
+  const btn = event.currentTarget;
+  btn.disabled = true; btn.textContent = `Guardando ${readyItems.length}...`;
+  let saved = 0;
+  for (const item of readyItems) {
+    try {
+      const catResult = getCategoryForVendor(item.extracted.vendor || '');
+      const entry = {
+        vendor: item.extracted.vendor,
+        invoice_number: item.extracted.invoice_number || null,
+        invoice_date: item.extracted.invoice_date ? gastosParseDate(item.extracted.invoice_date) : null,
+        amount: item.extracted.amount,
+        expense_category: catResult.category,
+        description: item.extracted.description || null,
+        category_tier: catResult.tier,
+        category_confidence: catResult.confidence,
+        currency: 'USD', status: 'approved'
+      };
+      const rec = await gastosSaveEntry(entry);
+      if (item.blob) {
+        gastosUploadImage(item.blob, rec.id).then(url => {
+          if (url) getSupa().from('gastos_entries').update({ receipt_image_url: url }).eq('id', rec.id);
+        });
+      }
+      item.status = 'saved';
+      saved++;
+    } catch(e) { console.error('Batch save error:', e); }
+  }
+  alert(`✅ ${saved} entrada(s) guardadas exitosamente.`);
+  gastosRenderQueue();
+  gastosRenderHistory();
+  gastosBackToUpload();
+}
+
+// ── Batch review one by one ────────────────────────────────────
+function gastosReviewOneByOne(startIndex) {
+  const pending = G.batch.filter(b => b.status !== 'saved' && b.status !== 'error');
+  if (!pending.length || startIndex >= G.batch.length) {
+    gastosBackToUpload();
+    gastosRenderHistory();
+    return;
+  }
+  // Find next non-saved item from startIndex
+  let idx = startIndex;
+  while (idx < G.batch.length && (G.batch[idx].status === 'saved' || G.batch[idx].status === 'error')) idx++;
+  if (idx >= G.batch.length) { gastosBackToUpload(); return; }
+
+  const item = G.batch[idx];
+  const origApprove = window.gastosApproveEntry;
+
+  // Show step 2 for this item
+  gastosShowStep2(item.extracted, item.blob, idx);
+
+  // Patch approve to advance to next after saving
+  const nextIdx = idx + 1;
+  const approveBtn = document.getElementById('gApproveBtn');
+  if (approveBtn) {
+    approveBtn.onclick = async () => {
+      await gastosApproveEntry();
+      item.status = 'saved';
+      gastosReviewOneByOne(nextIdx);
+    };
+  }
+}
+
+// ── Entry Queue (grouped, sorted) ─────────────────────────────
+async function gastosRenderQueue() {
+  const el = document.getElementById('gastosQueueArea');
+  if (!el) return;
+  try {
+    const all = await gastosLoadHistory('approved');
+    const sorted = sortForGastosEntry(all);
+    if (!sorted.length) { el.innerHTML = ''; return; }
+
+    // Group by vendor
+    const groups = {};
+    sorted.forEach(e => { if (!groups[e.vendor]) groups[e.vendor] = []; groups[e.vendor].push(e); });
+
+    el.innerHTML = `
+      <div class="ccard">
+        <div style="font-weight:700;color:var(--navy);font-size:.9rem;margin-bottom:14px">
+          📋 Cola de entrada en Gastos
+          <span style="font-weight:400;font-size:.78rem;color:var(--text-mid)"> — agrupado por proveedor</span>
+        </div>
+        ${Object.entries(groups).map(([vendor, items]) => `
+          <div style="margin-bottom:18px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+              <span style="font-weight:700;color:var(--navy)">${vendor}</span>
+              <span style="background:#e0f2fe;color:#0369a1;padding:2px 8px;border-radius:10px;font-size:.72rem;font-weight:700">${items.length} factura(s)</span>
+            </div>
+            ${items.map(e => `
+              <div id="qRow_${e.id}" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:6px;flex-wrap:wrap">
+                <span style="font-size:.82rem;color:var(--text-mid);min-width:92px">${gastosFormatDate(e.invoice_date)}</span>
+                <span style="font-size:.82rem;color:#374151;flex:1">Inv #${e.invoice_number || '—'}</span>
+                <span style="font-size:.9rem;font-weight:700;color:var(--navy)">$${parseFloat(e.amount||0).toFixed(2)}</span>
+                <button class="btn" style="font-size:.75rem;padding:4px 10px;border-color:#16a34a;color:#16a34a;white-space:nowrap"
+                  onclick="gastosMarkEnteredFromQueue('${e.id}', this)">Ingresar ✓</button>
+              </div>`).join('')}
+          </div>`).join('')}
+      </div>`;
+  } catch(err) { console.error('Queue render error:', err); }
+}
+
+async function gastosMarkEnteredFromQueue(id, btn) {
+  btn.disabled = true; btn.textContent = '✓';
+  try {
+    await gastosUpdateStatus(id, 'entered');
+    const row = document.getElementById(`qRow_${id}`);
+    if (row) { row.style.opacity = '0.4'; row.style.textDecoration = 'line-through'; btn.style.background = '#dcfce7'; }
+    gastosRenderHistory();
+  } catch(err) { alert('Error: ' + err.message); btn.disabled = false; btn.textContent = 'Ingresar ✓'; }
+}
+
+// ── History table ──────────────────────────────────────────────
+async function gastosRenderHistory() {
+  const el = document.getElementById('gastosHistoryArea');
+  if (!el) return;
+  try {
+    const entries = await gastosLoadHistory(G.historyFilter);
+    const filters = ['all','pending','approved','entered'];
+    const filterLabels = { all:'Todos', pending:'Pendientes', approved:'Aprobados', entered:'Ingresados' };
+    const filterBtns = filters.map(f =>
+      `<button class="btn ${G.historyFilter === f ? 'btn-navy' : ''}" style="font-size:.75rem;padding:4px 12px"
+        onclick="G.historyFilter='${f}';gastosRenderHistory()">
+        ${filterLabels[f]}
+      </button>`).join('');
+
+    if (!entries.length) {
+      el.innerHTML = `<div class="ccard">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">${filterBtns}</div>
+        <div style="color:var(--text-mid);text-align:center;padding:24px;font-style:italic">No hay entradas registradas.</div>
+      </div>`;
+      return;
+    }
+
+    const rows = entries.map(e => `
+      <tr style="cursor:pointer;transition:background .15s" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background=''"
+        onclick="gastosOpenFromHistory(${JSON.stringify(e).replace(/"/g,'&quot;')})">
+        <td style="padding:8px 10px;font-size:.82rem">${gastosFormatDate(e.invoice_date)}</td>
+        <td style="padding:8px 10px;font-size:.82rem;font-weight:600">${e.vendor}</td>
+        <td style="padding:8px 10px;font-size:.82rem">${e.invoice_number || '—'}</td>
+        <td style="padding:8px 10px;font-size:.85rem;font-weight:700;color:var(--navy)">$${parseFloat(e.amount||0).toFixed(2)}</td>
+        <td style="padding:8px 10px;font-size:.78rem;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${e.expense_category||''}">${e.expense_category||'—'}</td>
+        <td style="padding:8px 10px">${gastosStatusBadge(e.status)}</td>
+      </tr>`).join('');
+
+    el.innerHTML = `
+      <div class="ccard">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+          <div style="font-weight:700;color:var(--navy);font-size:.9rem">📂 Historial de Entradas</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">${filterBtns}</div>
+        </div>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr style="background:#f8fafc;border-bottom:2px solid #e2e8f0">
+              <th style="padding:8px 10px;text-align:left;font-size:.75rem;color:var(--text-mid);white-space:nowrap">Fecha</th>
+              <th style="padding:8px 10px;text-align:left;font-size:.75rem;color:var(--text-mid)">Proveedor</th>
+              <th style="padding:8px 10px;text-align:left;font-size:.75rem;color:var(--text-mid)">Factura #</th>
+              <th style="padding:8px 10px;text-align:left;font-size:.75rem;color:var(--text-mid)">Monto</th>
+              <th style="padding:8px 10px;text-align:left;font-size:.75rem;color:var(--text-mid)">Categoría</th>
+              <th style="padding:8px 10px;text-align:left;font-size:.75rem;color:var(--text-mid)">Estado</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>`;
+  } catch(err) {
+    el.innerHTML = `<div class="ccard" style="color:#dc2626;font-size:.85rem">Error al cargar historial: ${err.message}</div>`;
+  }
+}
+
+function gastosOpenFromHistory(entry) {
+  document.getElementById('gastosStep1')?.scrollIntoView({ behavior: 'smooth' });
+  if (entry.status === 'approved') {
+    gastosShowStep3Single(entry);
+  } else {
+    gastosShowStep2(
+      { vendor: entry.vendor, invoice_number: entry.invoice_number,
+        invoice_date: gastosFormatDate(entry.invoice_date),
+        amount: entry.amount, description: entry.description },
+      null
+    );
+  }
+}
+
+// ── SQL to run in Supabase ─────────────────────────────────────
+// create table gastos_entries (
+//   id uuid default gen_random_uuid() primary key,
+//   created_at timestamp with time zone default now(),
+//   created_by uuid references auth.users(id),
+//   vendor text not null,
+//   invoice_number text,
+//   invoice_date date,
+//   payment_date date,
+//   currency text default 'USD',
+//   amount numeric(10,2),
+//   expense_category text,
+//   description text,
+//   category_tier text,
+//   category_confidence integer,
+//   status text default 'pending',
+//   receipt_image_url text,
+//   notes text
+// );
+
+// ══════════════════════════════════════════════════════════════════
 // WRITE-UPS MODULE — Sistema de Amonestaciones Disciplinarias
-// Fixed legal templates + delete with double verification
+// Fixed legal templates — consistent language every time
 // ══════════════════════════════════════════════════════════════════
 
 const WU_PROXY_URL = `${SUPABASE_URL}/functions/v1/claude-proxy`;
-// Secret token for the leader QR form — change this to revoke access
-const WU_LEADER_TOKEN = 'filtros-ldr-2026';
 
 const WU = {
-  currentEmpKey:  null,
-  currentEmpName: null,
-  currentRecords: [],
-
-  LEVELS: {
-    verbal:      'Amonestación Verbal',
-    escrita:     'Amonestación Escrita',
-    final:       'Amonestación Final Escrita',
-    terminacion: 'Terminación'
-  },
-
-  FALTA_MAP: {
-    verbal:      'Amonestación Escrita',
-    escrita:     'Amonestación Final Escrita',
-    final:       'Terminación',
-    terminacion: 'N/A — Nivel máximo'
-  },
-
+  currentEmpKey: null, currentEmpName: null, currentRecords: [],
+  LEVELS: { verbal:'Amonestación Verbal', escrita:'Amonestación Escrita', final:'Amonestación Final Escrita', terminacion:'Terminación' },
+  FALTA_MAP: { verbal:'Amonestación Escrita', escrita:'Amonestación Final Escrita', final:'Terminación', terminacion:'N/A — Nivel máximo' },
   suggestLevel(records, category) {
-    if (!records || records.length === 0 || !category) return 'verbal';
-    const progression = { verbal:'escrita', escrita:'final', final:'terminacion', terminacion:'terminacion' };
-    const catRecords = records
-      .filter(r => r.category === category)
-      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-    if (catRecords.length === 0) return 'verbal';
-    return progression[catRecords[0].level] || 'verbal';
+    if (!records || !records.length || !category) return 'verbal';
+    const prog = { verbal:'escrita', escrita:'final', final:'terminacion', terminacion:'terminacion' };
+    const cat = records.filter(r => r.category === category).sort((a,b) => new Date(b.created_at)-new Date(a.created_at));
+    return cat.length ? (prog[cat[0].level] || 'verbal') : 'verbal';
   },
-
   getShiftString() {
-    const sh  = String(document.getElementById('wuShiftStartH').value).padStart(2,'0');
-    const sm  = String(document.getElementById('wuShiftStartM').value).padStart(2,'0');
-    const sap = document.getElementById('wuShiftStartAMPM').value;
-    const eh  = String(document.getElementById('wuShiftEndH').value).padStart(2,'0');
-    const em  = String(document.getElementById('wuShiftEndM').value).padStart(2,'0');
-    const eap = document.getElementById('wuShiftEndAMPM').value;
+    const v = id => document.getElementById(id)?.value || '';
+    const sh=String(v('wuShiftStartH')).padStart(2,'0'), sm=String(v('wuShiftStartM')).padStart(2,'0'), sap=v('wuShiftStartAMPM');
+    const eh=String(v('wuShiftEndH')).padStart(2,'0'),   em=String(v('wuShiftEndM')).padStart(2,'0'),   eap=v('wuShiftEndAMPM');
     return `${sh}:${sm} ${sap} – ${eh}:${em} ${eap}`;
   },
-
-  // ── FIXED LEGAL TEMPLATES ───────────────────────────────────
-  buildDocument({ empName, category, level, supervisor, dateFormatted, shift, fields }) {
-    const faltaLabel = WU.FALTA_MAP[level];
-    return {
-      incidente:    WU.buildIncidente(empName, category, supervisor, dateFormatted, shift, fields),
-      correctiva:   WU.buildCorrectiva(empName, category),
-      consecuencia: `De reincidir en esta conducta, el/la empleado/a ${empName} estará sujeto/a a ${faltaLabel}, conforme a la política disciplinaria progresiva de Los Filtros FSU. Esta empresa está comprometida con mantener un ambiente de trabajo que cumpla con todas las normas establecidas, y espera el cumplimiento inmediato y sostenido de dicha política.`
-    };
+  async fetchRecords(k) {
+    try { const {data,error}=await getSupa().from('wu_records').select('*').eq('emp_id',k).order('created_at',{ascending:false}); if(error)throw error; return data||[]; }
+    catch { return(JSON.parse(localStorage.getItem('wu_records')||'[]')).filter(r=>r.emp_id===k).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)); }
   },
-
-  buildIncidente(empName, category, supervisor, date, shift, f) {
-    const t = {
-      'Asistencia y Puntualidad':
-        `En fecha ${date}, el/la empleado/a ${empName} incurrió en una violación a la Política de Asistencia y Puntualidad de Los Filtros FSU. El/la empleado/a tenía programada su entrada a las ${f.horaProgram}, sin embargo se presentó a sus labores a las ${f.horaLlegada}, registrando una tardanza de ${f.minutosT} minutos${f.llamo==='Sí'?`, habiendo notificado al supervisor a las ${f.horaLlamo} con ${f.quienAtendio}`:', sin haber notificado previamente a la gerencia'}. ${f.reloj==='Sí'?'Dicha tardanza quedó registrada en el sistema de marcaje electrónico de la empresa.':'El sistema de marcaje no registró entrada a tiempo.'} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente durante el turno de ${shift}.`,
-
-      'Normas de Conducta':
-        `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a las Normas de Conducta establecidas por Los Filtros FSU. Específicamente, ${f.descripcion}. El incidente ocurrió en el área de ${f.area} a las ${f.horaInc}. ${f.clientes==='Sí'?'Había clientes presentes al momento del incidente, lo cual afectó la imagen y reputación del establecimiento.':''} ${f.testigos?`El/la testigo ${f.testigos} estuvo presente y ${f.testigoDecl==='Sí'?'está dispuesto/a a declarar sobre los hechos.':'fue notificado/a del incidente.'}`:''} ${f.dano?`Como consecuencia, ${f.dano}.`:''} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
-
-      'Inocuidad de Alimentos / Seguridad Alimentaria':
-        `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la Política de Inocuidad de Alimentos y Seguridad Alimentaria de Los Filtros FSU. Específicamente, se violó la siguiente regulación: ${f.regulacion}. El producto, equipo o área involucrada fue: ${f.productoArea}. ${f.riesgo==='Sí'?'Existió un riesgo directo de contaminación o daño al cliente.':'No se identificó riesgo directo al consumidor en este momento.'} ${f.temperatura?`La temperatura registrada del producto fue de ${f.temperatura}.`:''} ${f.descarto==='Sí'?'El producto fue descartado conforme al protocolo de inocuidad.':''} ${f.entrenado==='Sí'?'El/la empleado/a había recibido entrenamiento sobre esta regulación con anterioridad.':'Esta situación evidencia una deficiencia en la aplicación de los protocolos de inocuidad aprendidos.'} ${f.corrigioMom==='Sí'?'La situación fue corregida al momento de ser identificada.':'La situación no fue corregida de inmediato.'} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
-
-      'Deberes y Responsabilidades del Puesto':
-        `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a sus Deberes y Responsabilidades del Puesto en Los Filtros FSU. Específicamente, no cumplió con la siguiente tarea o responsabilidad: ${f.tarea}. ${f.enDescripcion==='Sí'?'Dicha responsabilidad forma parte de la descripción oficial de su puesto.':''} ${f.instruccionDir==='Sí'?`Se le dio instrucción directa de realizarla por ${f.quienInstruyo}.`:''} Como consecuencia directa, ${f.impacto}. ${f.quejaCliente==='Sí'?'Se generó una queja de cliente o incidente relacionado a raíz de este incumplimiento.':''} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
-
-      'Ambiente de Trabajo Civil y Respetuoso':
-        `En fecha ${date}, durante el turno de ${shift}, en el área de ${f.area}, el/la empleado/a ${empName} incurrió en una violación a la Política de Ambiente de Trabajo Civil y Respetuoso de Los Filtros FSU. Específicamente, ${f.descripcion}. Dicha conducta fue dirigida a ${f.dirigidoA}. ${f.testigos?`El/la testigo ${f.testigos} estuvo presente y ${f.testigoDecl==='Sí'?'está dispuesto/a a declarar.':'fue notificado/a del incidente.'}`:''} ${f.contactoFisico==='Sí'?`Hubo contacto físico de la siguiente naturaleza: ${f.tipoContacto}.`:''} ${f.quejaFormal==='Sí'?'La parte afectada presentó queja formal.':''} ${f.hostigamiento==='Sí'?'Los hechos descritos pueden constituir hostigamiento, discriminación o acoso en el lugar de trabajo.':''} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
-
-      'Apariencia y Aseo Personal':
-        `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la Política de Apariencia y Aseo Personal de Los Filtros FSU. Específicamente, no cumplió con el siguiente requisito del código de apariencia: ${f.articulo}. ${f.tenia==='Sí'?'El/la empleado/a tenía el artículo en su poder ese día.':'El/la empleado/a no contaba con el artículo requerido.'} ${f.oportunidad==='Sí'?'Se le brindó la oportunidad de corregir la situación antes de la formalización de esta amonestación.':''} ${f.corrigio==='Sí'?'El/la empleado/a procedió a corregir la situación cuando se le indicó.':'El/la empleado/a no procedió a corregir la situación.'} ${f.impactoCliente==='Sí'?'Dicha situación tuvo impacto en la interacción con clientes del establecimiento.':''} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
-
-      'Seguridad en el Lugar de Trabajo':
-        `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la Política de Seguridad en el Lugar de Trabajo de Los Filtros FSU. Específicamente, violó la siguiente regla o procedimiento de seguridad: ${f.regla}. El incidente ocurrió en ${f.lugar} a las ${f.horaInc}. ${f.riesgoLesion==='Sí'?'Existió riesgo de lesión para el/la empleado/a u otras personas.':''} ${f.entrenado==='Sí'?`El/la empleado/a había recibido entrenamiento en este procedimiento el ${f.fechaEntren}.`:''} ${f.camara==='Sí'?'Existe registro en cámara u otro sistema de vigilancia.':''} ${f.reportoGerente==='Sí'?'El incidente fue reportado al gerente de turno inmediatamente.':'El incidente no fue reportado al gerente de turno de forma inmediata.'} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
-
-      'Responsabilidad de Efectivo y Cupones':
-        `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la Política de Responsabilidad de Efectivo y Cupones de Los Filtros FSU. Al realizarse el conteo a las ${f.horaConteo} en la caja o terminal ${f.caja}, se identificó una discrepancia de $${f.discrepancia}, siendo esta un ${f.tipoDisc}. ${f.soloEnCaja==='Sí'?'El/la empleado/a estuvo solo/a en dicha caja durante el turno.':'Otros empleados tuvieron acceso a la caja durante el turno.'} ${f.reviso==='Sí'?'El conteo fue revisado con el/la empleado/a presente.':'El conteo no fue revisado con el/la empleado/a presente.'} ${f.firmoConteo==='Sí'?'El/la empleado/a firmó el conteo.':'El/la empleado/a no firmó el conteo.'} ${f.registroPOS==='Sí'?'Existe registro del sistema POS que respalda esta discrepancia.':''} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
-
-      'Política de Uniformes':
-        `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la Política de Uniformes de Los Filtros FSU. Específicamente, el siguiente artículo del uniforme faltaba o no cumplía con la política: ${f.articulo}. ${f.orientado==='Sí'?'El/la empleado/a fue notificado/a de la Política de Uniformes durante su orientación.':''} ${f.tenia==='Sí'?'El/la empleado/a tenía el artículo disponible ese día.':'El/la empleado/a no contaba con el artículo disponible.'} ${f.oportunidad==='Sí'?'Se le brindó la oportunidad de corregir la situación.':''} ${f.corrigio==='Sí'?'El/la empleado/a procedió a corregir la situación.':'El/la empleado/a no corrigió la situación.'} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`,
-
-      'Comunicaciones Telefónicas':
-        `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la Política de Comunicaciones Telefónicas de Los Filtros FSU. Específicamente, violó la siguiente política: ${f.politica}. El incidente ocurrió en el área de ${f.area}, ${f.horasTrabajo==='Horas activas de trabajo'?'durante horas activas de trabajo':'durante su período de descanso'}. ${f.afectoServicio==='Sí'?'Dicha conducta afectó directamente el servicio al cliente.':''} ${f.clienteTestigo==='Sí'?'Un cliente u otro testigo estuvo presente durante el incidente.':''} ${f.camara==='Sí'?'Existe registro en cámara del incidente.':''} El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`
-    };
-    return t[category] || `En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${empName} incurrió en una violación a la política de ${category} de Los Filtros FSU. El supervisor ${supervisor} certificó la ocurrencia de dicho incidente.`;
+  async saveRecord(r) {
+    try { const {data,error}=await getSupa().from('wu_records').insert(r).select().single(); if(error)throw error; return data; }
+    catch { const all=JSON.parse(localStorage.getItem('wu_records')||'[]'); const rec={...r,id:'local_'+Date.now()}; all.push(rec); localStorage.setItem('wu_records',JSON.stringify(all)); return rec; }
   },
-
-  buildCorrectiva(empName, category) {
-    const t = {
-      'Asistencia y Puntualidad': `Se le requiere al/a la empleado/a ${empName} reportarse a su turno en el horario asignado, sin excepción. Cualquier situación que pueda afectar su puntualidad debe ser comunicada al supervisor correspondiente antes del inicio del turno. El incumplimiento de esta directiva constituye una violación directa a la Política de Asistencia y Puntualidad de Los Filtros FSU y no será tolerado.`,
-      'Normas de Conducta': `Se le requiere al/a la empleado/a ${empName} mantener en todo momento una conducta profesional, respetuosa y acorde con las Normas de Conducta de Los Filtros FSU. Toda interacción con compañeros, supervisores y clientes debe realizarse dentro del marco de respeto y profesionalismo que exige esta empresa. El incumplimiento de esta directiva no será tolerado.`,
-      'Inocuidad de Alimentos / Seguridad Alimentaria': `Se le requiere al/a la empleado/a ${empName} cumplir estrictamente con todos los protocolos de inocuidad y seguridad alimentaria establecidos por Los Filtros FSU y las regulaciones aplicables. El manejo adecuado de alimentos es una responsabilidad no negociable que protege la salud de nuestros clientes y la integridad de la operación. El incumplimiento de estos protocolos no será tolerado bajo ninguna circunstancia.`,
-      'Deberes y Responsabilidades del Puesto': `Se le requiere al/a la empleado/a ${empName} cumplir a cabalidad con todas las tareas y responsabilidades inherentes a su puesto, conforme a las instrucciones recibidas de la gerencia. La ejecución efectiva de sus funciones es fundamental para el buen funcionamiento de la operación. El incumplimiento de sus responsabilidades no será tolerado.`,
-      'Ambiente de Trabajo Civil y Respetuoso': `Se le requiere al/a la empleado/a ${empName} mantener en todo momento un comportamiento civil, respetuoso y profesional hacia todos los compañeros, supervisores y clientes de Los Filtros FSU. Toda conducta que atente contra el ambiente de trabajo respetuoso que esta empresa promueve constituye una violación grave a nuestra política y no será tolerada.`,
-      'Apariencia y Aseo Personal': `Se le requiere al/a la empleado/a ${empName} reportarse a su turno cumpliendo en su totalidad con el Código de Apariencia y Aseo Personal de Los Filtros FSU. El cumplimiento de estos estándares es una condición de empleo y refleja los valores de la empresa. El incumplimiento de esta política no será tolerado.`,
-      'Seguridad en el Lugar de Trabajo': `Se le requiere al/a la empleado/a ${empName} cumplir en todo momento con todos los procedimientos y normas de seguridad establecidos por Los Filtros FSU. La seguridad en el lugar de trabajo es una responsabilidad compartida y su cumplimiento es obligatorio. El incumplimiento de los protocolos de seguridad no será tolerado y puede resultar en consecuencias disciplinarias inmediatas.`,
-      'Responsabilidad de Efectivo y Cupones': `Se le requiere al/a la empleado/a ${empName} manejar el efectivo y cupones bajo su responsabilidad con la máxima diligencia y conforme a los procedimientos establecidos por Los Filtros FSU. Cualquier discrepancia en el manejo de efectivo es tomada con seriedad por esta empresa. El incumplimiento de esta política no será tolerado.`,
-      'Política de Uniformes': `Se le requiere al/a la empleado/a ${empName} reportarse a cada turno con el uniforme completo y en las condiciones establecidas por la Política de Uniformes de Los Filtros FSU. El uso correcto del uniforme es una condición de empleo y parte de la imagen profesional de la empresa. El incumplimiento de esta política no será tolerado.`,
-      'Comunicaciones Telefónicas': `Se le requiere al/a la empleado/a ${empName} cumplir estrictamente con la Política de Comunicaciones Telefónicas de Los Filtros FSU durante las horas de trabajo. El uso indebido de dispositivos de comunicación personal durante el turno interfiere con la operación y el servicio al cliente. El incumplimiento de esta política no será tolerado.`
-    };
-    return t[category] || `Se le requiere al/a la empleado/a ${empName} cumplir estrictamente con todas las políticas y normas de Los Filtros FSU. El incumplimiento de estas directivas no será tolerado.`;
-  },
-
-  CATEGORY_FIELDS: {
-    'Asistencia y Puntualidad': [
-      { id:'horaProgram',  label:'Hora exacta programada de entrada',                type:'time',   required:true },
-      { id:'horaLlegada',  label:'Hora exacta de llegada (según sistema de marcaje)',type:'time',   required:true },
-      { id:'minutosT',     label:'Minutos totales de tardanza',                      type:'number', required:true },
-      { id:'reloj',        label:'¿El sistema de reloj registró la entrada?',        type:'yesno',  required:true },
-      { id:'llamo',        label:'¿Llamó para avisar antes de su turno?',            type:'yesno',  required:true },
-      { id:'horaLlamo',    label:'Si llamó — ¿a qué hora?',                         type:'time',   required:false, showIf:{id:'llamo',val:'Sí'} },
-      { id:'quienAtendio', label:'Si llamó — ¿a quién?',                            type:'text',   required:false, showIf:{id:'llamo',val:'Sí'} },
-    ],
-    'Normas de Conducta': [
-      { id:'descripcion',  label:'Descripción exacta (palabras textuales si aplica)',type:'textarea',required:true },
-      { id:'area',         label:'Área específica donde ocurrió',                   type:'text',   required:true },
-      { id:'horaInc',      label:'Hora exacta del incidente',                        type:'time',   required:true },
-      { id:'clientes',     label:'¿Hubo clientes presentes?',                        type:'yesno',  required:true },
-      { id:'testigos',     label:'Nombre(s) de testigo(s) presentes',               type:'text',   required:false },
-      { id:'testigoDecl',  label:'¿El testigo está dispuesto a declarar?',           type:'yesno',  required:false, showIf:{id:'testigos',notEmpty:true} },
-      { id:'dano',         label:'¿Hubo daño a la operación, reputación o persona? Describa', type:'text', required:false },
-    ],
-    'Inocuidad de Alimentos / Seguridad Alimentaria': [
-      { id:'regulacion',   label:'Regulación o política específica violada (citar la regla)', type:'textarea', required:true },
-      { id:'productoArea', label:'Producto, equipo o área involucrada',              type:'text',   required:true },
-      { id:'riesgo',       label:'¿Hubo riesgo directo de contaminación o daño al cliente?', type:'yesno', required:true },
-      { id:'temperatura',  label:'Temperatura del producto (si aplica)',              type:'text',   required:false },
-      { id:'descarto',     label:'¿Se descartó el producto?',                        type:'yesno',  required:false },
-      { id:'entrenado',    label:'¿El empleado había recibido entrenamiento en esta regla?', type:'yesno', required:true },
-      { id:'corrigioMom',  label:'¿Fue corregido en el momento?',                    type:'yesno',  required:true },
-    ],
-    'Deberes y Responsabilidades del Puesto': [
-      { id:'tarea',        label:'Tarea o responsabilidad específica no cumplida',  type:'textarea',required:true },
-      { id:'enDescripcion',label:'¿Estaba en la descripción oficial del puesto?',   type:'yesno',  required:true },
-      { id:'instruccionDir',label:'¿Se le dio instrucción directa de realizarla ese día?', type:'yesno', required:true },
-      { id:'quienInstruyo',label:'¿Por quién se le instruyó?',                      type:'text',   required:false, showIf:{id:'instruccionDir',val:'Sí'} },
-      { id:'impacto',      label:'Impacto directo en la operación',                 type:'textarea',required:true },
-      { id:'quejaCliente', label:'¿Hubo queja de cliente o incidente relacionado?', type:'yesno',  required:true },
-    ],
-    'Ambiente de Trabajo Civil y Respetuoso': [
-      { id:'descripcion',  label:'¿Qué dijo o hizo exactamente? (palabras textuales si aplica)', type:'textarea', required:true },
-      { id:'dirigidoA',    label:'¿Fue dirigido a compañero, supervisor, o cliente?', type:'select', options:['Compañero de trabajo','Supervisor','Cliente','Varios'], required:true },
-      { id:'area',         label:'Área donde ocurrió',                              type:'text',   required:true },
-      { id:'horaInc',      label:'Hora del incidente',                               type:'time',   required:true },
-      { id:'testigos',     label:'Nombre(s) de testigo(s)',                          type:'text',   required:false },
-      { id:'testigoDecl',  label:'¿El testigo está dispuesto a declarar?',           type:'yesno',  required:false, showIf:{id:'testigos',notEmpty:true} },
-      { id:'contactoFisico',label:'¿Hubo contacto físico?',                          type:'yesno',  required:true },
-      { id:'tipoContacto', label:'Si hubo contacto físico — ¿de qué tipo?',         type:'text',   required:false, showIf:{id:'contactoFisico',val:'Sí'} },
-      { id:'quejaFormal',  label:'¿La otra persona presentó queja formal?',          type:'yesno',  required:true },
-      { id:'hostigamiento',label:'¿Constituyó hostigamiento, discriminación o acoso?', type:'yesno', required:true },
-    ],
-    'Apariencia y Aseo Personal': [
-      { id:'articulo',     label:'Artículo o requisito específico no cumplido',     type:'text',   required:true },
-      { id:'tenia',        label:'¿Tenía el empleado el artículo en su poder ese día?', type:'yesno', required:true },
-      { id:'oportunidad',  label:'¿Se le dio oportunidad de corregirlo antes de la amonestación?', type:'yesno', required:true },
-      { id:'corrigio',     label:'¿Lo corrigió cuando se le indicó?',               type:'yesno',  required:true },
-      { id:'impactoCliente',label:'¿Hubo impacto en la interacción con clientes?',  type:'yesno',  required:true },
-    ],
-    'Seguridad en el Lugar de Trabajo': [
-      { id:'regla',        label:'Regla o procedimiento de seguridad violado (citar específicamente)', type:'textarea', required:true },
-      { id:'lugar',        label:'Lugar exacto donde ocurrió',                      type:'text',   required:true },
-      { id:'horaInc',      label:'Hora del incidente',                               type:'time',   required:true },
-      { id:'riesgoLesion', label:'¿Hubo riesgo de lesión para el empleado u otros?',type:'yesno',  required:true },
-      { id:'entrenado',    label:'¿El empleado había recibido entrenamiento en este procedimiento?', type:'yesno', required:true },
-      { id:'fechaEntren',  label:'¿Cuándo recibió el entrenamiento?',               type:'date',   required:false, showIf:{id:'entrenado',val:'Sí'} },
-      { id:'camara',       label:'¿Hay registro en cámara u otro sistema?',         type:'yesno',  required:true },
-      { id:'reportoGerente',label:'¿Se reportó al gerente de turno inmediatamente?',type:'yesno',  required:true },
-    ],
-    'Responsabilidad de Efectivo y Cupones': [
-      { id:'discrepancia', label:'Discrepancia exacta en dólares y centavos ($)',   type:'number', required:true },
-      { id:'tipoDisc',     label:'Tipo de discrepancia',                             type:'select', options:['Faltante','Sobrante'], required:true },
-      { id:'caja',         label:'Caja o terminal donde ocurrió',                   type:'text',   required:true },
-      { id:'horaConteo',   label:'Hora en que se hizo el conteo',                   type:'time',   required:true },
-      { id:'soloEnCaja',   label:'¿Estuvo el empleado solo/a en esa caja durante el turno?', type:'yesno', required:true },
-      { id:'reviso',       label:'¿Se revisó el conteo con el empleado presente?',  type:'yesno',  required:true },
-      { id:'firmoConteo',  label:'¿El empleado firmó el conteo?',                   type:'yesno',  required:true },
-      { id:'registroPOS',  label:'¿Hay registro del sistema POS?',                  type:'yesno',  required:true },
-    ],
-    'Política de Uniformes': [
-      { id:'articulo',     label:'Artículo específico faltante o incorrecto',       type:'text',   required:true },
-      { id:'orientado',    label:'¿Se le notificó la política de uniformes en su orientación?', type:'yesno', required:true },
-      { id:'tenia',        label:'¿Tenía el artículo disponible ese día?',          type:'yesno',  required:true },
-      { id:'oportunidad',  label:'¿Se le dio oportunidad de corregirlo?',           type:'yesno',  required:true },
-      { id:'corrigio',     label:'¿Lo corrigió?',                                   type:'yesno',  required:true },
-    ],
-    'Comunicaciones Telefónicas': [
-      { id:'politica',     label:'Política específica de uso de teléfono violada',  type:'textarea',required:true },
-      { id:'area',         label:'Área donde estaba el empleado',                   type:'text',   required:true },
-      { id:'horasTrabajo', label:'¿Estaba en horas activas o en descanso?',         type:'select', options:['Horas activas de trabajo','Período de descanso'], required:true },
-      { id:'afectoServicio',label:'¿Afectó directamente el servicio al cliente?',  type:'yesno',  required:true },
-      { id:'clienteTestigo',label:'¿Hubo un cliente afectado o testigo?',           type:'yesno',  required:true },
-      { id:'camara',       label:'¿Hay registro en cámara?',                        type:'yesno',  required:true },
-    ],
-  },
-
-  async fetchRecords(empKey) {
-    try {
-      const { data, error } = await getSupa().from('wu_records').select('*').eq('emp_id', empKey).order('created_at', { ascending: false });
-      if (error) throw error;
-      return data || [];
-    } catch {
-      return (JSON.parse(localStorage.getItem('wu_records') || '[]'))
-        .filter(r => r.emp_id === empKey)
-        .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-    }
-  },
-
-  async saveRecord(record) {
-    try {
-      const { data, error } = await getSupa().from('wu_records').insert(record).select().single();
-      if (error) throw error;
-      return data;
-    } catch {
-      const all = JSON.parse(localStorage.getItem('wu_records') || '[]');
-      const rec = { ...record, id: 'local_' + Date.now() };
-      all.push(rec);
-      localStorage.setItem('wu_records', JSON.stringify(all));
-      return rec;
-    }
-  },
-
-  async deleteAllRecords(empKey) {
-    try {
-      const { error } = await getSupa().from('wu_records').delete().eq('emp_id', empKey);
-      if (error) throw error;
-    } catch {
-      const all = JSON.parse(localStorage.getItem('wu_records') || '[]');
-      localStorage.setItem('wu_records', JSON.stringify(all.filter(r => r.emp_id !== empKey)));
-    }
+  async deleteAllRecords(k) {
+    try { const {error}=await getSupa().from('wu_records').delete().eq('emp_id',k); if(error)throw error; }
+    catch { const all=JSON.parse(localStorage.getItem('wu_records')||'[]'); localStorage.setItem('wu_records',JSON.stringify(all.filter(r=>r.emp_id!==k))); }
   }
 };
 
-// ── Employee list ──────────────────────────────────────────────
 function wuRefreshEmpList() {
-  const sel = document.getElementById('wuEmpSelect');
-  if (!sel) return;
-  const prev = sel.value;
-  sel.innerHTML = '<option value="">— Seleccionar empleado —</option>';
-  Object.entries(EMPLOYEES)
-    .filter(([, e]) => e.status === 'active')
-    .sort((a, b) => (a[1].name||'').localeCompare(b[1].name||''))
-    .forEach(([key, emp]) => {
-      const opt = document.createElement('option');
-      opt.value = key; opt.textContent = emp.name;
-      sel.appendChild(opt);
-    });
-  if (prev) sel.value = prev;
+  const sel=document.getElementById('wuEmpSelect'); if(!sel)return;
+  const prev=sel.value; sel.innerHTML='<option value="">— Seleccionar empleado —</option>';
+  Object.entries(EMPLOYEES).filter(([,e])=>e.status==='active').sort((a,b)=>(a[1].name||'').localeCompare(b[1].name||'')).forEach(([key,emp])=>{const opt=document.createElement('option');opt.value=key;opt.textContent=emp.name;sel.appendChild(opt);});
+  if(prev) sel.value=prev;
 }
-
 async function wuSelectFromDropdown(sel) {
-  const key = sel.value;
-  if (!key) { wuCloseHistory(); return; }
-  const emp = EMPLOYEES[key];
-  if (!emp) return;
-  WU.currentEmpKey  = key;
-  WU.currentEmpName = emp.name;
-  document.getElementById('wuFormPanel').style.display = 'none';
-  document.getElementById('wuDocOutput').style.display = 'none';
-  const records = await WU.fetchRecords(key);
-  WU.currentRecords = records;
-  document.getElementById('wuEmpNameDisplay').textContent = emp.name;
-  wuRenderHistory(records);
-  document.getElementById('wuHistoryPanel').style.display = 'block';
+  const key=sel.value; if(!key){wuCloseHistory();return;} const emp=EMPLOYEES[key]; if(!emp)return;
+  WU.currentEmpKey=key; WU.currentEmpName=emp.name;
+  document.getElementById('wuFormPanel').style.display='none'; document.getElementById('wuDocOutput').style.display='none';
+  const records=await WU.fetchRecords(key); WU.currentRecords=records;
+  document.getElementById('wuEmpNameDisplay').textContent=emp.name;
+  wuRenderHistory(records); document.getElementById('wuHistoryPanel').style.display='block';
 }
-
 function wuRenderHistory(records) {
-  const listEl   = document.getElementById('wuHistoryList');
-  const statusEl = document.getElementById('wuEmpStatus');
-  const LC = {
-    verbal:      {bg:'#fef9c3',color:'#854d0e'},
-    escrita:     {bg:'#ffedd5',color:'#9a3412'},
-    final:       {bg:'#fee2e2',color:'#991b1b'},
-    terminacion: {bg:'#1e293b',color:'#f8fafc'}
-  };
-  if (!records || records.length === 0) {
-    listEl.innerHTML = '<div style="color:var(--text-mid);padding:12px 0;font-style:italic">Sin amonestaciones previas.</div>';
-    statusEl.innerHTML = '<span style="background:#dcfce7;color:#16a34a;padding:2px 10px;border-radius:20px;font-size:.78rem;font-weight:600">Sin historial disciplinario</span>';
-    return;
-  }
-  const lc0 = LC[records[0].level] || LC.verbal;
-  statusEl.innerHTML = `<span style="background:${lc0.bg};color:${lc0.color};padding:2px 10px;border-radius:20px;font-size:.78rem;font-weight:600">Última acción: ${WU.LEVELS[records[0].level]||records[0].level}</span>`;
-  listEl.innerHTML = '<div style="display:flex;flex-direction:column;gap:8px">' +
-    records.map(r => {
-      const lc = LC[r.level]||LC.verbal;
-      const d = r.date ? new Date(r.date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'short',day:'numeric'}) : '';
-      return `<div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
-        <div style="display:flex;align-items:center;gap:10px;padding:9px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;flex-wrap:wrap">
-          <span style="background:${lc.bg};color:${lc.color};padding:2px 8px;border-radius:12px;font-size:.75rem;font-weight:700">${WU.LEVELS[r.level]||r.level}</span>
-          <span style="font-size:.82rem;color:var(--text-mid)">${d}</span>
-          ${r.shift?`<span style="font-size:.82rem;color:var(--text-mid)">🕐 ${r.shift}</span>`:''}
-          <span style="font-size:.82rem;color:var(--text-mid);margin-left:auto">${r.category||''}</span>
-        </div>
-        <div style="padding:10px 14px;font-size:.82rem;line-height:1.5;color:#374151">${(r.incident||'').substring(0,200)}${(r.incident||'').length>200?'…':''}</div>
-      </div>`;
-    }).join('') + '</div>';
+  const listEl=document.getElementById('wuHistoryList'), statusEl=document.getElementById('wuEmpStatus');
+  const LC={verbal:{bg:'#fef9c3',color:'#854d0e'},escrita:{bg:'#ffedd5',color:'#9a3412'},final:{bg:'#fee2e2',color:'#991b1b'},terminacion:{bg:'#1e293b',color:'#f8fafc'}};
+  if(!records||!records.length){listEl.innerHTML='<div style="color:var(--text-mid);padding:12px 0;font-style:italic">Sin amonestaciones previas.</div>';statusEl.innerHTML='<span class="badge" style="background:#dcfce7;color:#16a34a">Sin historial disciplinario</span>';return;}
+  const lc0=LC[records[0].level]||LC.verbal; statusEl.innerHTML=`<span class="badge" style="background:${lc0.bg};color:${lc0.color}">Última: ${WU.LEVELS[records[0].level]||records[0].level}</span>`;
+  listEl.innerHTML='<div style="display:flex;flex-direction:column;gap:8px">'+records.map(r=>{const lc=LC[r.level]||LC.verbal;const d=r.date?new Date(r.date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'short',day:'numeric'}):'';return`<div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden"><div style="display:flex;align-items:center;gap:10px;padding:9px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;flex-wrap:wrap"><span class="badge" style="background:${lc.bg};color:${lc.color}">${WU.LEVELS[r.level]||r.level}</span><span style="font-size:.82rem;color:var(--text-mid)">${d}</span>${r.shift?`<span style="font-size:.82rem;color:var(--text-mid)">🕐 ${r.shift}</span>`:''}<span style="font-size:.82rem;color:var(--text-mid);margin-left:auto">${r.category||''}</span></div><div style="padding:10px 14px;font-size:.82rem;line-height:1.5;color:#374151">${(r.incident||'').substring(0,200)}${(r.incident||'').length>200?'…':''}</div></div>`;}).join('')+'</div>';
 }
-
-// ── Delete with DOUBLE verification ───────────────────────────
 function wuDeleteAllConfirm() {
-  if (!WU.currentEmpKey || !WU.currentEmpName) return;
-  if (WU.currentRecords.length === 0) {
-    alert('Este empleado no tiene amonestaciones registradas.');
-    return;
-  }
-  // First confirmation
-  const first = confirm(
-    `⚠️ ¿Está seguro que desea eliminar TODAS las amonestaciones de ${WU.currentEmpName}?\n\n` +
-    `Se eliminarán ${WU.currentRecords.length} registro(s). Esta acción NO se puede deshacer.\n\n` +
-    `Haga clic en ACEPTAR para continuar con la verificación.`
-  );
-  if (!first) return;
-
-  // Second confirmation — must type the employee name
-  const typed = prompt(
-    `VERIFICACIÓN FINAL\n\n` +
-    `Para confirmar la eliminación permanente, escriba exactamente el nombre del empleado:\n\n` +
-    `"${WU.currentEmpName}"`
-  );
-  if (typed === null) return; // cancelled
-  if (typed.trim() !== WU.currentEmpName.trim()) {
-    alert('❌ El nombre no coincide. No se eliminaron los registros.');
-    return;
-  }
-
-  // Confirmed — delete
-  WU.deleteAllRecords(WU.currentEmpKey).then(() => {
-    WU.currentRecords = [];
-    wuRenderHistory([]);
-    document.getElementById('wuFormPanel').style.display = 'none';
-    document.getElementById('wuDocOutput').style.display = 'none';
-    alert(`✅ Se eliminaron todos los registros de amonestaciones de ${WU.currentEmpName}.`);
-  }).catch(err => alert('Error al eliminar: ' + err.message));
+  if(!WU.currentEmpKey||!WU.currentEmpName)return;
+  if(!WU.currentRecords.length){alert('Este empleado no tiene amonestaciones registradas.');return;}
+  const first=confirm(`⚠️ ¿Está seguro que desea eliminar TODAS las amonestaciones de ${WU.currentEmpName}?\n\nSe eliminarán ${WU.currentRecords.length} registro(s). Esta acción NO se puede deshacer.`);
+  if(!first)return;
+  const typed=prompt(`VERIFICACIÓN FINAL\n\nEscriba exactamente el nombre del empleado:\n\n"${WU.currentEmpName}"`);
+  if(typed===null)return;
+  if(typed.trim()!==WU.currentEmpName.trim()){alert('❌ El nombre no coincide. No se eliminaron los registros.');return;}
+  WU.deleteAllRecords(WU.currentEmpKey).then(()=>{WU.currentRecords=[];wuRenderHistory([]);document.getElementById('wuFormPanel').style.display='none';document.getElementById('wuDocOutput').style.display='none';alert(`✅ Se eliminaron todos los registros de ${WU.currentEmpName}.`);}).catch(err=>alert('Error: '+err.message));
 }
-
 function wuOpenNewForm() {
-  if (!WU.currentEmpKey) { alert('Por favor, seleccione un empleado primero.'); return; }
-  document.getElementById('wuLevel').value = 'verbal';
-  document.getElementById('wuFormEmpName').textContent = WU.currentEmpName;
-  document.getElementById('wuDate').value = new Date().toISOString().split('T')[0];
-  document.getElementById('wuCategory').value = '';
-  document.getElementById('wuSupervisor').value = '';
-  document.getElementById('wuShiftStartH').value = '8';
-  document.getElementById('wuShiftStartM').value = '0';
-  document.getElementById('wuShiftStartAMPM').value = 'AM';
-  document.getElementById('wuShiftEndH').value = '4';
-  document.getElementById('wuShiftEndM').value = '0';
-  document.getElementById('wuShiftEndAMPM').value = 'PM';
-  document.getElementById('wuCategoryFields').innerHTML = '';
-  document.getElementById('wuDocOutput').style.display = 'none';
-  const hint = document.getElementById('wuCategoryHint');
-  if (hint) hint.style.display = 'none';
-  wuUpdateFaltaMejora();
-  document.getElementById('wuFormPanel').style.display = 'block';
+  if(!WU.currentEmpKey){alert('Por favor, seleccione un empleado primero.');return;}
+  document.getElementById('wuLevel').value='verbal';
+  document.getElementById('wuFormEmpName').textContent=WU.currentEmpName;
+  document.getElementById('wuDate').value=new Date().toISOString().split('T')[0];
+  ['wuCategory','wuSupervisor'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('wuShiftStartH').value='8'; document.getElementById('wuShiftStartM').value='0'; document.getElementById('wuShiftStartAMPM').value='AM';
+  document.getElementById('wuShiftEndH').value='4';   document.getElementById('wuShiftEndM').value='0';   document.getElementById('wuShiftEndAMPM').value='PM';
+  document.getElementById('wuCategoryFields').innerHTML=''; document.getElementById('wuDocOutput').style.display='none';
+  const hint=document.getElementById('wuCategoryHint'); if(hint)hint.style.display='none';
+  wuUpdateFaltaMejora(); document.getElementById('wuFormPanel').style.display='block';
   document.getElementById('wuFormPanel').scrollIntoView({behavior:'smooth',block:'start'});
 }
-
 function wuOnCategoryChange() {
-  const category = document.getElementById('wuCategory').value;
-  document.getElementById('wuDocOutput').style.display = 'none';
-  if (!category) { document.getElementById('wuCategoryFields').innerHTML = ''; return; }
-  const suggested = WU.suggestLevel(WU.currentRecords, category);
-  document.getElementById('wuLevel').value = suggested;
-  const catRecords = (WU.currentRecords||[]).filter(r => r.category === category);
-  const hintEl = document.getElementById('wuCategoryHint');
-  if (hintEl) {
-    if (catRecords.length === 0) {
-      hintEl.textContent = 'Sin historial en esta categoría — nivel sugerido: Amonestación Verbal';
-      hintEl.style.color = '#16a34a';
-    } else {
-      const last = [...catRecords].sort((a,b)=>new Date(b.created_at)-new Date(a.created_at))[0];
-      const d = last.date ? new Date(last.date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'short',day:'numeric'}) : '';
-      hintEl.textContent = `${catRecords.length} amonestación(es) en esta categoría. Última: ${WU.LEVELS[last.level]} (${d})`;
-      hintEl.style.color = '#92400e';
-    }
-    hintEl.style.display = 'block';
+  const cat=document.getElementById('wuCategory').value; document.getElementById('wuDocOutput').style.display='none';
+  if(!cat){document.getElementById('wuCategoryFields').innerHTML='';return;}
+  document.getElementById('wuLevel').value=WU.suggestLevel(WU.currentRecords,cat);
+  const catRecs=(WU.currentRecords||[]).filter(r=>r.category===cat);
+  const hintEl=document.getElementById('wuCategoryHint');
+  if(hintEl){
+    if(!catRecs.length){hintEl.textContent='Sin historial en esta categoría — nivel sugerido: Amonestación Verbal';hintEl.style.color='#16a34a';}
+    else{const last=[...catRecs].sort((a,b)=>new Date(b.created_at)-new Date(a.created_at))[0];const d=last.date?new Date(last.date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'short',day:'numeric'}):'';hintEl.textContent=`${catRecs.length} amonestación(es) en esta categoría. Última: ${WU.LEVELS[last.level]} (${d})`;hintEl.style.color='#92400e';}
+    hintEl.style.display='block';
   }
-  wuUpdateFaltaMejora();
-  wuRenderCategoryFields(category);
+  wuUpdateFaltaMejora(); wuRenderCategoryFields(cat);
 }
+function wuUpdateFaltaMejora(){document.getElementById('wuFaltaMejora').value=WU.FALTA_MAP[document.getElementById('wuLevel').value]||'';}
+function wuCancelForm(){document.getElementById('wuFormPanel').style.display='none';document.getElementById('wuDocOutput').style.display='none';}
+function wuCloseHistory(){WU.currentEmpKey=null;WU.currentEmpName=null;WU.currentRecords=[];['wuHistoryPanel','wuFormPanel','wuDocOutput'].forEach(id=>document.getElementById(id).style.display='none');}
 
-function wuRenderCategoryFields(category) {
-  const container = document.getElementById('wuCategoryFields');
-  const fields = WU.CATEGORY_FIELDS[category] || [];
-  if (!fields.length) { container.innerHTML=''; return; }
-  container.innerHTML = `
-    <div style="margin-top:16px;border-top:1px solid #e5e7eb;padding-top:16px">
-      <div style="font-size:.8rem;font-weight:700;color:var(--navy);margin-bottom:12px">
-        📋 Información Requerida — ${category}
-        <span style="font-weight:400;color:#6b7280;font-size:.75rem"> (campos marcados * son obligatorios)</span>
-      </div>
-      ${fields.map(wuFieldHtml).join('')}
-    </div>`;
-}
+const WU_FIELDS={
+  'Asistencia y Puntualidad':[{id:'horaProgram',label:'Hora exacta programada de entrada',type:'time',required:true},{id:'horaLlegada',label:'Hora exacta de llegada (sistema de marcaje)',type:'time',required:true},{id:'minutosT',label:'Minutos totales de tardanza',type:'number',required:true},{id:'reloj',label:'¿El sistema de reloj registró la entrada?',type:'yesno',required:true},{id:'llamo',label:'¿Llamó para avisar antes de su turno?',type:'yesno',required:true},{id:'horaLlamo',label:'Si llamó — ¿a qué hora?',type:'time',required:false,showIf:{id:'llamo',val:'Sí'}},{id:'quienAtendio',label:'Si llamó — ¿a quién?',type:'text',required:false,showIf:{id:'llamo',val:'Sí'}}],
+  'Normas de Conducta':[{id:'descripcion',label:'Descripción exacta (palabras textuales si aplica)',type:'textarea',required:true},{id:'area',label:'Área específica donde ocurrió',type:'text',required:true},{id:'horaInc',label:'Hora exacta del incidente',type:'time',required:true},{id:'clientes',label:'¿Hubo clientes presentes?',type:'yesno',required:true},{id:'testigos',label:'Nombre(s) de testigo(s)',type:'text',required:false},{id:'testigoDecl',label:'¿El testigo está dispuesto a declarar?',type:'yesno',required:false,showIf:{id:'testigos',notEmpty:true}},{id:'dano',label:'¿Hubo daño a la operación o persona? Describa',type:'text',required:false}],
+  'Inocuidad de Alimentos / Seguridad Alimentaria':[{id:'regulacion',label:'Regulación específica violada (citar la regla)',type:'textarea',required:true},{id:'productoArea',label:'Producto, equipo o área involucrada',type:'text',required:true},{id:'riesgo',label:'¿Hubo riesgo de contaminación o daño al cliente?',type:'yesno',required:true},{id:'temperatura',label:'Temperatura del producto (si aplica)',type:'text',required:false},{id:'descarto',label:'¿Se descartó el producto?',type:'yesno',required:false},{id:'entrenado',label:'¿El empleado había recibido entrenamiento en esta regla?',type:'yesno',required:true},{id:'corrigioMom',label:'¿Fue corregido en el momento?',type:'yesno',required:true}],
+  'Deberes y Responsabilidades del Puesto':[{id:'tarea',label:'Tarea o responsabilidad específica no cumplida',type:'textarea',required:true},{id:'enDescripcion',label:'¿Estaba en la descripción oficial del puesto?',type:'yesno',required:true},{id:'instruccionDir',label:'¿Se le dio instrucción directa ese día?',type:'yesno',required:true},{id:'quienInstruyo',label:'¿Por quién se le instruyó?',type:'text',required:false,showIf:{id:'instruccionDir',val:'Sí'}},{id:'impacto',label:'Impacto directo en la operación',type:'textarea',required:true},{id:'quejaCliente',label:'¿Hubo queja de cliente o incidente relacionado?',type:'yesno',required:true}],
+  'Ambiente de Trabajo Civil y Respetuoso':[{id:'descripcion',label:'¿Qué dijo o hizo exactamente? (palabras textuales)',type:'textarea',required:true},{id:'dirigidoA',label:'¿Fue dirigido a compañero, supervisor, o cliente?',type:'select',options:['Compañero de trabajo','Supervisor','Cliente','Varios'],required:true},{id:'area',label:'Área donde ocurrió',type:'text',required:true},{id:'horaInc',label:'Hora del incidente',type:'time',required:true},{id:'testigos',label:'Nombre(s) de testigo(s)',type:'text',required:false},{id:'testigoDecl',label:'¿El testigo está dispuesto a declarar?',type:'yesno',required:false,showIf:{id:'testigos',notEmpty:true}},{id:'contactoFisico',label:'¿Hubo contacto físico?',type:'yesno',required:true},{id:'tipoContacto',label:'Si hubo contacto físico — ¿de qué tipo?',type:'text',required:false,showIf:{id:'contactoFisico',val:'Sí'}},{id:'quejaFormal',label:'¿La otra persona presentó queja formal?',type:'yesno',required:true},{id:'hostigamiento',label:'¿Constituyó hostigamiento, discriminación o acoso?',type:'yesno',required:true}],
+  'Apariencia y Aseo Personal':[{id:'articulo',label:'Artículo o requisito específico no cumplido',type:'text',required:true},{id:'tenia',label:'¿Tenía el empleado el artículo ese día?',type:'yesno',required:true},{id:'oportunidad',label:'¿Se le dio oportunidad de corregirlo?',type:'yesno',required:true},{id:'corrigio',label:'¿Lo corrigió cuando se le indicó?',type:'yesno',required:true},{id:'impactoCliente',label:'¿Hubo impacto en la interacción con clientes?',type:'yesno',required:true}],
+  'Seguridad en el Lugar de Trabajo':[{id:'regla',label:'Regla de seguridad violada (citar específicamente)',type:'textarea',required:true},{id:'lugar',label:'Lugar exacto donde ocurrió',type:'text',required:true},{id:'horaInc',label:'Hora del incidente',type:'time',required:true},{id:'riesgoLesion',label:'¿Hubo riesgo de lesión?',type:'yesno',required:true},{id:'entrenado',label:'¿El empleado había recibido entrenamiento en este procedimiento?',type:'yesno',required:true},{id:'fechaEntren',label:'¿Cuándo recibió el entrenamiento?',type:'date',required:false,showIf:{id:'entrenado',val:'Sí'}},{id:'camara',label:'¿Hay registro en cámara?',type:'yesno',required:true},{id:'reportoGerente',label:'¿Se reportó al gerente inmediatamente?',type:'yesno',required:true}],
+  'Responsabilidad de Efectivo y Cupones':[{id:'discrepancia',label:'Discrepancia exacta en dólares y centavos ($)',type:'number',required:true},{id:'tipoDisc',label:'Tipo de discrepancia',type:'select',options:['Faltante','Sobrante'],required:true},{id:'caja',label:'Caja o terminal donde ocurrió',type:'text',required:true},{id:'horaConteo',label:'Hora en que se hizo el conteo',type:'time',required:true},{id:'soloEnCaja',label:'¿Estuvo el empleado solo/a en esa caja?',type:'yesno',required:true},{id:'reviso',label:'¿Se revisó el conteo con el empleado presente?',type:'yesno',required:true},{id:'firmoConteo',label:'¿El empleado firmó el conteo?',type:'yesno',required:true},{id:'registroPOS',label:'¿Hay registro del sistema POS?',type:'yesno',required:true}],
+  'Política de Uniformes':[{id:'articulo',label:'Artículo específico faltante o incorrecto',type:'text',required:true},{id:'orientado',label:'¿Se le notificó la política en su orientación?',type:'yesno',required:true},{id:'tenia',label:'¿Tenía el artículo disponible ese día?',type:'yesno',required:true},{id:'oportunidad',label:'¿Se le dio oportunidad de corregirlo?',type:'yesno',required:true},{id:'corrigio',label:'¿Lo corrigió?',type:'yesno',required:true}],
+  'Comunicaciones Telefónicas':[{id:'politica',label:'Política específica de uso de teléfono violada',type:'textarea',required:true},{id:'area',label:'Área donde estaba el empleado',type:'text',required:true},{id:'horasTrabajo',label:'¿Estaba en horas activas o en descanso?',type:'select',options:['Horas activas de trabajo','Período de descanso'],required:true},{id:'afectoServicio',label:'¿Afectó el servicio al cliente?',type:'yesno',required:true},{id:'clienteTestigo',label:'¿Hubo un cliente afectado o testigo?',type:'yesno',required:true},{id:'camara',label:'¿Hay registro en cámara?',type:'yesno',required:true}],
+};
 
-function wuFieldHtml(f) {
-  const req = f.required ? '<span style="color:#dc2626"> *</span>' : '';
-  const showIfAttr = f.showIf ? `data-showif='${JSON.stringify(f.showIf)}'` : '';
-  const wrapStyle = f.showIf ? 'display:none;' : '';
-  let input = '';
-  if (f.type==='yesno') {
-    input = `<div style="display:flex;gap:16px;margin-top:4px">
-      <label style="display:flex;align-items:center;gap:6px;font-size:.875rem;cursor:pointer"><input type="radio" name="wuf_${f.id}" value="Sí" onchange="wuCheckConditionals()" style="accent-color:var(--navy)"> Sí</label>
-      <label style="display:flex;align-items:center;gap:6px;font-size:.875rem;cursor:pointer"><input type="radio" name="wuf_${f.id}" value="No" onchange="wuCheckConditionals()" style="accent-color:var(--navy)"> No</label>
-    </div>`;
-  } else if (f.type==='select') {
-    input = `<select id="wuf_${f.id}" onchange="wuCheckConditionals()" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-top:4px">
-      <option value="">Seleccionar...</option>${(f.options||[]).map(o=>`<option>${o}</option>`).join('')}</select>`;
-  } else if (f.type==='textarea') {
-    input = `<textarea id="wuf_${f.id}" rows="3" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;line-height:1.5;resize:vertical;margin-top:4px" placeholder="Ingrese detalles..."></textarea>`;
-  } else if (f.type==='time') {
-    input = `<input type="time" id="wuf_${f.id}" style="padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-top:4px"/>`;
-  } else if (f.type==='date') {
-    input = `<input type="date" id="wuf_${f.id}" style="padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-top:4px"/>`;
-  } else if (f.type==='number') {
-    input = `<input type="number" id="wuf_${f.id}" min="0" step="0.01" style="width:160px;padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-top:4px" placeholder="0"/>`;
-  } else {
-    input = `<input type="text" id="wuf_${f.id}" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-top:4px" placeholder="Ingrese información..."/>`;
-  }
-  return `<div id="wuf_wrap_${f.id}" ${showIfAttr} style="${wrapStyle}margin-bottom:12px">
-    <label style="font-size:.8rem;font-weight:600;color:var(--text-mid);display:block">${f.label}${req}</label>
-    ${input}</div>`;
-}
-
-function wuCheckConditionals() {
-  const category = document.getElementById('wuCategory').value;
-  (WU.CATEGORY_FIELDS[category]||[]).forEach(f => {
-    if (!f.showIf) return;
-    const wrap = document.getElementById(`wuf_wrap_${f.id}`);
-    if (!wrap) return;
-    let show = false;
-    const si = f.showIf;
-    if (si.val !== undefined) {
-      document.querySelectorAll(`[name="wuf_${si.id}"]`).forEach(r => { if (r.checked && r.value===si.val) show=true; });
-      const sel = document.getElementById(`wuf_${si.id}`);
-      if (sel && sel.value===si.val) show=true;
-    } else if (si.notEmpty) {
-      const el = document.getElementById(`wuf_${si.id}`);
-      if (el && el.value.trim()) show=true;
-    }
-    wrap.style.display = show ? 'block' : 'none';
-  });
-}
-
-function wuGetFieldValues() {
-  const category = document.getElementById('wuCategory').value;
-  const vals = {};
-  (WU.CATEGORY_FIELDS[category]||[]).forEach(f => {
-    if (f.type==='yesno') {
-      const checked = document.querySelector(`[name="wuf_${f.id}"]:checked`);
-      vals[f.id] = checked ? checked.value : '';
-    } else {
-      const el = document.getElementById(`wuf_${f.id}`);
-      vals[f.id] = el ? el.value.trim() : '';
-    }
-  });
-  return vals;
-}
-
-function wuValidateFields() {
-  const category = document.getElementById('wuCategory').value;
-  const vals = wuGetFieldValues();
-  const missing = [];
-  (WU.CATEGORY_FIELDS[category]||[]).forEach(f => {
-    if (!f.required) return;
-    const wrap = document.getElementById(`wuf_wrap_${f.id}`);
-    if (wrap && wrap.style.display==='none') return;
-    if (!vals[f.id] || vals[f.id]==='') missing.push(f.label);
-  });
-  return missing;
-}
-
-function wuUpdateFaltaMejora() {
-  document.getElementById('wuFaltaMejora').value = WU.FALTA_MAP[document.getElementById('wuLevel').value] || '';
-}
-
-function wuCancelForm() {
-  document.getElementById('wuFormPanel').style.display = 'none';
-  document.getElementById('wuDocOutput').style.display = 'none';
-}
-
-function wuCloseHistory() {
-  WU.currentEmpKey=null; WU.currentEmpName=null; WU.currentRecords=[];
-  ['wuHistoryPanel','wuFormPanel','wuDocOutput'].forEach(id => document.getElementById(id).style.display='none');
-}
-
-function wuGenerateDocument() {
-  const category  = document.getElementById('wuCategory').value;
-  const supervisor= document.getElementById('wuSupervisor').value.trim();
-  const date      = document.getElementById('wuDate').value;
-  if (!category)   { alert('Por favor seleccione una categoría.'); return; }
-  if (!supervisor) { alert('Por favor ingrese el nombre del supervisor.'); return; }
-  if (!date)       { alert('Por favor seleccione la fecha del incidente.'); return; }
-  const missing = wuValidateFields();
-  if (missing.length>0) { alert('Por favor complete los siguientes campos obligatorios:\n\n• '+missing.join('\n• ')); return; }
-  const level = document.getElementById('wuLevel').value;
-  const shift = WU.getShiftString();
-  const fields = wuGetFieldValues();
-  const dateFormatted = new Date(date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'});
-  const doc = WU.buildDocument({ empName:WU.currentEmpName, category, level, supervisor, dateFormatted, shift, fields });
-  document.getElementById('wuOutIncidente').value    = doc.incidente;
-  document.getElementById('wuOutCorrectiva').value   = doc.correctiva;
-  document.getElementById('wuOutConsecuencia').value = doc.consecuencia;
-  document.getElementById('wuDocOutput').style.display='block';
-  document.getElementById('wuDocOutput').scrollIntoView({behavior:'smooth',block:'start'});
-}
-
-async function wuSaveRecord() {
-  const record = {
-    emp_id: WU.currentEmpKey, emp_name: WU.currentEmpName,
-    date:        document.getElementById('wuDate').value,
-    level:       document.getElementById('wuLevel').value,
-    category:    document.getElementById('wuCategory').value,
-    supervisor:  document.getElementById('wuSupervisor').value.trim(),
-    shift:       WU.getShiftString(),
-    incident:    document.getElementById('wuOutIncidente').value,
-    corrective:  document.getElementById('wuOutCorrectiva').value,
-    consequence: document.getElementById('wuOutConsecuencia').value,
-    created_at:  new Date().toISOString()
-  };
-  try {
-    await WU.saveRecord(record);
-    WU.currentRecords = await WU.fetchRecords(WU.currentEmpKey);
-    wuRenderHistory(WU.currentRecords);
-    document.getElementById('wuFormPanel').style.display='none';
-    document.getElementById('wuDocOutput').style.display='none';
-    document.getElementById('wuHistoryPanel').scrollIntoView({behavior:'smooth'});
-    alert('✅ Amonestación guardada en el expediente de '+WU.currentEmpName+'.');
-  } catch(err) { alert('Error al guardar: '+err.message); }
-}
-
-function wuPrintRecord() {
-  const level      = document.getElementById('wuLevel').value;
-  const category   = document.getElementById('wuCategory').value;
-  const supervisor = document.getElementById('wuSupervisor').value.trim();
-  const date       = document.getElementById('wuDate').value;
-  const shift      = WU.getShiftString();
-  const incident   = document.getElementById('wuOutIncidente').value;
-  const corrective = document.getElementById('wuOutCorrectiva').value;
-  const consequence= document.getElementById('wuOutConsecuencia').value;
-  const today      = new Date().toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'});
-  const incDateFmt = date ? new Date(date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'}) : '';
-  const allCats = [
-    ['Política de Salud','Funciones, Responsabilidades y Requisitos de Liderazgo','Asistencia y Puntualidad','Pausas y Comidas de Empleados','Deberes y Responsabilidades del Puesto','Normas de Conducta','Ambiente de Trabajo Civil y Respetuoso','Inocuidad de Alimentos / Seguridad Alimentaria'],
-    ['Apariencia y Aseo Personal','Igualdad de Oportunidad de Empleo y Política de No Acoso','Seguridad en el Lugar de Trabajo','Comunicaciones Telefónicas','Responsabilidad de Efectivo y Cupones','Política de Uniformes']
-  ];
-  const catItem = cat => {
-    const chk = cat===category;
-    return `<div style="display:flex;align-items:center;gap:6px;padding:1.5px 0;font-size:9pt;${chk?'font-weight:700;color:#004f71;':''}">
-      <div style="width:13px;height:13px;border:1.5px solid #004f71;border-radius:2px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:9pt;${chk?'background:#e0f2fe;color:#c1121f;font-weight:900;':''}">${chk?'✓':''}</div>
-      <span>${cat}</span></div>`;
-  };
-  const faltaMap={verbal:'escrita',escrita:'final',final:'terminacion',terminacion:'terminacion'};
-  const faltaKey=faltaMap[level];
-  const levelRows=[{key:'verbal',label:'Amonestación Verbal'},{key:'escrita',label:'Amonestación Escrita'},{key:'final',label:'Amonestación Final Escrita'}];
-  const faltaRows=[{key:'escrita',label:'Amonestación Escrita'},{key:'final',label:'Amonestación Final Escrita'},{key:'terminacion',label:'Terminación'}];
-  const chkRow=(rows,active)=>rows.map(r=>`<div style="display:flex;align-items:center;gap:7px;font-size:9pt;${r.key===active?'font-weight:700;':''}">
-    <div style="width:14px;height:14px;border:1.5px solid #004f71;border-radius:2px;flex-shrink:0;display:flex;align-items:center;justify-content:center;${r.key===active?'background:#fff0f0;color:#c1121f;font-size:10pt;font-weight:900;':''}">${r.key===active?'✓':''}</div>
-    <span>${r.label}</span></div>`).join('');
-  const win=window.open('','_blank');
-  win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/><title>Amonestación — ${WU.currentEmpName}</title>
-<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:10pt;color:#1a1a2e;padding:22px 26px}
-.hdr{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px}
-.title{font-size:20pt;font-weight:900;color:#004f71;line-height:1.1}
-.logo{text-align:right;font-size:10pt;font-weight:700;color:#004f71}.logo span{display:block;font-size:8pt;color:#c1121f;font-weight:600}
-.meta{display:grid;grid-template-columns:1fr 1fr;gap:3px 20px;border-top:2px solid #004f71;border-bottom:1px solid #e5e7eb;padding:7px 0;margin-bottom:9px}
-.mf{display:flex;align-items:baseline;gap:5px;font-size:9.5pt}.ml{font-weight:700;white-space:nowrap;color:#004f71}.mv{border-bottom:1px solid #94a3b8;flex:1;padding-bottom:1px;font-weight:600}
-.sec{background:#004f71;color:#fff;font-weight:700;font-size:8.5pt;padding:3px 9px;border-radius:3px;margin:8px 0 5px;display:inline-block}
-.cats{display:grid;grid-template-columns:1fr 1fr;gap:1px 14px;margin-bottom:3px}
-.tbox{border:1px solid #cbd5e1;border-radius:4px;padding:9px 11px;min-height:65px;font-size:9.5pt;line-height:1.65;margin-bottom:3px;font-weight:500}
-.chks{display:flex;gap:20px;margin:5px 0 3px;flex-wrap:wrap}
-.signotice{font-size:8pt;color:#374151;line-height:1.5;border:1px solid #e5e7eb;border-radius:4px;padding:7px 9px;margin:9px 0 7px;background:#f8fafc}
-.sigs{display:grid;grid-template-columns:1fr 1fr;gap:12px 28px;margin-bottom:9px}
-.sigs label{font-size:8pt;font-weight:700;color:#004f71;display:block;margin-bottom:2px}.sl{border-bottom:1.5px solid #374151;height:20px}
-.neg{border:1.5px solid #004f71;border-radius:4px;padding:7px 10px;margin-top:7px}
-.negtitle{background:#004f71;color:#fff;font-weight:700;font-size:8pt;padding:2px 7px;border-radius:2px;display:inline-block;margin-bottom:5px}
-.footer{font-size:7.5pt;color:#94a3b8;text-align:right;margin-top:8px;border-top:1px solid #e5e7eb;padding-top:5px}
-@media print{body{padding:14px}}</style></head><body>
-<div class="hdr"><div class="title">FORMULARIO DE ACCIÓN<br>DISCIPLINARIA</div><div class="logo">🐔 Los Filtros FSU<span>Chick-fil-A</span></div></div>
-<div class="meta">
-  <div class="mf"><span class="ml">Nombre del Miembro del Equipo:</span><span class="mv">${WU.currentEmpName}</span></div>
-  <div class="mf"><span class="ml">Fecha del Incidente:</span><span class="mv">${incDateFmt}</span></div>
-  <div class="mf"><span class="ml">Fecha:</span><span class="mv">${today}</span></div>
-  <div class="mf"><span class="ml">Supervisor:</span><span class="mv">${supervisor}</span></div>
-</div>
-<div class="sec">VIOLACIÓN DE POLÍTICA</div>
-<div class="cats"><div>${allCats[0].map(catItem).join('')}</div><div>${allCats[1].map(catItem).join('')}</div></div>
-<div class="sec">DESCRIBA EL INCIDENTE</div>
-<div class="tbox">${incident.replace(/\n/g,'<br/>')}</div>
-<div class="sec">ACCIÓN DISCIPLINARIA</div>
-<div class="chks">${chkRow(levelRows,level)}</div>
-<div class="sec">ACCIÓN CORRECTIVA</div>
-<div class="tbox">${corrective.replace(/\n/g,'<br/>')}</div>
-<div class="sec">FALTA DE MEJORA</div>
-<div class="chks">${chkRow(faltaRows,faltaKey)}</div>
-<div class="tbox" style="min-height:48px">${consequence.replace(/\n/g,'<br/>')}</div>
-<div class="signotice">Al firmar este documento reconozco que este informe ha sido completamente discutido y explicado por mi supervisor y entiendo que se me ha brindado la oportunidad de corregir mis acciones. Confirmo que se me brindó la oportunidad de explicar mi versión de los hechos.</div>
-<div class="sigs">
-  <div><label>Firma del Miembro del Equipo</label><div class="sl"></div></div>
-  <div><label>Fecha</label><div class="sl"></div></div>
-  <div><label>Firma del Supervisor</label><div class="sl"></div></div>
-  <div><label>Fecha</label><div class="sl"></div></div>
-  <div><label>Firma del Testigo</label><div class="sl"></div></div>
-  <div><label>Fecha</label><div class="sl"></div></div>
-</div>
-<div class="neg">
-  <div class="negtitle">NEGATIVA DE FIRMA (si aplica)</div>
-  <div style="display:flex;align-items:center;gap:7px;font-size:8.5pt;margin-bottom:8px">
-    <div style="width:13px;height:13px;border:1.5px solid #004f71;border-radius:2px;flex-shrink:0"></div>
-    <span>El Miembro del Equipo se negó a firmar después de que este documento le fue explicado completamente.</span>
-  </div>
-  <div class="sigs" style="margin-bottom:0">
-    <div><label>Firma del Testigo</label><div class="sl"></div></div>
-    <div><label>Fecha</label><div class="sl"></div></div>
-  </div>
-</div>
-<div class="footer">Los Filtros FSU — Generado: ${today}</div>
-<script>window.onload=()=>window.print();<\/script>
-</body></html>`);
-  win.document.close();
-}
+function wuRenderCategoryFields(cat){const container=document.getElementById('wuCategoryFields');const fields=WU_FIELDS[cat]||[];if(!fields.length){container.innerHTML='';return;}container.innerHTML=`<div style="margin-top:16px;border-top:1px solid #e5e7eb;padding-top:16px"><div style="font-size:.8rem;font-weight:700;color:var(--navy);margin-bottom:12px">📋 Información Requerida — ${cat}<span style="font-weight:400;color:#6b7280;font-size:.75rem"> (* obligatorios)</span></div>${fields.map(wuFieldHtml).join('')}</div>`;}
+function wuFieldHtml(f){const req=f.required?'<span style="color:#dc2626"> *</span>':'';const showStyle=f.showIf?'display:none;':'';const showAttr=f.showIf?`data-showif='${JSON.stringify(f.showIf)}'`:'';let input='';if(f.type==='yesno')input=`<div style="display:flex;gap:16px;margin-top:4px"><label style="display:flex;align-items:center;gap:6px;font-size:.875rem;cursor:pointer"><input type="radio" name="wuf_${f.id}" value="Sí" onchange="wuCheckConditionals()" style="accent-color:var(--navy)"> Sí</label><label style="display:flex;align-items:center;gap:6px;font-size:.875rem;cursor:pointer"><input type="radio" name="wuf_${f.id}" value="No" onchange="wuCheckConditionals()" style="accent-color:var(--navy)"> No</label></div>`;else if(f.type==='select')input=`<select id="wuf_${f.id}" onchange="wuCheckConditionals()" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-top:4px"><option value="">Seleccionar...</option>${(f.options||[]).map(o=>`<option>${o}</option>`).join('')}</select>`;else if(f.type==='textarea')input=`<textarea id="wuf_${f.id}" rows="3" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;resize:vertical;margin-top:4px" placeholder="Ingrese detalles..."></textarea>`;else if(f.type==='time')input=`<input type="time" id="wuf_${f.id}" style="padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-top:4px"/>`;else if(f.type==='date')input=`<input type="date" id="wuf_${f.id}" style="padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-top:4px"/>`;else if(f.type==='number')input=`<input type="number" id="wuf_${f.id}" min="0" step="0.01" style="width:160px;padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-top:4px" placeholder="0"/>`;else input=`<input type="text" id="wuf_${f.id}" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-top:4px" placeholder="Ingrese información..."/>`;return`<div id="wuf_wrap_${f.id}" ${showAttr} style="${showStyle}margin-bottom:12px"><label style="font-size:.8rem;font-weight:600;color:var(--text-mid);display:block">${f.label}${req}</label>${input}</div>`;}
+function wuCheckConditionals(){const cat=document.getElementById('wuCategory').value;(WU_FIELDS[cat]||[]).forEach(f=>{if(!f.showIf)return;const wrap=document.getElementById(`wuf_wrap_${f.id}`);if(!wrap)return;let show=false;const si=f.showIf;if(si.val!==undefined){document.querySelectorAll(`[name="wuf_${si.id}"]`).forEach(r=>{if(r.checked&&r.value===si.val)show=true;});const sel=document.getElementById(`wuf_${si.id}`);if(sel&&sel.value===si.val)show=true;}else if(si.notEmpty){const el=document.getElementById(`wuf_${si.id}`);if(el&&el.value.trim())show=true;}wrap.style.display=show?'block':'none';});}
+function wuGetFieldVals(){const cat=document.getElementById('wuCategory').value;const vals={};(WU_FIELDS[cat]||[]).forEach(f=>{if(f.type==='yesno'){const c=document.querySelector(`[name="wuf_${f.id}"]:checked`);vals[f.id]=c?c.value:'';}else{const el=document.getElementById(`wuf_${f.id}`);vals[f.id]=el?el.value.trim():'';} });return vals;}
+function wuValidateFields(){const cat=document.getElementById('wuCategory').value;const vals=wuGetFieldVals();const missing=[];(WU_FIELDS[cat]||[]).forEach(f=>{if(!f.required)return;const wrap=document.getElementById(`wuf_wrap_${f.id}`);if(wrap&&wrap.style.display==='none')return;if(!vals[f.id]||vals[f.id]==='')missing.push(f.label);});return missing;}
+function wuGenerateDocument(){const cat=document.getElementById('wuCategory').value,sup=document.getElementById('wuSupervisor').value.trim(),date=document.getElementById('wuDate').value;if(!cat){alert('Por favor seleccione una categoría.');return;}if(!sup){alert('Por favor ingrese el nombre del supervisor.');return;}if(!date){alert('Por favor seleccione la fecha del incidente.');return;}const missing=wuValidateFields();if(missing.length){alert('Por favor complete los campos obligatorios:\n\n• '+missing.join('\n• '));return;}const level=document.getElementById('wuLevel').value,shift=WU.getShiftString(),fields=wuGetFieldVals();const dateFormatted=new Date(date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'});const doc=wuBuildDocument({empName:WU.currentEmpName,cat,level,sup,dateFormatted,shift,fields});document.getElementById('wuOutIncidente').value=doc.incidente;document.getElementById('wuOutCorrectiva').value=doc.correctiva;document.getElementById('wuOutConsecuencia').value=doc.consecuencia;document.getElementById('wuDocOutput').style.display='block';document.getElementById('wuDocOutput').scrollIntoView({behavior:'smooth',block:'start'});}
+function wuBuildDocument({empName,cat,level,sup,dateFormatted,shift,fields}){return{incidente:wuBuildIncidente(empName,cat,sup,dateFormatted,shift,fields),correctiva:wuBuildCorrectiva(empName,cat),consecuencia:`De reincidir en esta conducta, el/la empleado/a ${empName} estará sujeto/a a ${WU.FALTA_MAP[level]}, conforme a la política disciplinaria progresiva de Los Filtros FSU. Esta empresa está comprometida con mantener un ambiente de trabajo que cumpla con todas las normas establecidas, y espera el cumplimiento inmediato y sostenido de dicha política.`};}
+function wuBuildIncidente(n,cat,sup,date,shift,f){const t={'Asistencia y Puntualidad':`En fecha ${date}, el/la empleado/a ${n} incurrió en una violación a la Política de Asistencia y Puntualidad de Los Filtros FSU. El/la empleado/a tenía programada su entrada a las ${f.horaProgram}, sin embargo se presentó a sus labores a las ${f.horaLlegada}, registrando una tardanza de ${f.minutosT} minutos${f.llamo==='Sí'?`, habiendo notificado al supervisor a las ${f.horaLlamo} con ${f.quienAtendio}`:', sin haber notificado previamente a la gerencia'}. ${f.reloj==='Sí'?'Dicha tardanza quedó registrada en el sistema de marcaje electrónico de la empresa.':'El sistema de marcaje no registró entrada a tiempo.'} El supervisor ${sup} certificó la ocurrencia de dicho incidente durante el turno de ${shift}.`,'Normas de Conducta':`En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${n} incurrió en una violación a las Normas de Conducta de Los Filtros FSU. Específicamente, ${f.descripcion}. El incidente ocurrió en el área de ${f.area} a las ${f.horaInc}. ${f.clientes==='Sí'?'Había clientes presentes al momento del incidente.':''} ${f.testigos?`El/la testigo ${f.testigos} estuvo presente y ${f.testigoDecl==='Sí'?'está dispuesto/a a declarar.':'fue notificado/a del incidente.'}`:''} ${f.dano?`Como consecuencia, ${f.dano}.`:''} El supervisor ${sup} certificó la ocurrencia de dicho incidente.`,'Inocuidad de Alimentos / Seguridad Alimentaria':`En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${n} incurrió en una violación a la Política de Inocuidad de Alimentos de Los Filtros FSU. Específicamente, se violó la siguiente regulación: ${f.regulacion}. El producto, equipo o área involucrada fue: ${f.productoArea}. ${f.riesgo==='Sí'?'Existió un riesgo directo de contaminación o daño al cliente.':'No se identificó riesgo directo al consumidor.'} ${f.temperatura?`La temperatura registrada fue de ${f.temperatura}.`:''} ${f.descarto==='Sí'?'El producto fue descartado conforme al protocolo.':''} ${f.entrenado==='Sí'?'El/la empleado/a había recibido entrenamiento sobre esta regulación.':'Esta situación evidencia una deficiencia en la aplicación de los protocolos.'} ${f.corrigioMom==='Sí'?'La situación fue corregida al momento de ser identificada.':'La situación no fue corregida de inmediato.'} El supervisor ${sup} certificó la ocurrencia de dicho incidente.`,'Deberes y Responsabilidades del Puesto':`En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${n} incurrió en una violación a sus Deberes y Responsabilidades del Puesto en Los Filtros FSU. Específicamente, no cumplió con la siguiente tarea: ${f.tarea}. ${f.enDescripcion==='Sí'?'Dicha responsabilidad forma parte de la descripción oficial de su puesto.':''} ${f.instruccionDir==='Sí'?`Se le dio instrucción directa de realizarla por ${f.quienInstruyo}.`:''} Como consecuencia directa, ${f.impacto}. ${f.quejaCliente==='Sí'?'Se generó una queja de cliente a raíz de este incumplimiento.':''} El supervisor ${sup} certificó la ocurrencia de dicho incidente.`,'Ambiente de Trabajo Civil y Respetuoso':`En fecha ${date}, durante el turno de ${shift}, en el área de ${f.area}, el/la empleado/a ${n} incurrió en una violación a la Política de Ambiente de Trabajo Civil y Respetuoso de Los Filtros FSU. Específicamente, ${f.descripcion}. Dicha conducta fue dirigida a ${f.dirigidoA}. ${f.testigos?`El/la testigo ${f.testigos} estuvo presente y ${f.testigoDecl==='Sí'?'está dispuesto/a a declarar.':'fue notificado/a del incidente.'}`:''} ${f.contactoFisico==='Sí'?`Hubo contacto físico de la siguiente naturaleza: ${f.tipoContacto}.`:''} ${f.quejaFormal==='Sí'?'La parte afectada presentó queja formal.':''} ${f.hostigamiento==='Sí'?'Los hechos pueden constituir hostigamiento, discriminación o acoso en el lugar de trabajo.':''} El supervisor ${sup} certificó la ocurrencia de dicho incidente.`,'Apariencia y Aseo Personal':`En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${n} incurrió en una violación a la Política de Apariencia y Aseo Personal de Los Filtros FSU. Específicamente, no cumplió con el siguiente requisito: ${f.articulo}. ${f.tenia==='Sí'?'El/la empleado/a tenía el artículo en su poder ese día.':'El/la empleado/a no contaba con el artículo requerido.'} ${f.oportunidad==='Sí'?'Se le brindó la oportunidad de corregir la situación.':''} ${f.corrigio==='Sí'?'El/la empleado/a procedió a corregir la situación.':'El/la empleado/a no procedió a corregir la situación.'} ${f.impactoCliente==='Sí'?'Dicha situación tuvo impacto en la interacción con clientes.':''} El supervisor ${sup} certificó la ocurrencia de dicho incidente.`,'Seguridad en el Lugar de Trabajo':`En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${n} incurrió en una violación a la Política de Seguridad en el Lugar de Trabajo de Los Filtros FSU. Específicamente, violó la siguiente regla: ${f.regla}. El incidente ocurrió en ${f.lugar} a las ${f.horaInc}. ${f.riesgoLesion==='Sí'?'Existió riesgo de lesión para el/la empleado/a u otras personas.':''} ${f.entrenado==='Sí'?`El/la empleado/a había recibido entrenamiento en este procedimiento el ${f.fechaEntren}.`:''} ${f.camara==='Sí'?'Existe registro en cámara.':''} ${f.reportoGerente==='Sí'?'El incidente fue reportado al gerente de turno inmediatamente.':'El incidente no fue reportado al gerente de forma inmediata.'} El supervisor ${sup} certificó la ocurrencia de dicho incidente.`,'Responsabilidad de Efectivo y Cupones':`En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${n} incurrió en una violación a la Política de Responsabilidad de Efectivo y Cupones de Los Filtros FSU. Al realizarse el conteo a las ${f.horaConteo} en la caja ${f.caja}, se identificó una discrepancia de $${f.discrepancia}, siendo esta un ${f.tipoDisc}. ${f.soloEnCaja==='Sí'?'El/la empleado/a estuvo solo/a en dicha caja durante el turno.':'Otros empleados tuvieron acceso a la caja.'} ${f.reviso==='Sí'?'El conteo fue revisado con el/la empleado/a presente.':'El conteo no fue revisado con el/la empleado/a presente.'} ${f.firmoConteo==='Sí'?'El/la empleado/a firmó el conteo.':'El/la empleado/a no firmó el conteo.'} ${f.registroPOS==='Sí'?'Existe registro del sistema POS que respalda esta discrepancia.':''} El supervisor ${sup} certificó la ocurrencia de dicho incidente.`,'Política de Uniformes':`En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${n} incurrió en una violación a la Política de Uniformes de Los Filtros FSU. Específicamente, el siguiente artículo del uniforme faltaba o no cumplía con la política: ${f.articulo}. ${f.orientado==='Sí'?'El/la empleado/a fue notificado/a de la Política de Uniformes durante su orientación.':''} ${f.tenia==='Sí'?'El/la empleado/a tenía el artículo disponible ese día.':'El/la empleado/a no contaba con el artículo disponible.'} ${f.oportunidad==='Sí'?'Se le brindó la oportunidad de corregir la situación.':''} ${f.corrigio==='Sí'?'El/la empleado/a procedió a corregir la situación.':'El/la empleado/a no corrigió la situación.'} El supervisor ${sup} certificó la ocurrencia de dicho incidente.`,'Comunicaciones Telefónicas':`En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${n} incurrió en una violación a la Política de Comunicaciones Telefónicas de Los Filtros FSU. Específicamente, violó la siguiente política: ${f.politica}. El incidente ocurrió en el área de ${f.area}, ${f.horasTrabajo==='Horas activas de trabajo'?'durante horas activas de trabajo':'durante su período de descanso'}. ${f.afectoServicio==='Sí'?'Dicha conducta afectó directamente el servicio al cliente.':''} ${f.clienteTestigo==='Sí'?'Un cliente u otro testigo estuvo presente durante el incidente.':''} ${f.camara==='Sí'?'Existe registro en cámara del incidente.':''} El supervisor ${sup} certificó la ocurrencia de dicho incidente.`};return t[cat]||`En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${n} incurrió en una violación a la política de ${cat} de Los Filtros FSU. El supervisor ${sup} certificó la ocurrencia de dicho incidente.`;}
+function wuBuildCorrectiva(n,cat){const t={'Asistencia y Puntualidad':`Se le requiere al/a la empleado/a ${n} reportarse a su turno en el horario asignado, sin excepción. Cualquier situación que pueda afectar su puntualidad debe ser comunicada al supervisor correspondiente antes del inicio del turno. El incumplimiento de esta directiva constituye una violación directa a la Política de Asistencia y Puntualidad de Los Filtros FSU y no será tolerado.`,'Normas de Conducta':`Se le requiere al/a la empleado/a ${n} mantener en todo momento una conducta profesional, respetuosa y acorde con las Normas de Conducta de Los Filtros FSU. Toda interacción con compañeros, supervisores y clientes debe realizarse dentro del marco de respeto y profesionalismo que exige esta empresa. El incumplimiento de esta directiva no será tolerado.`,'Inocuidad de Alimentos / Seguridad Alimentaria':`Se le requiere al/a la empleado/a ${n} cumplir estrictamente con todos los protocolos de inocuidad y seguridad alimentaria establecidos por Los Filtros FSU y las regulaciones aplicables. El manejo adecuado de alimentos es una responsabilidad no negociable que protege la salud de nuestros clientes y la integridad de la operación. El incumplimiento de estos protocolos no será tolerado bajo ninguna circunstancia.`,'Deberes y Responsabilidades del Puesto':`Se le requiere al/a la empleado/a ${n} cumplir a cabalidad con todas las tareas y responsabilidades inherentes a su puesto, conforme a las instrucciones recibidas de la gerencia. La ejecución efectiva de sus funciones es fundamental para el buen funcionamiento de la operación. El incumplimiento de sus responsabilidades no será tolerado.`,'Ambiente de Trabajo Civil y Respetuoso':`Se le requiere al/a la empleado/a ${n} mantener en todo momento un comportamiento civil, respetuoso y profesional hacia todos los compañeros, supervisores y clientes de Los Filtros FSU. Toda conducta que atente contra el ambiente de trabajo respetuoso que esta empresa promueve constituye una violación grave y no será tolerada.`,'Apariencia y Aseo Personal':`Se le requiere al/a la empleado/a ${n} reportarse a su turno cumpliendo en su totalidad con el Código de Apariencia y Aseo Personal de Los Filtros FSU. El cumplimiento de estos estándares es una condición de empleo y refleja los valores de la empresa. El incumplimiento de esta política no será tolerado.`,'Seguridad en el Lugar de Trabajo':`Se le requiere al/a la empleado/a ${n} cumplir en todo momento con todos los procedimientos y normas de seguridad establecidos por Los Filtros FSU. La seguridad en el lugar de trabajo es una responsabilidad compartida y su cumplimiento es obligatorio. El incumplimiento de los protocolos de seguridad no será tolerado.`,'Responsabilidad de Efectivo y Cupones':`Se le requiere al/a la empleado/a ${n} manejar el efectivo y cupones bajo su responsabilidad con la máxima diligencia y conforme a los procedimientos establecidos por Los Filtros FSU. Cualquier discrepancia en el manejo de efectivo es tomada con seriedad por esta empresa. El incumplimiento de esta política no será tolerado.`,'Política de Uniformes':`Se le requiere al/a la empleado/a ${n} reportarse a cada turno con el uniforme completo y en las condiciones establecidas por la Política de Uniformes de Los Filtros FSU. El uso correcto del uniforme es una condición de empleo y parte de la imagen profesional de la empresa. El incumplimiento de esta política no será tolerado.`,'Comunicaciones Telefónicas':`Se le requiere al/a la empleado/a ${n} cumplir estrictamente con la Política de Comunicaciones Telefónicas de Los Filtros FSU durante las horas de trabajo. El uso indebido de dispositivos de comunicación personal durante el turno interfiere con la operación y el servicio al cliente. El incumplimiento de esta política no será tolerado.`};return t[cat]||`Se le requiere al/a la empleado/a ${n} cumplir estrictamente con todas las políticas y normas de Los Filtros FSU. El incumplimiento de estas directivas no será tolerado.`;}
+async function wuSaveRecord(){const record={emp_id:WU.currentEmpKey,emp_name:WU.currentEmpName,date:document.getElementById('wuDate').value,level:document.getElementById('wuLevel').value,category:document.getElementById('wuCategory').value,supervisor:document.getElementById('wuSupervisor').value.trim(),shift:WU.getShiftString(),incident:document.getElementById('wuOutIncidente').value,corrective:document.getElementById('wuOutCorrectiva').value,consequence:document.getElementById('wuOutConsecuencia').value,created_at:new Date().toISOString()};try{await WU.saveRecord(record);WU.currentRecords=await WU.fetchRecords(WU.currentEmpKey);wuRenderHistory(WU.currentRecords);document.getElementById('wuFormPanel').style.display='none';document.getElementById('wuDocOutput').style.display='none';document.getElementById('wuHistoryPanel').scrollIntoView({behavior:'smooth'});alert('✅ Amonestación guardada en el expediente de '+WU.currentEmpName+'.');}catch(err){alert('Error al guardar: '+err.message);}}
+function wuPrintRecord(){const level=document.getElementById('wuLevel').value,cat=document.getElementById('wuCategory').value,sup=document.getElementById('wuSupervisor').value.trim(),date=document.getElementById('wuDate').value,shift=WU.getShiftString(),incident=document.getElementById('wuOutIncidente').value,corrective=document.getElementById('wuOutCorrectiva').value,consequence=document.getElementById('wuOutConsecuencia').value;const today=new Date().toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'}),incDateFmt=date?new Date(date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'}):'';const allCats=[['Política de Salud','Funciones, Responsabilidades y Requisitos de Liderazgo','Asistencia y Puntualidad','Pausas y Comidas de Empleados','Deberes y Responsabilidades del Puesto','Normas de Conducta','Ambiente de Trabajo Civil y Respetuoso','Inocuidad de Alimentos / Seguridad Alimentaria'],['Apariencia y Aseo Personal','Igualdad de Oportunidad de Empleo y Política de No Acoso','Seguridad en el Lugar de Trabajo','Comunicaciones Telefónicas','Responsabilidad de Efectivo y Cupones','Política de Uniformes']];const catItem=c=>{const chk=c===cat;return`<div style="display:flex;align-items:center;gap:6px;padding:1.5px 0;font-size:9pt;${chk?'font-weight:700;color:#004f71;':''}"><div style="width:13px;height:13px;border:1.5px solid #004f71;border-radius:2px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:9pt;${chk?'background:#e0f2fe;color:#c1121f;font-weight:900;':''}">${chk?'✓':''}</div><span>${c}</span></div>`;};const faltaMap={verbal:'escrita',escrita:'final',final:'terminacion',terminacion:'terminacion'},faltaKey=faltaMap[level];const levelRows=[{key:'verbal',label:'Amonestación Verbal'},{key:'escrita',label:'Amonestación Escrita'},{key:'final',label:'Amonestación Final Escrita'}];const faltaRows=[{key:'escrita',label:'Amonestación Escrita'},{key:'final',label:'Amonestación Final Escrita'},{key:'terminacion',label:'Terminación'}];const chkRow=(rows,active)=>rows.map(r=>`<div style="display:flex;align-items:center;gap:7px;font-size:9pt;${r.key===active?'font-weight:700;':''}"><div style="width:14px;height:14px;border:1.5px solid #004f71;border-radius:2px;flex-shrink:0;display:flex;align-items:center;justify-content:center;${r.key===active?'background:#fff0f0;color:#c1121f;font-size:10pt;font-weight:900;':''}">${r.key===active?'✓':''}</div><span>${r.label}</span></div>`).join('');const win=window.open('','_blank');win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/><title>Amonestación — ${WU.currentEmpName}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:10pt;color:#1a1a2e;padding:22px 26px}.hdr{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px}.title{font-size:20pt;font-weight:900;color:#004f71;line-height:1.1}.logo{text-align:right;font-size:10pt;font-weight:700;color:#004f71}.logo span{display:block;font-size:8pt;color:#c1121f;font-weight:600}.meta{display:grid;grid-template-columns:1fr 1fr;gap:3px 20px;border-top:2px solid #004f71;border-bottom:1px solid #e5e7eb;padding:7px 0;margin-bottom:9px}.mf{display:flex;align-items:baseline;gap:5px;font-size:9.5pt}.ml{font-weight:700;white-space:nowrap;color:#004f71}.mv{border-bottom:1px solid #94a3b8;flex:1;padding-bottom:1px;font-weight:600}.sec{background:#004f71;color:#fff;font-weight:700;font-size:8.5pt;padding:3px 9px;border-radius:3px;margin:8px 0 5px;display:inline-block}.cats{display:grid;grid-template-columns:1fr 1fr;gap:1px 14px;margin-bottom:3px}.tbox{border:1px solid #cbd5e1;border-radius:4px;padding:9px 11px;min-height:65px;font-size:9.5pt;line-height:1.65;margin-bottom:3px;font-weight:500}.chks{display:flex;gap:20px;margin:5px 0 3px;flex-wrap:wrap}.signotice{font-size:8pt;color:#374151;line-height:1.5;border:1px solid #e5e7eb;border-radius:4px;padding:7px 9px;margin:9px 0 7px;background:#f8fafc}.sigs{display:grid;grid-template-columns:1fr 1fr;gap:12px 28px;margin-bottom:9px}.sigs label{font-size:8pt;font-weight:700;color:#004f71;display:block;margin-bottom:2px}.sl{border-bottom:1.5px solid #374151;height:20px}.neg{border:1.5px solid #004f71;border-radius:4px;padding:7px 10px;margin-top:7px}.negtitle{background:#004f71;color:#fff;font-weight:700;font-size:8pt;padding:2px 7px;border-radius:2px;display:inline-block;margin-bottom:5px}.footer{font-size:7.5pt;color:#94a3b8;text-align:right;margin-top:8px;border-top:1px solid #e5e7eb;padding-top:5px}@media print{body{padding:14px}}</style></head><body><div class="hdr"><div class="title">FORMULARIO DE ACCIÓN<br>DISCIPLINARIA</div><div class="logo">🐔 Los Filtros FSU<span>Chick-fil-A</span></div></div><div class="meta"><div class="mf"><span class="ml">Nombre del Miembro del Equipo:</span><span class="mv">${WU.currentEmpName}</span></div><div class="mf"><span class="ml">Fecha del Incidente:</span><span class="mv">${incDateFmt}</span></div><div class="mf"><span class="ml">Fecha:</span><span class="mv">${today}</span></div><div class="mf"><span class="ml">Supervisor:</span><span class="mv">${sup}</span></div></div><div class="sec">VIOLACIÓN DE POLÍTICA</div><div class="cats"><div>${allCats[0].map(catItem).join('')}</div><div>${allCats[1].map(catItem).join('')}</div></div><div class="sec">DESCRIBA EL INCIDENTE</div><div class="tbox">${incident.replace(/\n/g,'<br/>')}</div><div class="sec">ACCIÓN DISCIPLINARIA</div><div class="chks">${chkRow(levelRows,level)}</div><div class="sec">ACCIÓN CORRECTIVA</div><div class="tbox">${corrective.replace(/\n/g,'<br/>')}</div><div class="sec">FALTA DE MEJORA</div><div class="chks">${chkRow(faltaRows,faltaKey)}</div><div class="tbox" style="min-height:48px">${consequence.replace(/\n/g,'<br/>')}</div><div class="signotice">Al firmar este documento reconozco que este informe ha sido completamente discutido y explicado por mi supervisor y entiendo que se me ha brindado la oportunidad de corregir mis acciones. Confirmo que se me brindó la oportunidad de explicar mi versión de los hechos.</div><div class="sigs"><div><label>Firma del Miembro del Equipo</label><div class="sl"></div></div><div><label>Fecha</label><div class="sl"></div></div><div><label>Firma del Supervisor</label><div class="sl"></div></div><div><label>Fecha</label><div class="sl"></div></div><div><label>Firma del Testigo</label><div class="sl"></div></div><div><label>Fecha</label><div class="sl"></div></div></div><div class="neg"><div class="negtitle">NEGATIVA DE FIRMA (si aplica)</div><div style="display:flex;align-items:center;gap:7px;font-size:8.5pt;margin-bottom:8px"><div style="width:13px;height:13px;border:1.5px solid #004f71;border-radius:2px;flex-shrink:0"></div><span>El Miembro del Equipo se negó a firmar después de que este documento le fue explicado completamente.</span></div><div class="sigs" style="margin-bottom:0"><div><label>Firma del Testigo</label><div class="sl"></div></div><div><label>Fecha</label><div class="sl"></div></div></div></div><div class="footer">Los Filtros FSU — Generado: ${today}</div><script>window.onload=()=>window.print();<\/script></body></html>`);win.document.close();}
 
 (function(){
-  const _orig = goTab;
-  goTab = function(t) { _orig(t); if(t==='writeups') wuRefreshEmpList(); };
+  const _orig=goTab;
+  goTab=function(t){
+    _orig(t);
+    if(t==='writeups') wuRefreshEmpList();
+    if(t==='gastos')   gastosInit();
+  };
 })();
 

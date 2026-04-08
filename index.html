@@ -58,10 +58,10 @@
     <div class="tab" onclick="goTab('employees')" id="t-employees">Employees</div>
     <div class="tab" onclick="goTab('import')" id="t-import">Import Data</div>
     <div class="tab" onclick="goTab('recordto')" id="t-recordto">Record Time-Off</div>
-    <div class="tab" onclick="goTab('tardiness')" id="t-tardiness">Tardiness</div>
     <div class="tab" onclick="goTab('meals')" id="t-meals">Meal Penalties</div>
     <div class="tab" onclick="goTab('recon')" id="t-recon">Reconciliation</div>
-    <div class="tab" onclick="goTab('writeups')" id="t-writeups">📋 Write-Ups</div>
+    <div class="tab" onclick="goTab('gastos')" id="t-gastos">Gastos</div>
+    <div class="tab" onclick="goTab('writeups')" id="t-writeups">Write-Ups</div>
   </div>
 
   <!-- Employee tab nav -->
@@ -199,82 +199,6 @@
     </div>
 
     <!-- TARDINESS -->
-    <div class="page" id="p-tardiness">
-      <div class="alert" style="display:none"><span>🔔 <strong>1</strong> pending time-off request(s) need review. <a onclick="goTab('timeoff')">Review now</a></span><button class="alert-x" onclick="this.closest('.alert').style.display='none'">×</button></div>
-      <div class="ccard ccard-top">
-        <div class="ccard-body">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-            <h2 style="margin:0">Tardiness Tracker</h2>
-            <button class="btn btn-red2" onclick="populateEmployeeDropdowns();om('addTardModal')">+ Log Incident</button>
-          </div>
-          <p class="desc">Log late arrivals, no-shows, and early departures. The system flags patterns automatically per PR labor standards.</p>
-
-          <!-- Stats row -->
-          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:16px 0">
-            <div style="background:#fff3f3;border:1px solid #fecaca;border-radius:10px;padding:12px;text-align:center">
-              <div style="font-size:.7rem;font-weight:700;color:#991b1b;margin-bottom:4px">THIS MONTH</div>
-              <div style="font-size:1.6rem;font-weight:800;color:#dc2626" id="tardMonthCount">0</div>
-              <div style="font-size:.7rem;color:#991b1b">incidents</div>
-            </div>
-            <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:12px;text-align:center">
-              <div style="font-size:.7rem;font-weight:700;color:#9a3412;margin-bottom:4px">NO-SHOWS</div>
-              <div style="font-size:1.6rem;font-weight:800;color:#ea580c" id="tardNoShowCount">0</div>
-              <div style="font-size:.7rem;color:#9a3412">this month</div>
-            </div>
-            <div style="background:#fefce8;border:1px solid #fde047;border-radius:10px;padding:12px;text-align:center">
-              <div style="font-size:.7rem;font-weight:700;color:#854d0e;margin-bottom:4px">FLAGGED</div>
-              <div style="font-size:1.6rem;font-weight:800;color:#ca8a04" id="tardFlagCount">0</div>
-              <div style="font-size:.7rem;color:#854d0e">employees (3+ in 30d)</div>
-            </div>
-            <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:12px;text-align:center">
-              <div style="font-size:.7rem;font-weight:700;color:#166534;margin-bottom:4px">TOTAL LOGGED</div>
-              <div style="font-size:1.6rem;font-weight:800;color:#16a34a" id="tardTotalCount">0</div>
-              <div style="font-size:.7rem;color:#166534">all time</div>
-            </div>
-          </div>
-
-          <!-- Filter bar -->
-          <div class="tbl-bar" style="margin-bottom:12px">
-            <input class="sinput" placeholder="Search employee..." id="tardSearch" oninput="renderTardiness()"/>
-            <select class="sel" id="tardTypeFilter" onchange="renderTardiness()">
-              <option value="">All Types</option>
-              <option value="Late Arrival">Late Arrivals</option>
-              <option value="No-Show">No-Shows</option>
-              <option value="Early Departure">Early Departures</option>
-            </select>
-            <select class="sel" id="tardMonthFilter" onchange="renderTardiness()">
-              <option value="">All Time</option>
-              <option value="30">Last 30 days</option>
-              <option value="90">Last 90 days</option>
-            </select>
-            <button class="btn" onclick="exportTardinessCSV()" style="border-color:#7c3aed;color:#7c3aed">⬇ Export</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Flagged employees -->
-      <div id="tardFlagPanel" style="display:none;margin-bottom:16px">
-        <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:10px;padding:14px 16px">
-          <div style="font-weight:700;color:#92400e;margin-bottom:8px">⚠️ Pattern Alerts</div>
-          <div id="tardFlagList" style="font-size:.83rem;color:#92400e"></div>
-        </div>
-      </div>
-
-      <!-- Log table -->
-      <div class="tbl-wrap">
-        <div style="overflow-x:auto">
-          <table><thead><tr>
-            <th>Employee</th><th>Date</th><th>Type</th>
-            <th>Scheduled</th><th>Actual</th><th>Minutes Late</th>
-            <th>Notes</th><th>Occurrences (30d)</th><th></th>
-          </tr></thead>
-          <tbody id="tardTbody">
-            <tr><td colspan="9"><div class="empty"><div class="ei">⏰</div><p>No incidents logged. Use "+ Log Incident" to add one.</p></div></td></tr>
-          </tbody></table>
-        </div>
-      </div>
-    </div>
-
     <!-- MEAL PENALTIES -->
     <div class="page" id="p-meals">
       <div class="alert" style="display:none"><span>🔔 <strong>1</strong> pending time-off request(s) need review. <a onclick="goTab('timeoff')">Review now</a></span><button class="alert-x" onclick="this.closest('.alert').style.display='none'">×</button></div>
@@ -355,7 +279,7 @@
             <th>Violation Type</th><th>Hourly Rate</th><th>Time Owed</th><th>Penalty</th><th></th>
           </tr></thead>
           <tbody id="mealTbody">
-            <tr><td colspan="11"><div class="empty"><div class="ei">🥪</div><p>No violations logged. Use "+ Log Violation" to add one.</p></div></td></tr>
+            <tr><td colspan="11"><div class="empty"><div class="ei">🍽</div><p>No violations logged. Use "+ Log Violation" to add one.</p></div></td></tr>
           </tbody></table>
         </div>
       </div>
@@ -443,10 +367,13 @@
     </div>
 
     <!-- USER ACCOUNTS -->
-    <!-- ════ WRITE-UPS PAGE ════ -->
+    <!-- ════ GASTOS AUTOFILL PAGE ════ -->
+    <div class="page" id="p-gastos">
+      <div id="gastosApp"></div>
+    </div><!-- /p-gastos -->
+
     <!-- ════ WRITE-UPS PAGE ════ -->
     <div class="page" id="p-writeups">
-
       <div class="ccard" style="margin-bottom:16px">
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:16px">
           <h2 style="margin:0;font-size:1.2rem;color:var(--navy)">📋 Sistema de Amonestaciones Disciplinarias</h2>
@@ -465,15 +392,12 @@
 
       <div id="wuHistoryPanel" style="display:none;margin-bottom:16px">
         <div class="ccard">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
             <div>
               <h3 id="wuEmpNameDisplay" style="margin:0;font-size:1.05rem;color:var(--navy)"></h3>
               <div id="wuEmpStatus" style="font-size:.8rem;margin-top:4px"></div>
             </div>
-            <div style="display:flex;gap:8px">
-              <button class="btn" style="border-color:#dc2626;color:#dc2626;font-size:.8rem" onclick="wuDeleteAllConfirm()">🗑 Borrar expediente</button>
-              <button class="btn" onclick="wuCloseHistory()">✕ Cerrar</button>
-            </div>
+            <button class="btn" onclick="wuCloseHistory()">✕ Cerrar</button>
           </div>
           <div style="font-size:.85rem;font-weight:600;color:var(--text-mid);margin-bottom:8px">Historial de Amonestaciones</div>
           <div id="wuHistoryList" style="font-size:.85rem"></div>
@@ -484,26 +408,7 @@
         <div class="ccard">
           <h3 style="margin:0 0 18px;font-size:1rem;color:var(--navy)">📝 Nueva Amonestación — <span id="wuFormEmpName" style="font-weight:400"></span></h3>
 
-          <div class="frow" style="margin-bottom:14px">
-            <div class="field" style="flex:1"><label>Supervisor</label><input type="text" id="wuSupervisor" placeholder="Nombre del supervisor"/></div>
-            <div class="field" style="flex:1"><label>Fecha del Incidente</label><input type="date" id="wuDate"/></div>
-          </div>
-          <div style="margin-bottom:14px">
-            <label style="font-size:.8rem;font-weight:600;color:var(--text-mid);display:block;margin-bottom:6px">Horario del Turno</label>
-            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-              <span style="font-size:.85rem;color:var(--text-mid)">De:</span>
-              <input type="number" id="wuShiftStartH" min="1" max="12" value="8" style="width:60px;padding:7px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;text-align:center"/>
-              <span style="color:var(--text-mid)">:</span>
-              <input type="number" id="wuShiftStartM" min="0" max="59" value="0" style="width:60px;padding:7px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;text-align:center"/>
-              <select id="wuShiftStartAMPM" style="padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem"><option>AM</option><option>PM</option></select>
-              <span style="font-size:.85rem;color:var(--text-mid);margin-left:8px">A:</span>
-              <input type="number" id="wuShiftEndH" min="1" max="12" value="4" style="width:60px;padding:7px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;text-align:center"/>
-              <span style="color:var(--text-mid)">:</span>
-              <input type="number" id="wuShiftEndM" min="0" max="59" value="0" style="width:60px;padding:7px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;text-align:center"/>
-              <select id="wuShiftEndAMPM" style="padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem"><option>AM</option><option selected>PM</option></select>
-            </div>
-          </div>
-
+          <!-- Category — pick this FIRST, it drives the level suggestion -->
           <div style="margin-bottom:6px">
             <label style="font-size:.8rem;font-weight:600;color:var(--text-mid);display:block;margin-bottom:4px">
               Categoría de Violación <span style="font-weight:400;color:#6b7280">(seleccionar primero)</span>
@@ -524,9 +429,10 @@
             <div id="wuCategoryHint" style="display:none;font-size:.78rem;margin-top:5px;padding:6px 10px;background:#fef9c3;border-radius:6px;border-left:3px solid #d97706"></div>
           </div>
 
+          <!-- Discipline level + Falta de Mejora — auto-set after category -->
           <div class="frow" style="margin-bottom:14px">
             <div class="field" style="flex:1">
-              <label>Nivel de Acción <span style="font-weight:400;font-size:.75rem;color:#6b7280">(auto-sugerido)</span></label>
+              <label>Nivel de Acción Disciplinaria <span style="font-weight:400;font-size:.75rem;color:#6b7280">(auto-sugerido por categoría)</span></label>
               <select id="wuLevel" onchange="wuUpdateFaltaMejora()">
                 <option value="verbal">Amonestación Verbal</option>
                 <option value="escrita">Amonestación Escrita</option>
@@ -540,28 +446,57 @@
             </div>
           </div>
 
-          <div id="wuCategoryFields"></div>
+          <div class="frow" style="margin-bottom:14px">
+            <div class="field" style="flex:1">
+              <label>Supervisor</label>
+              <input type="text" id="wuSupervisor" placeholder="Nombre del supervisor"/>
+            </div>
+            <div class="field" style="flex:1">
+              <label>Fecha del Incidente</label>
+              <input type="date" id="wuDate"/>
+            </div>
+          </div>
 
-          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">
-            <button class="btn btn-navy" onclick="wuGenerateDocument()">📄 Generar Documento</button>
+          <div style="margin-bottom:14px">
+            <label style="font-size:.8rem;font-weight:600;color:var(--text-mid);display:block;margin-bottom:6px">Horario del Turno</label>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span style="font-size:.85rem;color:var(--text-mid);white-space:nowrap">De:</span>
+              <input type="number" id="wuShiftStartH" min="1" max="12" value="8" style="width:60px;padding:7px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;text-align:center"/>
+              <span style="color:var(--text-mid)">:</span>
+              <input type="number" id="wuShiftStartM" min="0" max="59" value="0" style="width:60px;padding:7px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;text-align:center"/>
+              <select id="wuShiftStartAMPM" style="padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem"><option>AM</option><option>PM</option></select>
+              <span style="font-size:.85rem;color:var(--text-mid);white-space:nowrap;margin-left:8px">A:</span>
+              <input type="number" id="wuShiftEndH" min="1" max="12" value="4" style="width:60px;padding:7px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;text-align:center"/>
+              <span style="color:var(--text-mid)">:</span>
+              <input type="number" id="wuShiftEndM" min="0" max="59" value="0" style="width:60px;padding:7px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;text-align:center"/>
+              <select id="wuShiftEndAMPM" style="padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem"><option>AM</option><option selected>PM</option></select>
+            </div>
+          </div>
+
+          <div style="margin-bottom:16px">
+            <label style="font-size:.8rem;font-weight:600;color:var(--text-mid);display:block;margin-bottom:4px">Descripción del Incidente <span style="font-weight:400;font-style:italic">(en sus propias palabras)</span></label>
+            <textarea id="wuRawDescription" rows="4" placeholder="Describa lo que ocurrió de manera clara y concisa..." style="width:100%;box-sizing:border-box;padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:.875rem;line-height:1.5;resize:vertical"></textarea>
+          </div>
+
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:4px">
+            <button class="btn btn-navy" onclick="wuGenerateWithAI()" id="wuGenerateBtn">✨ Generar con IA</button>
             <button class="btn" onclick="wuCancelForm()">Cancelar</button>
           </div>
 
-          <div id="wuDocOutput" style="display:none">
+          <div id="wuAIOutput" style="display:none">
             <div style="border-top:1px solid #e5e7eb;padding-top:16px;margin-top:16px">
-              <div style="font-size:.85rem;font-weight:700;color:var(--navy);margin-bottom:4px">📄 Documento Generado</div>
-              <div style="font-size:.78rem;color:var(--text-mid);margin-bottom:12px">Puede editar el texto antes de guardar o imprimir.</div>
+              <div style="font-size:.85rem;font-weight:700;color:var(--navy);margin-bottom:12px">📄 Redacción Formal Generada por IA</div>
               <div style="margin-bottom:12px">
                 <label style="font-size:.75rem;font-weight:700;color:var(--text-mid);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Descripción del Incidente</label>
-                <textarea id="wuOutIncidente" rows="5" style="width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:6px;padding:10px;font-size:.85rem;line-height:1.6;resize:vertical"></textarea>
+                <textarea id="wuGenIncidente" rows="4" style="width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:6px;padding:10px;font-size:.85rem;line-height:1.5;resize:vertical"></textarea>
               </div>
               <div style="margin-bottom:12px">
                 <label style="font-size:.75rem;font-weight:700;color:var(--text-mid);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Acción Correctiva Requerida</label>
-                <textarea id="wuOutCorrectiva" rows="4" style="width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:6px;padding:10px;font-size:.85rem;line-height:1.6;resize:vertical"></textarea>
+                <textarea id="wuGenCorrectiva" rows="3" style="width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:6px;padding:10px;font-size:.85rem;line-height:1.5;resize:vertical"></textarea>
               </div>
               <div style="margin-bottom:16px">
                 <label style="font-size:.75rem;font-weight:700;color:var(--text-mid);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px">Consecuencias en Caso de No Mejora</label>
-                <textarea id="wuOutConsecuencia" rows="3" style="width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:6px;padding:10px;font-size:.85rem;line-height:1.6;resize:vertical"></textarea>
+                <textarea id="wuGenConsecuencia" rows="2" style="width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:6px;padding:10px;font-size:.85rem;line-height:1.5;resize:vertical"></textarea>
               </div>
               <div style="display:flex;gap:10px;flex-wrap:wrap">
                 <button class="btn btn-navy" onclick="wuSaveRecord()">💾 Guardar en Expediente</button>
