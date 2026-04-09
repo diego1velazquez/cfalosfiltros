@@ -511,9 +511,167 @@ function showTimeoutWarning() {
 
 // ══════════════════════════════════════════
 // PR LABOR LAW ACCRUAL ENGINE
-// Law: Act 180 of Puerto Rico
+// Law: Act No. 180-1998 as amended by Act 4-2017 (LTFA)
+// Note: Act 41-2022 was declared null and void by federal
+//       court on March 3, 2023 — Act 4-2017 rules apply.
+//
+// VACATION (requires ≥130 hrs/month to qualify):
+//   Year 0 – <1 yr  : 0.50 days/month  (½ day)
+//   Year 1 – <5 yrs : 0.75 days/month  (¾ day)
+//   Year 5 – <15 yrs: 1.00 day/month
+//   Year 15+        : 1.25 days/month
+//   ⚠ Cannot be USED until employee completes 1 full year.
+//
+// SICK (requires ≥130 hrs/month to qualify):
+//   ALL years       : 1.00 day/month  (flat, no tier)
+//   Max carryover   : 15 days
 // ══════════════════════════════════════════
 
+/**
+ * Returns the vacation accrual rate (days/month) for a given
+ * number of completed years of service per PR Act 180 / Act 4-2017.
+ */
+function getVacationRateForYears(completedYears) {
+  if (completedYears >= 15) return 1.25;
+  if (completedYears >= 5)  return 1.00;
+  if (completedYears >= 1)  return 0.75;
+  return 0.50; // first year of service
+}
+
+/**
+ * Calculates the accrual earned in a single calendar month.
+ *
+ * @param {number} hoursWorked  - Total hours worked that month
+ * @param {number} completedYears - Full years of service at the time of accrual
+ * @returns {{ vacationEarned: number, sickEarned: number, tier: string, qualified: boolean }}
+ */
+function calcMonthlyAccrual(hoursWorked, completedYears) {
+  const HOURS_THRESHOLD = 130; // Act 4-2017 requirement
+  const qualified = hoursWorked >= HOURS_THRESHOLD;
+
+  if (!qualified) {
+    return { vacationEarned: 0, sickEarned: 0, tier: 'none', qualified: false };
+  }
+
+  const vacRate = getVacationRateForYears(completedYears);
+  // Sick leave is always 1.00 day/month flat (no seniority tier)
+  const sickRate = 1.00;
+
+  // Determine label for UI display
+  let tier = 'full';
+  if (completedYears < 1)  tier = 'year1';
+  else if (completedYears < 5)  tier = 'year1to5';
+  else if (completedYears < 15) tier = 'year5to15';
+  else tier = 'year15plus';
+
+  return {
+    vacationEarned: +vacRate.toFixed(4),
+    sickEarned:     +sickRate.toFixed(4),
+    tier,
+    qualified: true
+  };
+}
+
+/**
+ * Calculates total accrued vacation and sick balances for an employee
+ * across their full monthly history.
+ *
+ * @param {Array}  monthlyRecords - Array of { year, month, hoursWorked }
+ * @param {string} firstClockIn   - ISO date string of first day of work
+ * @param {number} vacTaken       - Total vacation days already taken
+ * @param {number} sickTaken      - Total sick days already taken
+ * @returns {{ vacationEarned, vacationBal, sickEarned, sickBal, vacationEligible }}
+ */
+function calcEmployeeAccruals(monthlyRecords, firstClockIn, vacTaken, sickTaken) {
+  const startDate = firstClockIn ? new Date(firstClockIn) : null;
+
+  let totalVacEarned  = 0;
+  let totalSickEarned = 0;
+
+  for (const rec of (monthlyRecords || [])) {
+    // Compute how many full years of service the employee had
+    // at the START of this month (conservative, employee-favorable rounding)
+    let completedYears = 0;
+    if (startDate) {
+      const monthStart = new Date(rec.year, rec.month - 1, 1);
+      const msPerYear  = 1000 * 60 * 60 * 24 * 365.25;
+      completedYears   = Math.floor((monthStart - startDate) / msPerYear);
+      if (completedYears < 0) completedYears = 0;
+    }
+
+    const acr = calcMonthlyAccrual(rec.hoursWorked, completedYears);
+    totalVacEarned  += acr.vacationEarned;
+    totalSickEarned += acr.sickEarned;
+  }
+
+  // Sick leave carryover cap: 15 days (Act 180 §250d(l))
+  const SICK_CAP = 15;
+  totalSickEarned = Math.min(totalSickEarned, SICK_CAP + (sickTaken || 0));
+
+  const vacBal  = +(totalVacEarned  - (vacTaken  || 0)).toFixed(2);
+  const sickBal = +(totalSickEarned - (sickTaken || 0)).toFixed(2);
+
+  // Vacation cannot be USED until 1 full year of service (Act 180 §250d(f))
+  let vacationEligible = false;
+  if (startDate) {
+    const msPerYear  = 1000 * 60 * 60 * 24 * 365.25;
+    vacationEligible = (Date.now() - startDate.getTime()) >= msPerYear;
+  }
+
+  return {
+    vacationEarned:   +totalVacEarned.toFixed(2),
+    vacationBal:      Math.max(0, vacBal),
+    sickEarned:       +totalSickEarned.toFixed(2),
+    sickBal:          Math.max(0, sickBal),
+    vacationEligible
+  };
+}
+
+/**
+ * Refreshes all employee accrual displays and UI counts.
+ * Call after any data change (import, time-off entry, status change).
+ */
+function recalculateAll() {
+  for (const key of Object.keys(EMPLOYEES)) {
+    const emp = EMPLOYEES[key];
+    // Ensure required fields exist
+    if (!emp.monthlyRecords) emp.monthlyRecords = [];
+    if (emp.vacTaken  == null) emp.vacTaken  = 0;
+    if (emp.sickTaken == null) emp.sickTaken = 0;
+  }
+  // Refresh all dependent UI
+  updateEmployeesTab();
+  updateDashboard();
+}
+
+function updateDashboard() {
+  const tbody = document.getElementById('dashTbody');
+  if (!tbody) return;
+  const emps = Object.entries(EMPLOYEES).sort((a,b) => a[1].name.localeCompare(b[1].name));
+  if (!emps.length) {
+    tbody.innerHTML = '<tr><td colspan="10"><div class="empty"><div class="ei">📋</div><p>No data yet. Import data to get started.</p></div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = emps.map(([key, emp]) => {
+    const accruals = calcEmployeeAccruals(emp.monthlyRecords || [], emp.firstClockIn, emp.vacTaken || 0, emp.sickTaken || 0);
+    const tenure   = getTenureString(emp.firstClockIn);
+    const sickBal  = accruals.sickBal;
+    const vacBal   = accruals.vacationBal;
+    const vacFlag  = !accruals.vacationEligible ? ' ⚠' : '';
+    return `<tr>
+      <td><a href="#" style="color:var(--navy);font-weight:600;text-decoration:none" onclick="goTab('employees');return false">${emp.name}</a></td>
+      <td><span class="badge bg-teal">${emp.type || 'hourly'}</span></td>
+      <td><span class="badge ${emp.status === 'active' ? 'bg-green' : 'bg-gray'}">${emp.status || 'active'}</span></td>
+      <td style="font-size:.8rem">${tenure}</td>
+      <td style="text-align:right">${accruals.sickEarned}</td>
+      <td style="text-align:right">${emp.sickTaken || 0}</td>
+      <td style="text-align:right;font-weight:700;color:${sickBal <= 0 ? 'var(--red)' : '#0f766e'}">${sickBal}</td>
+      <td style="text-align:right">${accruals.vacationEarned}</td>
+      <td style="text-align:right">${emp.vacTaken || 0}</td>
+      <td style="text-align:right;font-weight:700;color:${vacBal <= 0 ? 'var(--red)' : 'var(--navy)'}">${vacBal}${vacFlag}</td>
+    </tr>`;
+  }).join('');
+}
 
 // ══════════════════════════════════════════
 // PDF PARSER — CFA Time Summary Report
@@ -526,7 +684,16 @@ function hhmm(s) {
   return parseInt(parts[0]) + parseInt(parts[1]) / 60;
 }
 
-/** Parse the Time Summary PDF using pdf.js (loaded from CDN) */
+/** Parse the Time Summary PDF using pdf.js (loaded from CDN).
+ *  Calibrated against real CFA Time Summary Report layout (Apr 2026).
+ *
+ *  Confirmed column x-positions (pdfplumber):
+ *    Employee Name : x <  145
+ *    Total Time    : x ~  157–165   (< 180)
+ *    Regular Hours : x ~  291–295   (180–340)
+ *    OT Hours      : x ~  417–421   (340–450)
+ *    Dollar cols   : x > 340 and contain '$' — skipped
+ */
 async function parseTimeSummaryPDF(file) {
   const pdfjsLib = window['pdfjs-dist/build/pdf'];
   pdfjsLib.GlobalWorkerOptions.workerSrc =
@@ -539,71 +706,89 @@ async function parseTimeSummaryPDF(file) {
   let headerText = '';
 
   for (let p = 1; p <= pdf.numPages; p++) {
-    const page = await pdf.getPage(p);
-    const content = await page.getTextContent();
+    const page  = await pdf.getPage(p);
+    const content  = await page.getTextContent();
     const viewport = page.getViewport({ scale: 1 });
 
-    // Collect words with their positions
     for (const item of content.items) {
-      if (!item.str.trim()) continue;
-      const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
-      // pdf.js y is from bottom; convert to top-down
+      const t = item.str.trim();
+      if (!t) continue;
       const x = item.transform[4];
       const y = viewport.height - item.transform[5];
-      if (p === 1) headerText += item.str + ' ';
-      allWords.push({ text: item.str.trim(), x, y, page: p });
+      if (p === 1) headerText += t + ' ';
+      allWords.push({ text: t, x, y, page: p });
     }
   }
 
-  // Parse date range from header
-  const dateMatch = headerText.match(
-    /From\s+\w+,\s+(\w+\s+\d+,\s+\d+)\s+through\s+\w+,\s+(\w+\s+\d+,\s+\d+)/
-  );
+  // ── Date range ──────────────────────────────────────────────────────────
+  // Header looks like: "From Sunday, Mar 01, 2026 through Tuesday, Mar 31, 2026"
+  // Words come in separately so we reconstruct from the header string.
+  const MONTHS = { Jan:1,Feb:2,Mar:3,Apr:4,May:5,Jun:6,
+                   Jul:7,Aug:8,Sep:9,Oct:10,Nov:11,Dec:12 };
   let periodStart = null, periodEnd = null, year = null, month = null;
-  if (dateMatch) {
-    periodStart = new Date(dateMatch[1]);
-    periodEnd   = new Date(dateMatch[2]);
+
+  // Match "Mar 01, 2026" style tokens anywhere in the header
+  const dateRangeMatch = headerText.match(
+    /From\s+\w+,\s+(\w+)\s+(\d+),\s+(\d+)\s+through\s+\w+,\s+(\w+)\s+(\d+),\s+(\d+)/
+  );
+  if (dateRangeMatch) {
+    const [, sm, sd, sy, em, ed, ey] = dateRangeMatch;
+    periodStart = new Date(+sy, (MONTHS[sm] || 1) - 1, +sd);
+    periodEnd   = new Date(+ey, (MONTHS[em] || 1) - 1, +ed);
     year  = periodStart.getFullYear();
     month = periodStart.getMonth() + 1;
   }
 
-  // Group words into rows by y-coordinate (±3px tolerance)
+  // ── Group words into rows by y-coordinate (±2px tolerance) ─────────────
   const rowMap = {};
   for (const w of allWords) {
-    const key = Math.round(w.y / 3) * 3;
+    const key = Math.round(w.y / 2) * 2;
     if (!rowMap[key]) rowMap[key] = [];
     rowMap[key].push(w);
   }
 
-  const SKIP = new Set(['Employee','Name','Total','Time','Wage','Rate','Regular',
-    'Hours','Wages','Overtime','Grand','All',"Employees'","Employees'",'Page','of',
-    'FSU','Filtros','Los','Summary','Report','From','through','Monday','Tuesday',
-    'Wednesday','Thursday','Friday','Saturday','Sunday','AM','PM','1','2','3']);
+  const SKIP = new Set([
+    'Employee','Name','Total','Time','Wage','Rate','Regular','Hours','Wages',
+    'Overtime','Grand','All',"Employees'","Employees'",'Page','of',
+    'FSU','Filtros','Los','Summary','Report','From','through',
+    'Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday',
+    'AM','PM'
+  ]);
 
   const employees = [];
-  const timeRe = /^\d+:\d{2}$/;
-  const dateRe  = /^\d{2}\/\d{2}\/\d{4}$/;
+  const timeRe   = /^\d+:\d{2}$/;   // matches "156:54", "0:31", etc.
+  const dollarRe = /^\$/;            // skip all dollar-amount cells
 
-  for (const [rowKey, words] of Object.entries(rowMap)) {
+  for (const words of Object.values(rowMap)) {
     const sorted = words.sort((a, b) => a.x - b.x);
     let nameParts = [], totalTime = null, regHours = null, otHours = null;
 
     for (const w of sorted) {
       const t = w.text;
-      if (SKIP.has(t) || dateRe.test(t)) continue;
+
+      // Skip header words, timestamps (HH:MM:SS), dollar amounts, page numbers
+      if (SKIP.has(t) || dollarRe.test(t)) continue;
+      if (/^\d{2}\/\d{2}\/\d{4}$/.test(t)) continue;  // date stamps
+      if (/^\d{1,2}:\d{2}:\d{2}$/.test(t)) continue;  // time-of-day stamps
+      if (/^\d+$/.test(t)) continue;                   // bare page numbers
 
       if (timeRe.test(t)) {
-        if (w.x < 210)      totalTime = t;
-        else if (w.x < 390) regHours  = t;
-        else if (w.x < 530) otHours   = t;
-      } else if (w.x < 155) {
+        // Assign to column by x position (calibrated from real report):
+        //   Total Time   x < 180
+        //   Reg Hours    180 ≤ x < 340
+        //   OT Hours     340 ≤ x < 450
+        if      (w.x < 180) totalTime = t;
+        else if (w.x < 340) regHours  = t;
+        else if (w.x < 450) otHours   = t;
+      } else if (w.x < 145) {
+        // Employee name tokens are always left-aligned (x < 145)
         nameParts.push(t);
       }
     }
 
     if (nameParts.length && totalTime && regHours) {
-      const name = nameParts.join(' ');
-      if (name.toLowerCase().includes('grand') || name.toLowerCase().includes('employees')) continue;
+      const name = nameParts.join(' ').trim();
+      if (/grand|employees/i.test(name)) continue;  // skip grand total row
       const totalHours = hhmm(totalTime);
       employees.push({
         name,
@@ -622,16 +807,17 @@ async function parseTimeSummaryPDF(file) {
 // IMPORT DATA — wire up the upload button
 // ══════════════════════════════════════════
 
-// Track uploaded pay periods to avoid double-counting
-let IMPORTED_PERIODS = {};  // key: "YYYY-MM-DD_YYYY-MM-DD" → true
+// Track imported months to avoid double-counting
+// key: "YYYY-MM" → { start, end, empCount, totalHours }
+let IMPORTED_PERIODS = {};
 let TIME_OFF_REQUESTS = [];  // pending/approved/rejected requests
 
 async function handleImport(file) {
-  const statusEl = document.getElementById('importStatus');
+  const statusEl   = document.getElementById('importStatus');
   const progressEl = document.getElementById('importProgress');
-  
-  statusEl.style.display = 'block';
-  statusEl.innerHTML = '<span style="color:var(--navy)">⏳ Parsing PDF...</span>';
+
+  statusEl.style.display   = 'block';
+  statusEl.innerHTML       = '<span style="color:var(--navy)">⏳ Parsing PDF...</span>';
   progressEl.style.display = 'block';
 
   try {
@@ -639,96 +825,104 @@ async function handleImport(file) {
 
     if (!result.employees.length) {
       statusEl.innerHTML = '<span style="color:var(--red)">❌ No employees found. Is this a Time Summary Report?</span>';
+      progressEl.style.display = 'none';
       return;
     }
 
-    const periodKey = `${result.periodStart?.toISOString().slice(0,10)}_${result.periodEnd?.toISOString().slice(0,10)}`;
-    
-    if (IMPORTED_PERIODS[periodKey]) {
-      statusEl.innerHTML = `<span style="color:#d97706">⚠ This pay period was already imported. Remove it first to re-import.</span>`;
-      return;
-    }
-    IMPORTED_PERIODS[periodKey] = true;
+    // Monthly key — one upload per calendar month
+    const y = result.year, m = result.month;
+    const monthKey  = `${y}-${String(m).padStart(2,'0')}`;
+    const monthName = new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 
-    let newCount = 0, updatedCount = 0;
+    // If this month already exists, ask director whether to overwrite
+    if (IMPORTED_PERIODS[monthKey]) {
+      const overwrite = confirm(
+        `⚠️ ${monthName} has already been imported.\n\n` +
+        `Do you want to overwrite it with this new report?\n\n` +
+        `OK = replace existing data   |   Cancel = keep current data`
+      );
+      if (!overwrite) {
+        statusEl.innerHTML = `<span style="color:#d97706">⚠ Import cancelled — existing ${monthName} data kept.</span>`;
+        progressEl.style.display = 'none';
+        return;
+      }
+      // Wipe the old monthly record from every employee before re-importing
+      for (const emp of Object.values(EMPLOYEES)) {
+        emp.monthlyRecords = (emp.monthlyRecords || []).filter(r => !(r.year === y && r.month === m));
+      }
+    }
+
+    let newCount = 0, updatedCount = 0, totalHours = 0;
 
     for (const emp of result.employees) {
-      const key = emp.name.toLowerCase().replace(/\s+/g,'_');
+      const key = emp.name.toLowerCase().replace(/\s+/g, '_');
 
       if (!EMPLOYEES[key]) {
-        // New employee — auto-create
         EMPLOYEES[key] = {
-          name: emp.name,
-          type: 'hourly',
-          status: 'active',
-          firstClockIn: result.periodStart?.toISOString().slice(0,10) || null,
-          vacTaken: 0,
-          sickTaken: 0,
-          monthlyRecords: []
+          name:         emp.name,
+          type:         'hourly',
+          status:       'active',
+          firstClockIn: result.periodStart?.toISOString().slice(0, 10) || null,
+          vacTaken:     0,
+          sickTaken:    0,
+          monthlyRecords: [],
+          timeOffLog:   []
         };
         newCount++;
       } else {
         updatedCount++;
       }
 
-      const empRecord = EMPLOYEES[key];
-
-      // Find or create monthly record for this period's month/year
-      const y = result.year, m = result.month;
-      let monthRec = empRecord.monthlyRecords.find(r => r.year === y && r.month === m);
-      if (!monthRec) {
-        monthRec = { year: y, month: m, hoursWorked: 0, payPeriods: [] };
-        empRecord.monthlyRecords.push(monthRec);
-      }
-
-      // Add this pay period's hours (bi-weekly uploads accumulate into monthly)
-      monthRec.hoursWorked += emp.totalHours;
-      monthRec.payPeriods.push({
-        periodKey,
-        start: result.periodStart?.toISOString().slice(0,10),
-        end:   result.periodEnd?.toISOString().slice(0,10),
-        hours: emp.totalHours
+      // One clean record per month — no accumulation needed
+      EMPLOYEES[key].monthlyRecords.push({
+        year:        y,
+        month:       m,
+        hoursWorked: emp.totalHours,
+        reportStart: result.periodStart?.toISOString().slice(0, 10),
+        reportEnd:   result.periodEnd?.toISOString().slice(0, 10)
       });
+
+      totalHours += emp.totalHours;
     }
 
-    // Update employee counts in dashboard
-    const sActive = Object.values(EMPLOYEES).filter(e => e.status === 'active').length;
-    const sInactive = Object.values(EMPLOYEES).filter(e => e.status !== 'active').length;
-    document.getElementById('sActive').textContent   = sActive;
-    document.getElementById('sInactive').textContent = sInactive;
+    // Register month as imported
+    IMPORTED_PERIODS[monthKey] = {
+      monthKey,
+      start:      result.periodStart?.toISOString().slice(0, 10),
+      end:        result.periodEnd?.toISOString().slice(0, 10),
+      empCount:   result.employees.length,
+      totalHours: +totalHours.toFixed(1)
+    };
 
-    // Update data range display
-    const allPeriods = Object.values(EMPLOYEES)
-      .flatMap(e => e.monthlyRecords.flatMap(m => m.payPeriods || []))
-      .map(p => p.start).filter(Boolean).sort();
-    if (allPeriods.length) {
-      document.getElementById('sRange').textContent =
-        allPeriods[0] + ' → ' + allPeriods[allPeriods.length-1];
+    // Dashboard counts
+    document.getElementById('sActive').textContent   = Object.values(EMPLOYEES).filter(e => e.status === 'active').length;
+    document.getElementById('sInactive').textContent = Object.values(EMPLOYEES).filter(e => e.status !== 'active').length;
+
+    // Data range display
+    const allMonths = Object.keys(IMPORTED_PERIODS).sort();
+    if (allMonths.length) {
+      const first = IMPORTED_PERIODS[allMonths[0]];
+      const last  = IMPORTED_PERIODS[allMonths[allMonths.length - 1]];
+      const srEl  = document.getElementById('sRange');
+      if (srEl) srEl.textContent = (first.start || allMonths[0]) + ' → ' + (last.end || allMonths[allMonths.length - 1]);
     }
 
-    // Recalculate all accruals
     recalculateAll();
-
-    // Populate dropdowns
     populateEmployeeDropdowns();
+    saveToStorage();
 
-    const fmt = d => d ? new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '?';
     statusEl.innerHTML = `
       <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:14px 16px">
         <div style="font-weight:700;color:#166534;margin-bottom:6px">✅ Import Successful!</div>
         <div style="font-size:.83rem;color:#166534">
-          Period: <strong>${fmt(result.periodStart)} – ${fmt(result.periodEnd)}</strong><br>
-          ${result.employees.length} employees processed
-          (${newCount} new, ${updatedCount} updated)<br>
+          Month: <strong>${monthName}</strong><br>
+          ${result.employees.length} employees processed (${newCount} new, ${updatedCount} updated)<br>
           Accruals recalculated per PR Act 180.
         </div>
       </div>`;
     progressEl.style.display = 'none';
 
-    // Refresh all dependent views
     updateEmployeesTab();
-
-    // Switch to dashboard to show results
     setTimeout(() => goTab('dashboard'), 1500);
 
   } catch (err) {
@@ -939,12 +1133,13 @@ async function loadFromStorage() {
 
   const backupTime = localStorage.getItem('cfa_losfiltros_backup_time');
   if (backupTime) { const sb = document.getElementById('sBackup'); if(sb) sb.textContent = backupTime; }
-  const allPeriods = Object.values(EMPLOYEES)
-    .flatMap(e => e.monthlyRecords?.flatMap(m => m.payPeriods || []) || [])
-    .map(p => p.start).filter(Boolean).sort();
-  if (allPeriods.length) {
-    const sr = document.getElementById('sRange');
-    if(sr) sr.textContent = allPeriods[0] + ' → ' + allPeriods[allPeriods.length-1];
+  // Restore data range display from imported months
+  const allMonths = Object.keys(IMPORTED_PERIODS).sort();
+  if (allMonths.length) {
+    const first = IMPORTED_PERIODS[allMonths[0]];
+    const last  = IMPORTED_PERIODS[allMonths[allMonths.length - 1]];
+    const sr    = document.getElementById('sRange');
+    if (sr) sr.textContent = (first?.start || allMonths[0]) + ' → ' + (last?.end || allMonths[allMonths.length - 1]);
   }
   populateEmployeeDropdowns();
   recalculateAll();
@@ -979,7 +1174,7 @@ function clearPeriodLock() {
   if (st) st.style.display = 'none';
   const out = document.getElementById('testOutput');
   if (out) { out.style.display='block'; out.style.color='#16a34a'; out.style.whiteSpace='normal';
-    out.textContent='✅ Period lock cleared — re-upload the same PDF to simulate a 2nd pay period.'; }
+    out.textContent='✅ Month lock cleared — you can now re-upload the same month to overwrite it.'; }
 }
 
 function clearAllData() {
@@ -1004,24 +1199,23 @@ function showImportedPeriods() {
   if (!out) return;
   out.style.display = 'block';
   out.style.whiteSpace = 'pre';
-  const periods = Object.keys(IMPORTED_PERIODS);
-  if (!periods.length) {
-    out.style.color='var(--text-mid)'; out.textContent='No periods imported yet.'; return;
+  const months = Object.keys(IMPORTED_PERIODS).sort();
+  if (!months.length) {
+    out.style.color='var(--text-mid)'; out.textContent='No months imported yet.'; return;
   }
   const sampleEmp = Object.values(EMPLOYEES)[0];
   let detail = '';
   if (sampleEmp) {
     detail = '\n\nSample: ' + sampleEmp.name;
     for (const rec of (sampleEmp.monthlyRecords||[])) {
-      const avg = (rec.hoursWorked/4.33).toFixed(1);
+      const qualified = rec.hoursWorked >= 130;
       detail += '\n  '+rec.year+'-'+String(rec.month).padStart(2,'0')+
-        ': '+rec.hoursWorked.toFixed(1)+' hrs ('+
-        (rec.payPeriods||[]).length+' period(s), avg weekly: '+avg+' hrs)'+
-        ' → '+(rec.hoursWorked>=115?'FULL ✅':avg>=20?'PARTIAL 🟡':'NONE ❌');
+        ': '+rec.hoursWorked.toFixed(1)+' hrs' +
+        ' → '+(qualified ? 'QUALIFIES ✅ (≥130 hrs)' : 'DOES NOT QUALIFY ❌ (<130 hrs)');
     }
   }
   out.style.color='var(--navy)';
-  out.innerHTML='<strong>Imported periods:</strong>\n'+periods.join('\n')+detail;
+  out.innerHTML='<strong>Imported months:</strong>\n'+months.join('\n')+detail;
 }
 
 // ══════════════════════════════════════════
@@ -1318,16 +1512,28 @@ function showEmpDetail(key) {
   const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const tbody = document.getElementById('detMonthlyTbody');
   if (!(emp.monthlyRecords||[]).length) {
-    tbody.innerHTML = '<tr><td colspan="7" style="padding:12px;text-align:center;color:#888">No pay periods imported yet.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" style="padding:12px;text-align:center;color:#888">No months imported yet.</td></tr>';
   } else {
     tbody.innerHTML = (emp.monthlyRecords||[])
       .sort((a,b) => a.year!==b.year ? a.year-b.year : a.month-b.month)
       .map(rec => {
         const avg = (rec.hoursWorked/4.33).toFixed(1);
-        const acr = calcMonthlyAccrual(rec.hoursWorked, rec.hoursWorked/4.33);
-        const tierColor = acr.tier==='full'?'#166534':acr.tier==='partial'?'#854d0e':'#888';
-        const tierLabel = acr.tier==='full'?'Full ✅':acr.tier==='partial'?'Partial 🟡':'None ❌';
-        const periods = (rec.payPeriods||[]).length;
+        // Compute completed years of service at the start of this month
+        const startDate = emp.firstClockIn ? new Date(emp.firstClockIn) : null;
+        const monthStart = new Date(rec.year, rec.month - 1, 1);
+        const completedYears = startDate
+          ? Math.max(0, Math.floor((monthStart - startDate) / (1000*60*60*24*365.25)))
+          : 0;
+        const acr = calcMonthlyAccrual(rec.hoursWorked, completedYears);
+        const tierColor = acr.tier==='none'?'#888':'#166534';
+        const tierLabel = acr.tier==='none'?'None ❌'
+          : acr.tier==='year1'?'Yr1 (½/day) ✅'
+          : acr.tier==='year1to5'?'Yr1-5 (¾/day) ✅'
+          : acr.tier==='year5to15'?'Yr5-15 (1/day) ✅'
+          : 'Yr15+ (1¼/day) ✅';
+        const qualBg    = acr.qualified ? '#dcfce7' : '#fee2e2';
+        const qualColor = acr.qualified ? '#166534' : '#991b1b';
+        const qualLabel = acr.qualified ? '✓ Qualifies' : '✗ < 130 hrs';
         return `<tr style="border-bottom:1px solid #f0f0f0">
           <td style="padding:7px 10px">${monthNames[rec.month-1]} ${rec.year}</td>
           <td style="padding:7px 10px;text-align:right">${rec.hoursWorked.toFixed(1)}</td>
@@ -1336,7 +1542,7 @@ function showEmpDetail(key) {
           <td style="padding:7px 10px;text-align:right;color:#0f766e;font-weight:600">+${acr.sickEarned}</td>
           <td style="padding:7px 10px;text-align:right;color:var(--navy);font-weight:600">+${acr.vacationEarned}</td>
           <td style="padding:7px 10px;text-align:center">
-            <span style="font-size:.7rem;background:${periods>=2?'#dcfce7':'#fef9c3'};color:${periods>=2?'#166534':'#854d0e'};padding:2px 7px;border-radius:10px">${periods}/2</span>
+            <span style="font-size:.7rem;background:${qualBg};color:${qualColor};padding:2px 7px;border-radius:10px">${qualLabel}</span>
           </td>
         </tr>`;
       }).join('');
@@ -1384,63 +1590,50 @@ function showEmpDetail(key) {
 // PAY PERIOD HISTORY
 // ══════════════════════════════════════════
 function showPeriodHistory() {
-  const list = document.getElementById('periodHistoryList');
-  const periods = Object.keys(IMPORTED_PERIODS);
+  const list   = document.getElementById('periodHistoryList');
+  const months = Object.keys(IMPORTED_PERIODS).sort().reverse();
 
-  if (!periods.length) {
-    list.innerHTML = '<div class="empty"><div class="ei">📭</div><p>No pay periods imported yet.</p></div>';
+  if (!months.length) {
+    list.innerHTML = '<div class="empty"><div class="ei">📭</div><p>No months imported yet.</p></div>';
   } else {
-    // Collect period details from employee records
-    const periodDetails = {};
-    for (const [key, emp] of Object.entries(EMPLOYEES)) {
-      for (const rec of (emp.monthlyRecords||[])) {
-        for (const pp of (rec.payPeriods||[])) {
-          if (!periodDetails[pp.periodKey]) {
-            periodDetails[pp.periodKey] = { start: pp.start, end: pp.end, empCount: 0, totalHours: 0 };
-          }
-          periodDetails[pp.periodKey].empCount++;
-          periodDetails[pp.periodKey].totalHours += pp.hours;
-        }
-      }
-    }
-
-    list.innerHTML = Object.entries(periodDetails)
-      .sort((a,b) => b[0].localeCompare(a[0]))
-      .map(([key, pd]) => `
+    list.innerHTML = months.map(monthKey => {
+      const pd        = IMPORTED_PERIODS[monthKey];
+      const label     = new Date(monthKey + '-02').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+      const dateRange = pd.start && pd.end ? `${pd.start} → ${pd.end}` : monthKey;
+      return `
         <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px">
           <div>
-            <div style="font-weight:600;font-size:.88rem">${pd.start} → ${pd.end}</div>
-            <div style="font-size:.78rem;color:var(--text-light);margin-top:2px">${pd.empCount} employees · ${pd.totalHours.toFixed(0)} total hours</div>
+            <div style="font-weight:600;font-size:.88rem">📅 ${label}</div>
+            <div style="font-size:.78rem;color:var(--text-light);margin-top:2px">
+              ${dateRange} · ${pd.empCount || '?'} employees · ${(pd.totalHours||0).toFixed(0)} hrs
+            </div>
           </div>
-          <button class="btn btn-red2 btn-sm" onclick="deletePeriod('${key}')">🗑 Delete</button>
-        </div>`).join('');
+          <button class="btn btn-red2 btn-sm" onclick="deletePeriod('${monthKey}')">🗑 Delete</button>
+        </div>`;
+    }).join('');
   }
 
   om('periodHistoryModal');
 }
 
-function deletePeriod(periodKey) {
-  if (!confirm('Delete this pay period? Hours will be removed from all employees and balances recalculated.')) return;
+function deletePeriod(monthKey) {
+  const pd    = IMPORTED_PERIODS[monthKey];
+  const label = pd ? new Date(monthKey + '-02').toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : monthKey;
+  if (!confirm(`Delete ${label}? All hours for this month will be removed from every employee and accruals will be recalculated.`)) return;
 
-  // Remove from all employee monthly records
+  // Parse year/month from key e.g. "2025-03"
+  const [y, mo] = monthKey.split('-').map(Number);
+
+  // Remove that month's record from every employee
   for (const emp of Object.values(EMPLOYEES)) {
-    for (const rec of (emp.monthlyRecords||[])) {
-      const before = rec.hoursWorked;
-      const pp = (rec.payPeriods||[]).find(p => p.periodKey === periodKey);
-      if (pp) {
-        rec.hoursWorked   -= pp.hours;
-        rec.payPeriods     = rec.payPeriods.filter(p => p.periodKey !== periodKey);
-      }
-    }
-    // Remove empty monthly records
-    emp.monthlyRecords = (emp.monthlyRecords||[]).filter(r => r.hoursWorked > 0);
+    emp.monthlyRecords = (emp.monthlyRecords || []).filter(r => !(r.year === y && r.month === mo));
   }
 
-  delete IMPORTED_PERIODS[periodKey];
+  delete IMPORTED_PERIODS[monthKey];
   saveToStorage();
   recalculateAll();
-  showPeriodHistory(); // refresh the modal
-  showToast('🗑 Pay period deleted and balances recalculated.');
+  showPeriodHistory();
+  showToast(`🗑 ${label} deleted — accruals recalculated.`);
 }
 
 // ══════════════════════════════════════════
@@ -2692,6 +2885,11 @@ async function gastosSaveEntry(entry) {
   return data;
 }
 
+async function gastosDeleteEntry(id) {
+  const { error } = await getSupa().from('gastos_entries').delete().eq('id', id);
+  if (error) throw new Error(error.message);
+}
+
 async function gastosUpdateStatus(id, status) {
   const { error } = await getSupa().from('gastos_entries').update({ status }).eq('id', id);
   if (error) throw error;
@@ -3394,14 +3592,18 @@ async function gastosRenderHistory() {
     }
 
     const rows = entries.map(e => `
-      <tr style="cursor:pointer;transition:background .15s" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background=''"
-        onclick="gastosOpenFromHistory(${JSON.stringify(e).replace(/"/g,'&quot;')})">
-        <td style="padding:8px 10px;font-size:.82rem">${gastosFormatDate(e.invoice_date)}</td>
-        <td style="padding:8px 10px;font-size:.82rem;font-weight:600">${e.vendor}</td>
-        <td style="padding:8px 10px;font-size:.82rem">${e.invoice_number || '—'}</td>
-        <td style="padding:8px 10px;font-size:.85rem;font-weight:700;color:var(--navy)">$${parseFloat(e.amount||0).toFixed(2)}</td>
-        <td style="padding:8px 10px;font-size:.78rem;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${e.expense_category||''}">${e.expense_category||'—'}</td>
-        <td style="padding:8px 10px">${gastosStatusBadge(e.status)}</td>
+      <tr id="histRow_${e.id}" style="transition:background .15s" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background=''">
+        <td style="padding:8px 10px;font-size:.82rem;cursor:pointer" onclick="gastosOpenFromHistory(${JSON.stringify(e).replace(/"/g,'&quot;')})">${gastosFormatDate(e.invoice_date)}</td>
+        <td style="padding:8px 10px;font-size:.82rem;font-weight:600;cursor:pointer" onclick="gastosOpenFromHistory(${JSON.stringify(e).replace(/"/g,'&quot;')})">${e.vendor}</td>
+        <td style="padding:8px 10px;font-size:.82rem;cursor:pointer" onclick="gastosOpenFromHistory(${JSON.stringify(e).replace(/"/g,'&quot;')})">${e.invoice_number || '—'}</td>
+        <td style="padding:8px 10px;font-size:.85rem;font-weight:700;color:var(--navy);cursor:pointer" onclick="gastosOpenFromHistory(${JSON.stringify(e).replace(/"/g,'&quot;')})">$${parseFloat(e.amount||0).toFixed(2)}</td>
+        <td style="padding:8px 10px;font-size:.78rem;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer" title="${e.expense_category||''}" onclick="gastosOpenFromHistory(${JSON.stringify(e).replace(/"/g,'&quot;')})">${e.expense_category||'—'}</td>
+        <td style="padding:8px 10px;cursor:pointer" onclick="gastosOpenFromHistory(${JSON.stringify(e).replace(/"/g,'&quot;')})">${gastosStatusBadge(e.status)}</td>
+        <td style="padding:8px 10px;text-align:center">
+          <button onclick="gastosConfirmDelete('${e.id}','${e.vendor.replace(/'/g,"\'")} — $${parseFloat(e.amount||0).toFixed(2)}')"
+            style="background:none;border:1px solid #fca5a5;border-radius:6px;color:#dc2626;font-size:.75rem;padding:3px 8px;cursor:pointer;line-height:1.4"
+            title="Eliminar esta entrada">🗑</button>
+        </td>
       </tr>`).join('');
 
     el.innerHTML = `
@@ -3419,6 +3621,7 @@ async function gastosRenderHistory() {
               <th style="padding:8px 10px;text-align:left;font-size:.75rem;color:var(--text-mid)">Monto</th>
               <th style="padding:8px 10px;text-align:left;font-size:.75rem;color:var(--text-mid)">Categoría</th>
               <th style="padding:8px 10px;text-align:left;font-size:.75rem;color:var(--text-mid)">Estado</th>
+              <th style="padding:8px 10px;text-align:center;font-size:.75rem;color:var(--text-mid)"></th>
             </tr></thead>
             <tbody>${rows}</tbody>
           </table>
@@ -3426,6 +3629,19 @@ async function gastosRenderHistory() {
       </div>`;
   } catch(err) {
     el.innerHTML = `<div class="ccard" style="color:#dc2626;font-size:.85rem">Error al cargar historial: ${err.message}</div>`;
+  }
+}
+
+async function gastosConfirmDelete(id, label) {
+  if (!confirm(`¿Eliminar esta entrada?\n\n${label}\n\nEsta acción no se puede deshacer.`)) return;
+  try {
+    await gastosDeleteEntry(id);
+    const row = document.getElementById('histRow_' + id);
+    if (row) { row.style.opacity = '0.3'; row.style.transition = 'opacity .3s'; setTimeout(() => row.remove(), 300); }
+    gastosRenderQueue();
+    showToast('🗑 Entrada eliminada.', 'info');
+  } catch(err) {
+    alert('Error al eliminar: ' + err.message);
   }
 }
 
