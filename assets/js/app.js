@@ -96,6 +96,8 @@ function goTab(t) {
   if (t === 'employees') updateEmployeesTab();
   if (t === 'gastos')    gastosInit();
   if (t === 'eom')       eomInit();
+  if (t === 'meals')     { renderMealPenalties(); populateEmployeeDropdowns(); }
+  if (t === 'recon')     { initReconciliationUI(); renderReconReport(); }
 }
 
 // ══════════════════════════════════════════
@@ -118,33 +120,9 @@ function searchDash(v) {
   });
 }
 
-function approveTO(id) {
-  document.getElementById('toStatus'+id).textContent = 'approved';
-  document.getElementById('toStatus'+id).className = 'badge bg-green';
-  document.getElementById('toActions'+id).innerHTML = '<span style="color:#16a34a;font-size:.8rem">✓ Approved</span>';
-  clearPending();
-}
-function rejectTO(id) {
-  document.getElementById('toStatus'+id).textContent = 'rejected';
-  document.getElementById('toStatus'+id).className = 'badge bg-red';
-  document.getElementById('toActions'+id).innerHTML = '<span style="color:var(--red);font-size:.8rem">✗ Rejected</span>';
-  clearPending();
-}
-function clearPending() {
-  document.getElementById('sPending').textContent = '0';
-  document.getElementById('tob').style.display = 'none';
-  document.getElementById('nb').style.display = 'none';
-  document.querySelectorAll('.alert').forEach(a => a.style.display = 'none');
-}
 
-function switchRtab(el, show) {
-  document.querySelectorAll('.rtab').forEach(t => t.classList.remove('active'));
-  el.classList.add('active');
-  ['rRecon'].forEach(id => {
-    const panel = document.getElementById(id);
-    if (panel) panel.style.display = id === show ? 'block' : 'none';
-  });
-}
+
+
 
 // ══════════════════════════════════════════
 // RECONCILIATION (CSV-based, beginner-friendly)
@@ -940,27 +918,10 @@ function populateEmployeeDropdowns() {
     .filter(([k,e]) => e.status === 'active')
     .sort((a,b) => a[1].name.localeCompare(b[1].name));
 
-  const allEmpList = Object.entries(EMPLOYEES)
-    .sort((a,b) => a[1].name.localeCompare(b[1].name));
-
   // Record Time-Off employee dropdown
   const rtoSel = document.getElementById('rtoEmployeeSel');
   if (rtoSel) {
     rtoSel.innerHTML = '<option value="">Select employee...</option>' +
-      empList.map(([k,e]) => `<option value="${k}">${e.name}</option>`).join('');
-  }
-
-  // Create User Account dropdown
-  const userSel = document.getElementById('userEmployeeSel');
-  if (userSel) {
-    userSel.innerHTML = '<option value="">Select employee...</option>' +
-      allEmpList.map(([k,e]) => `<option value="${k}">${e.name}</option>`).join('');
-  }
-
-  // Tardiness modal employee dropdown
-  const tardSel = document.getElementById('tardEmpSel');
-  if (tardSel) {
-    tardSel.innerHTML = '<option value="">Select employee...</option>' +
       empList.map(([k,e]) => `<option value="${k}">${e.name}</option>`).join('');
   }
 
@@ -1151,9 +1112,18 @@ setInterval(() => { if (currentUser) saveToStorage(); }, 5 * 60 * 1000);
 window.addEventListener('load', initReconciliationUI);
 
 // Override doBackup to also persist
-function doBackup() {
-  saveToStorage();
-  alert('Backup saved to cloud successfully!');
+async function doBackup() {
+  const btn = document.querySelector('[onclick="doBackup()"]');
+  if (btn) { btn.textContent = '⏳ Saving...'; btn.disabled = true; }
+  try {
+    await saveToCloud();
+    _cacheToLocal();
+    showToast('✅ Backup saved to cloud!');
+  } catch(e) {
+    showToast('❌ Backup failed: ' + e.message);
+  } finally {
+    if (btn) { btn.textContent = '💾 Backup Now'; btn.disabled = false; }
+  }
 }
 
 // Load data on page load
@@ -1246,10 +1216,6 @@ function submitAddEmployee() {
     monthlyRecords: [],
     timeOffLog: []
   };
-
-  // Also create a user account if PIN provided
-  if (pin) {
-  }
 
   saveToStorage();
   recalculateAll();
@@ -1478,6 +1444,28 @@ function filterEmployeesTab() {
   }).join('');
 }
 
+function editHireDate(empKey) {
+  const emp = EMPLOYEES[empKey];
+  if (!emp) return;
+  const current = emp.firstClockIn || '';
+  const input = prompt(
+    `Edit hire date for ${emp.name}\n\nEnter the correct hire date (YYYY-MM-DD format):\nCurrent: ${current || 'Not set'}`,
+    current
+  );
+  if (input === null) return; // cancelled
+  const trimmed = input.trim();
+  if (trimmed && !/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    alert('Invalid date format. Please use YYYY-MM-DD (e.g. 2022-08-15)');
+    return;
+  }
+  emp.firstClockIn = trimmed || null;
+  saveToStorage();
+  recalculateAll();
+  // Refresh the detail modal if still open
+  showEmpDetail(empKey);
+  showToast(`✅ Hire date updated for ${emp.name}`);
+}
+
 function getTenureString(firstClockIn) {
   if (!firstClockIn) return '—';
   const months = Math.floor((Date.now() - new Date(firstClockIn)) / (1000*60*60*24*30.44));
@@ -1504,7 +1492,11 @@ function showEmpDetail(key) {
 
   document.getElementById('detType').innerHTML    = `<span class="badge bg-teal">${emp.type||'hourly'}</span>`;
   document.getElementById('detStatus').innerHTML  = `<span class="badge ${emp.status==='active'?'bg-green':'bg-gray'}">${emp.status||'active'}</span>`;
-  document.getElementById('detTenure').textContent = '📅 Tenure: ' + getTenureString(emp.firstClockIn);
+  document.getElementById('detTenure').innerHTML =
+    '📅 Tenure: ' + getTenureString(emp.firstClockIn) +
+    ' &nbsp;<button onclick="editHireDate(\'' + key + '\')" ' +
+    'style="font-size:.65rem;padding:2px 7px;border:1px solid #94a3b8;border-radius:4px;cursor:pointer;background:#fff;color:#475569;margin-left:4px">' +
+    '✏️ Edit hire date</button>';
   document.getElementById('detEligible').textContent = accruals.vacationEligible
     ? '✅ Vacation eligible' : '⚠️ Vacation not usable until 1yr';
 
@@ -1876,14 +1868,22 @@ function checkMealViolation() {
     penaltyMinutes = 30;
   }
 
+  // Second meal period check (>10 hrs)
+  if (shiftHours > 10) {
+    violations.push(`⚠️ Shift is ${shiftHours.toFixed(1)} hrs — second meal period required (unless < 12 hrs and first break was taken).`);
+    if (penaltyMinutes === 0) penaltyMinutes = 30;
+  }
+
   if (violations.length) {
     banner.style.display = 'block';
     banner.innerHTML = '<strong>Violations detected:</strong><br>' + violations.join('<br>');
-    const penalty = rate > 0 ? (rate * 1.5).toFixed(2) : '—';
+    // Penalty = actual meal period not properly taken (30 min = 0.5 hr × 1.5×)
+    const penaltyHours = penaltyMinutes / 60;
+    const penalty = rate > 0 ? (rate * 1.5 * penaltyHours).toFixed(2) : '—';
     calcResult.style.display = 'block';
-    calcResult.innerHTML = `<strong>Penalty calculation:</strong><br>
-      Period: 1 hr × 1.5× rate${rate>0?' = <strong>$'+penalty+'</strong> owed':''}<br>
-      <span style="font-size:.75rem;color:#888">(1.5× hourly rate for meal period worked per PR Act 379)</span>`;
+    calcResult.innerHTML = `<strong>Penalty calculation (PR Act 379 — post-Jan 26, 2017 hire):</strong><br>
+      ${penaltyMinutes} min (${penaltyHours.toFixed(2)} hr) × 1.5× rate${rate>0?' = <strong>$'+penalty+'</strong> owed':''}<br>
+      <span style="font-size:.75rem;color:#888">Time and a half for meal period worked. Pre-2017 hires would owe 2× (double time).</span>`;
   } else {
     banner.style.display = 'none';
     calcResult.style.display = 'block';
@@ -1915,16 +1915,26 @@ function submitMealPenalty() {
   const breakStartHour = bsMin !== null ? (bsMin - ssMin)/60 : null;
 
   const violationTypes = [];
-  if (!breakStart) violationTypes.push('No break taken');
-  else {
-    if (breakDuration < 30)                            violationTypes.push('Break too short');
-    if (breakStartHour !== null && breakStartHour < 2) violationTypes.push('Break too early');
-    if (breakStartHour !== null && breakStartHour >= 6) violationTypes.push('Break too late');
+  if (shiftHours <= 6) {
+    // No break required — log as informational if somehow submitted
+  } else if (!breakStart) {
+    violationTypes.push('No break taken');
+  } else {
+    if (breakDuration < 30)                             violationTypes.push('Break too short');
+    if (breakStartHour !== null && breakStartHour < 2)  violationTypes.push('Break too early');
+    if (breakStartHour !== null && breakStartHour >= 6)  violationTypes.push('Break too late');
   }
-  if (shiftHours > 10 && (!breakStart)) violationTypes.push('Second break required');
+  // Second meal period: required if >10 hrs. Can be waived if <12 hrs AND first break was taken.
+  if (shiftHours > 10) {
+    const secondBreakWaivable = shiftHours < 12 && breakStart;
+    if (!secondBreakWaivable) violationTypes.push('Second meal period required');
+  }
 
+  // Penalty: actual time not properly rested (30 min = 0.5 hr) × 1.5×
+  // Note: pre-Jan 26 2017 hires = 2× but all CFA PR employees are post-2017
   const penaltyMinutes = 30;
-  const penaltyAmount  = rate > 0 ? +(rate*1.5).toFixed(2) : 0;
+  const penaltyHours   = penaltyMinutes / 60;
+  const penaltyAmount  = rate > 0 ? +(rate * 1.5 * penaltyHours).toFixed(2) : 0;
 
   const emp = EMPLOYEES[empKey];
   MEAL_PENALTIES.push({
@@ -1963,7 +1973,7 @@ function renderMealPenalties() {
       <td style="font-size:.8rem;color:${p.breakDuration<30&&p.breakDuration>0?'var(--red)':'inherit'}">${p.breakDuration?p.breakDuration+' min':'—'}</td>
       <td style="font-size:.75rem">${p.violationTypes.map(v=>`<span class="badge bg-red" style="font-size:.65rem">${v}</span>`).join(' ')}</td>
       <td style="font-size:.8rem">${p.rate?'$'+p.rate:'—'}</td>
-      <td style="font-size:.8rem;color:#b45309;font-weight:600">${p.penaltyAmount>0?'1 hr @ 1.5×':'—'}</td>
+      <td style="font-size:.8rem;color:#b45309;font-weight:600">${p.penaltyAmount>0?'30 min @ 1.5×':'—'}</td>
       <td style="font-weight:700;color:${p.penaltyAmount>0?'var(--red)':'#888'}">${p.penaltyAmount>0?'$'+p.penaltyAmount:'—'}</td>
       <td><button class="btn btn-red2 btn-sm" onclick="deleteMealPenalty(${p.id})">✕</button></td>
     </tr>`).join('');
@@ -2011,7 +2021,7 @@ function clearAllMealPenalties() {
 
 function exportMealsCSV() {
   const rows = [['Employee','Date','Shift Start','Shift End','Break Start','Break End','Break Duration (min)','Violations','Hourly Rate','Time Owed','Penalty Amount']];
-  MEAL_PENALTIES.forEach(p => rows.push([p.empName,p.date,p.shiftStart,p.shiftEnd,p.breakStart||'',p.breakEnd||'',p.breakDuration,p.violationTypes.join('; '),'$'+(p.rate||0),p.penaltyAmount>0?'1 hr @ 1.5x':'—','$'+p.penaltyAmount]));
+  MEAL_PENALTIES.forEach(p => rows.push([p.empName,p.date,p.shiftStart,p.shiftEnd,p.breakStart||'',p.breakEnd||'',p.breakDuration,p.violationTypes.join('; '),'$'+(p.rate||0),p.penaltyAmount>0?'30 min @ 1.5x':'—','$'+p.penaltyAmount]));
   const csv = rows.map(r=>r.map(v=>`"${v}"`).join(',')).join('\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
@@ -2039,26 +2049,8 @@ loadFromStorage = function() {
 // ══════════════════════════════════════════
 // POPULATE employee dropdowns for new tabs
 // ══════════════════════════════════════════
-const _origPopulate = populateEmployeeDropdowns;
-populateEmployeeDropdowns = function() {
-  _origPopulate();
-  const empList = Object.entries(EMPLOYEES)
-    .filter(([k,e]) => e.status === 'active')
-    .sort((a,b) => a[1].name.localeCompare(b[1].name));
-  const opts = '<option value="">Select employee...</option>' +
-    empList.map(([k,e]) => `<option value="${k}">${e.name}</option>`).join('');
-  ['tardEmpSel','mealEmpSel'].forEach(id => {
-    const el = document.getElementById(id); if(el) el.innerHTML = opts;
-  });
-};
-
-// Render tardiness + meals on tab switch
-const _origGoTab = goTab;
-goTab = function(t) {
-  _origGoTab(t);
-  if (t === 'meals')     { renderMealPenalties(); populateEmployeeDropdowns(); }
-  if (t === 'recon')     { initReconciliationUI(); renderReconReport(); }
-};
+// Tab-switch side effects for meals + recon are handled
+// directly inside goTab (see goTab function above).
 
 
 
@@ -3599,8 +3591,8 @@ async function gastosRenderHistory() {
         <td style="padding:8px 10px;font-size:.85rem;font-weight:700;color:var(--navy);cursor:pointer" onclick="gastosOpenFromHistory(${JSON.stringify(e).replace(/"/g,'&quot;')})">$${parseFloat(e.amount||0).toFixed(2)}</td>
         <td style="padding:8px 10px;font-size:.78rem;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer" title="${e.expense_category||''}" onclick="gastosOpenFromHistory(${JSON.stringify(e).replace(/"/g,'&quot;')})">${e.expense_category||'—'}</td>
         <td style="padding:8px 10px;cursor:pointer" onclick="gastosOpenFromHistory(${JSON.stringify(e).replace(/"/g,'&quot;')})">${gastosStatusBadge(e.status)}</td>
-        <td style="padding:8px 10px;text-align:center">
-          <button onclick="gastosConfirmDelete('${e.id}','${e.vendor.replace(/'/g,"\'")} — $${parseFloat(e.amount||0).toFixed(2)}')"
+        <td style="padding:8px 10px;text-align:center" onclick="event.stopPropagation()">
+          <button onclick="gastosConfirmDelete('${e.id}')"
             style="background:none;border:1px solid #fca5a5;border-radius:6px;color:#dc2626;font-size:.75rem;padding:3px 8px;cursor:pointer;line-height:1.4"
             title="Eliminar esta entrada">🗑</button>
         </td>
@@ -3632,15 +3624,18 @@ async function gastosRenderHistory() {
   }
 }
 
-async function gastosConfirmDelete(id, label) {
-  if (!confirm(`¿Eliminar esta entrada?\n\n${label}\n\nEsta acción no se puede deshacer.`)) return;
+async function gastosConfirmDelete(id) {
+  if (!confirm('¿Eliminar esta entrada?\n\nEsta acción no se puede deshacer.')) return;
+  const row = document.getElementById('histRow_' + id);
+  if (row) { row.style.opacity = '0.4'; row.style.pointerEvents = 'none'; }
   try {
     await gastosDeleteEntry(id);
-    const row = document.getElementById('histRow_' + id);
-    if (row) { row.style.opacity = '0.3'; row.style.transition = 'opacity .3s'; setTimeout(() => row.remove(), 300); }
+    if (row) { row.style.transition = 'opacity .3s'; row.style.opacity = '0'; setTimeout(() => row.remove(), 320); }
     gastosRenderQueue();
-    showToast('🗑 Entrada eliminada.', 'info');
+    gastosRenderHistory();
+    showToast('🗑 Entrada eliminada.');
   } catch(err) {
+    if (row) { row.style.opacity = '1'; row.style.pointerEvents = ''; }
     alert('Error al eliminar: ' + err.message);
   }
 }
