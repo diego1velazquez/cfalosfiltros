@@ -1105,6 +1105,8 @@ async function loadFromStorage() {
   populateEmployeeDropdowns();
   recalculateAll();
   updateRequestBadge();
+  // Auto-fix any meal penalty records saved with old wrong formula
+  migrateMealPenalties();
 }
 
 // Auto-save every 5 minutes and after key actions
@@ -1801,6 +1803,31 @@ function exportToPrint() {
 let MEAL_PENALTIES = [];
 
 // ══════════════════════════════════════════
+// MEAL PENALTY MIGRATION
+// Fixes records saved with old formula (rate × 1.5 only, missing × 0.5 hr).
+// Correct formula: rate × 1.5 × 0.5  (30 min = 0.5 hr of meal period)
+// ══════════════════════════════════════════
+function migrateMealPenalties() {
+  let fixed = 0;
+  for (const p of MEAL_PENALTIES) {
+    if (!p.rate || !p.penaltyAmount) continue;
+    const correct = +(p.rate * 1.5 * 0.5).toFixed(2);
+    const old     = +(p.rate * 1.5).toFixed(2);
+    // If stored value matches old wrong formula (and not already correct)
+    if (Math.abs(p.penaltyAmount - old) < 0.01 && Math.abs(p.penaltyAmount - correct) > 0.01) {
+      p.penaltyAmount = correct;
+      fixed++;
+    }
+  }
+  if (fixed > 0) {
+    saveMealData();
+    saveToCloud();
+    console.log(`✅ Migrated ${fixed} meal penalty record(s) to correct 30-min formula.`);
+  }
+  return fixed;
+}
+
+// ══════════════════════════════════════════
 // MEAL PENALTIES — PR Act 379 engine
 // ══════════════════════════════════════════
 function timeToMin(t) {
@@ -2036,15 +2063,7 @@ function saveMealData() {
   try { localStorage.setItem('cfa_losfiltros_meals', JSON.stringify(MEAL_PENALTIES)); } catch(e){}
 }
 
-// Load on startup (append to existing loadFromStorage)
-const _origLFS = loadFromStorage;
-loadFromStorage = function() {
-  _origLFS();
-  try {
-    const mp = localStorage.getItem('cfa_losfiltros_meals');
-    if (mp) { MEAL_PENALTIES.length=0; MEAL_PENALTIES.push(...JSON.parse(mp)); }
-  } catch(e) { console.warn('Extended load failed:', e); }
-};
+
 
 // ══════════════════════════════════════════
 // POPULATE employee dropdowns for new tabs
