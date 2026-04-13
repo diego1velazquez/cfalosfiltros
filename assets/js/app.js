@@ -641,12 +641,12 @@ function updateDashboard() {
       <td><span class="badge bg-teal">${emp.type || 'hourly'}</span></td>
       <td><span class="badge ${emp.status === 'active' ? 'bg-green' : 'bg-gray'}">${emp.status || 'active'}</span></td>
       <td style="font-size:.8rem">${tenure}</td>
-      <td style="text-align:right">${accruals.sickEarned}</td>
-      <td style="text-align:right">${emp.sickTaken || 0}</td>
-      <td style="text-align:right;font-weight:700;color:${sickBal <= 0 ? 'var(--red)' : '#0f766e'}">${sickBal}</td>
-      <td style="text-align:right">${accruals.vacationEarned}</td>
-      <td style="text-align:right">${emp.vacTaken || 0}</td>
-      <td style="text-align:right;font-weight:700;color:${vacBal <= 0 ? 'var(--red)' : 'var(--navy)'}">${vacBal}${vacFlag}</td>
+      <td style="text-align:right">${daysToHrs(accruals.sickEarned)}</td>
+      <td style="text-align:right">${daysToHrs(emp.sickTaken || 0)}</td>
+      <td style="text-align:right;font-weight:700;color:${sickBal <= 0 ? 'var(--red)' : '#0f766e'}">${daysToHrs(sickBal)}</td>
+      <td style="text-align:right">${daysToHrs(accruals.vacationEarned)}</td>
+      <td style="text-align:right">${daysToHrs(emp.vacTaken || 0)}</td>
+      <td style="text-align:right;font-weight:700;color:${vacBal <= 0 ? 'var(--red)' : 'var(--navy)'}">${daysToHrs(vacBal)}${vacFlag}</td>
     </tr>`;
   }).join('');
 }
@@ -939,12 +939,13 @@ function populateEmployeeDropdowns() {
 function submitRecordTimeOff() {
   const empKey  = document.getElementById('rtoEmployeeSel').value;
   const type    = document.getElementById('rtoType').value;
-  const days    = parseFloat(document.getElementById('rtoDays').value);
+  const inputHrs = parseFloat(document.getElementById('rtoDays').value);
+  const days      = inputHrs / 8;  // convert hours to days for internal storage
   const date    = document.getElementById('rtoDate').value;
   const notes   = document.getElementById('rtoNotes').value;
 
   if (!empKey) { alert('Please select an employee.'); return; }
-  if (!days || days <= 0) { alert('Please enter valid number of days.'); return; }
+  if (!inputHrs || inputHrs <= 0) { alert('Please enter valid number of hours.'); return; }
   if (!date) { alert('Please select a date.'); return; }
 
   const emp = EMPLOYEES[empKey];
@@ -956,7 +957,7 @@ function submitRecordTimeOff() {
   // Apply to correct balance — with eligibility and balance guards
   if (type === 'Sick') {
     if (days > accr.sickBal) {
-      alert(`❌ Cannot record time-off. ${emp.name} only has ${accr.sickBal.toFixed(2)} sick days available.`);
+      alert(`❌ Cannot record time-off. ${emp.name} only has ${daysToHrs(accr.sickBal)} sick hours available.`);
       return;
     }
     emp.sickTaken = +(( emp.sickTaken || 0) + days).toFixed(2);
@@ -966,7 +967,7 @@ function submitRecordTimeOff() {
       return;
     }
     if (days > accr.vacationBal) {
-      alert(`❌ Cannot record time-off. ${emp.name} only has ${accr.vacationBal.toFixed(2)} vacation days available.`);
+      alert(`❌ Cannot record time-off. ${emp.name} only has ${daysToHrs(accr.vacationBal)} vacation hours available.`);
       return;
     }
     emp.vacTaken  = +(( emp.vacTaken  || 0) + days).toFixed(2);
@@ -981,13 +982,13 @@ function submitRecordTimeOff() {
   );
   if (dupRequest) {
     const statusLabel = dupRequest.status === 'approved' ? 'already approved' : 'still pending';
-    if (!confirm(`⚠️ Duplicate detected!\n\n${emp.name} has a ${dupRequest.status} request for ${dupRequest.type} covering ${dupRequest.start}→${dupRequest.end} (${dupRequest.days} days) — ${statusLabel}.\n\nRecording this manually may double-deduct their balance. Continue anyway?`)) return;
+    if (!confirm(`⚠️ Duplicate detected!\n\n${emp.name} has a ${dupRequest.status} request for ${dupRequest.type} covering ${dupRequest.start}→${dupRequest.end} (${daysToHrs(dupRequest.days)} hrs) — ${statusLabel}.\n\nRecording this manually may double-deduct their balance. Continue anyway?`)) return;
   }
 
   // ── Duplicate check: already manually logged for same date+type? ──
   const dupLog = (emp.timeOffLog || []).find(l => l.date === date && l.type === type);
   if (dupLog) {
-    if (!confirm(`⚠️ Duplicate detected!\n\n${emp.name} already has a ${type} entry on ${date} (${dupLog.days} days, recorded ${new Date(dupLog.recordedAt).toLocaleDateString()}).\n\nContinue anyway?`)) return;
+    if (!confirm(`⚠️ Duplicate detected!\n\n${emp.name} already has a ${type} entry on ${date} (${daysToHrs(dupLog.days)} hrs, recorded ${new Date(dupLog.recordedAt).toLocaleDateString()}).\n\nContinue anyway?`)) return;
   }
 
   // Log it
@@ -1288,7 +1289,7 @@ function renderTimeOffRequests() {
     <tr id="toRow${req.id}">
       <td>${req.empName||req.empKey}</td>
       <td><span class="badge bg-teal">${req.type}</span></td>
-      <td>${req.days}</td>
+      <td>${daysToHrs(req.days)} hrs</td>
       <td>${req.start}</td>
       <td>${req.end}</td>
       <td style="font-size:.8rem">${req.notes||'—'}</td>
@@ -1322,7 +1323,7 @@ function approveRequest(id) {
     const accr = calcEmployeeAccruals(emp.monthlyRecords || [], emp.firstClockIn, emp.vacTaken || 0, emp.sickTaken || 0);
     if (req.type === 'Sick') {
       if (req.days > accr.sickBal) {
-        alert(`❌ Cannot approve request. ${emp.name} only has ${accr.sickBal.toFixed(2)} sick days available.`);
+        alert(`❌ Cannot approve request. ${emp.name} only has ${daysToHrs(accr.sickBal)} sick hours available.`);
         return;
       }
       emp.sickTaken = +((emp.sickTaken||0) + req.days).toFixed(2);
@@ -1332,7 +1333,7 @@ function approveRequest(id) {
         return;
       }
       if (req.days > accr.vacationBal) {
-        alert(`❌ Cannot approve request. ${emp.name} only has ${accr.vacationBal.toFixed(2)} vacation days available.`);
+        alert(`❌ Cannot approve request. ${emp.name} only has ${daysToHrs(accr.vacationBal)} vacation hours available.`);
         return;
       }
       emp.vacTaken  = +((emp.vacTaken||0)  + req.days).toFixed(2);
@@ -1342,7 +1343,7 @@ function approveRequest(id) {
       l.date === req.start && l.type === req.type && l.notes !== 'Approved request'
     );
     if (dupLog) {
-      if (!confirm(`⚠️ Duplicate detected!\n\n${emp.name} already has a manually recorded ${req.type} entry on ${req.start} (${dupLog.days} days).\n\nApproving this request will also deduct ${req.days} days — double-deducting the balance. Continue anyway?`)) return;
+      if (!confirm(`⚠️ Duplicate detected!\n\n${emp.name} already has a manually recorded ${req.type} entry on ${req.start} (${daysToHrs(dupLog.days)} hrs).\n\nApproving this request will also deduct ${daysToHrs(req.days)} hrs — double-deducting the balance. Continue anyway?`)) return;
     }
 
     if (!emp.timeOffLog) emp.timeOffLog = [];
@@ -1438,8 +1439,8 @@ function filterEmployeesTab() {
       <td><span class="badge bg-teal">${emp.type||'hourly'}</span></td>
       <td><span class="badge ${emp.status==='active'?'bg-green':'bg-gray'}">${emp.status||'active'}</span></td>
       <td style="font-size:.8rem">${emp.firstClockIn||'—'}</td>
-      <td style="font-weight:600;color:${sickBal<=0?'var(--red)':'#0f766e'}">${sickBal}</td>
-      <td style="font-weight:600;color:${vacBal<=0?'var(--red)':'var(--navy)'}">${vacBal}${!accruals.vacationEligible?' <span style="font-size:.65rem;color:#d97706">⚠</span>':''}</td>
+      <td style="font-weight:600;color:${sickBal<=0?'var(--red)':'#0f766e'}">${daysToHrs(sickBal)} hrs</td>
+      <td style="font-weight:600;color:${vacBal<=0?'var(--red)':'var(--navy)'}">${daysToHrs(vacBal)} hrs${!accruals.vacationEligible?' <span style="font-size:.65rem;color:#d97706">⚠</span>':''}</td>
       <td style="font-size:.78rem;color:var(--text-light)">${tenure}</td>
       <td><button class="btn btn-sm" onclick="showEmpDetail('${key}')">View</button></td>
     </tr>`;
@@ -1468,6 +1469,11 @@ function editHireDate(empKey) {
   showToast(`✅ Hire date updated for ${emp.name}`);
 }
 
+// Convert days to hours for display (1 day = 8 hours per PR Act 180)
+function daysToHrs(days) {
+  return (Math.round(days * 8 * 100) / 100);  // e.g. 0.5 → 4, 0.75 → 6, 1 → 8
+}
+
 function getTenureString(firstClockIn) {
   if (!firstClockIn) return '—';
   const months = Math.floor((Date.now() - new Date(firstClockIn)) / (1000*60*60*24*30.44));
@@ -1485,12 +1491,12 @@ function showEmpDetail(key) {
   const accruals = calcEmployeeAccruals(emp.monthlyRecords||[], emp.firstClockIn, emp.vacTaken||0, emp.sickTaken||0);
 
   document.getElementById('empDetailName').textContent = emp.name;
-  document.getElementById('detSickE').textContent = accruals.sickEarned;
-  document.getElementById('detSickT').textContent = emp.sickTaken||0;
-  document.getElementById('detSickB').textContent = accruals.sickBal;
-  document.getElementById('detVacE').textContent  = accruals.vacationEarned;
-  document.getElementById('detVacT').textContent  = emp.vacTaken||0;
-  document.getElementById('detVacB').textContent  = accruals.vacationBal;
+  document.getElementById('detSickE').textContent = daysToHrs(accruals.sickEarned) + ' hrs';
+  document.getElementById('detSickT').textContent = daysToHrs(emp.sickTaken||0) + ' hrs';
+  document.getElementById('detSickB').textContent = daysToHrs(accruals.sickBal) + ' hrs';
+  document.getElementById('detVacE').textContent  = daysToHrs(accruals.vacationEarned) + ' hrs';
+  document.getElementById('detVacT').textContent  = daysToHrs(emp.vacTaken||0) + ' hrs';
+  document.getElementById('detVacB').textContent  = daysToHrs(accruals.vacationBal) + ' hrs';
 
   document.getElementById('detType').innerHTML    = `<span class="badge bg-teal">${emp.type||'hourly'}</span>`;
   document.getElementById('detStatus').innerHTML  = `<span class="badge ${emp.status==='active'?'bg-green':'bg-gray'}">${emp.status||'active'}</span>`;
@@ -1533,8 +1539,8 @@ function showEmpDetail(key) {
           <td style="padding:7px 10px;text-align:right">${rec.hoursWorked.toFixed(1)}</td>
           <td style="padding:7px 10px;text-align:right">${avg}</td>
           <td style="padding:7px 10px;text-align:center;color:${tierColor};font-weight:600;font-size:.75rem">${tierLabel}</td>
-          <td style="padding:7px 10px;text-align:right;color:#0f766e;font-weight:600">+${acr.sickEarned}</td>
-          <td style="padding:7px 10px;text-align:right;color:var(--navy);font-weight:600">+${acr.vacationEarned}</td>
+          <td style="padding:7px 10px;text-align:right;color:#0f766e;font-weight:600">+${daysToHrs(acr.sickEarned)} hrs</td>
+          <td style="padding:7px 10px;text-align:right;color:var(--navy);font-weight:600">+${daysToHrs(acr.vacationEarned)} hrs</td>
           <td style="padding:7px 10px;text-align:center">
             <span style="font-size:.7rem;background:${qualBg};color:${qualColor};padding:2px 7px;border-radius:10px">${qualLabel}</span>
           </td>
@@ -1566,7 +1572,7 @@ function showEmpDetail(key) {
         return `<tr style="border-bottom:1px solid #f0f0f0">
           <td style="padding:6px 10px">${log.date||'—'}</td>
           <td style="padding:6px 10px"><span class="badge bg-teal" style="font-size:.7rem">${log.type}</span></td>
-          <td style="padding:6px 10px;text-align:right;font-weight:600;color:var(--red)">-${log.days}</td>
+          <td style="padding:6px 10px;text-align:right;font-weight:600;color:var(--red)">-${daysToHrs(log.days)} hrs</td>
           <td style="padding:6px 10px;text-align:right;color:#555">${bal}</td>
           <td style="padding:6px 10px;font-size:.72rem">${src}</td>
           <td style="padding:6px 10px;font-weight:600;color:var(--navy)">${by}</td>
@@ -1643,7 +1649,7 @@ function exportAuditLog() {
         emp.name,
         'Time Off Used',
         log.type || '',
-        log.days || '',
+        log.days ? daysToHrs(log.days) + ' hrs' : '',
         log.date || '',
         log.balanceBefore != null ? log.balanceBefore : '—',
         log.source === 'request_approval' ? 'Request Approval' : log.source === 'manual_entry' ? 'Manual Entry' : '—',
@@ -1661,7 +1667,7 @@ function exportAuditLog() {
         req.empName || req.empKey,
         req.status === 'approved' ? 'Request Approved' : 'Request Rejected',
         req.type || '',
-        req.days || '',
+        req.days ? daysToHrs(req.days) + ' hrs' : '',
         req.start || '',
         '—',
         'Request Decision',
@@ -1696,12 +1702,12 @@ function exportToCSV() {
       emp.status||'active',
       emp.firstClockIn||'',
       getTenureString(emp.firstClockIn),
-      accruals.sickEarned,
-      emp.sickTaken||0,
-      accruals.sickBal,
-      accruals.vacationEarned,
-      emp.vacTaken||0,
-      accruals.vacationBal,
+      daysToHrs(accruals.sickEarned),
+      daysToHrs(emp.sickTaken||0),
+      daysToHrs(accruals.sickBal),
+      daysToHrs(accruals.vacationEarned),
+      daysToHrs(emp.vacTaken||0),
+      daysToHrs(accruals.vacationBal),
       accruals.vacationEligible ? 'Yes' : 'No'
     ]);
   }
@@ -1728,8 +1734,8 @@ function exportToPrint() {
       <td>${emp.type||'hourly'}</td>
       <td>${emp.status||'active'}</td>
       <td>${getTenureString(emp.firstClockIn)}</td>
-      <td>${accruals.sickEarned}</td><td>${emp.sickTaken||0}</td><td><strong>${accruals.sickBal}</strong></td>
-      <td>${accruals.vacationEarned}</td><td>${emp.vacTaken||0}</td><td><strong>${accruals.vacationBal}</strong></td>
+      <td>${daysToHrs(accruals.sickEarned)} hrs</td><td>${daysToHrs(emp.sickTaken||0)} hrs</td><td><strong>${daysToHrs(accruals.sickBal)} hrs</strong></td>
+      <td>${daysToHrs(accruals.vacationEarned)} hrs</td><td>${daysToHrs(emp.vacTaken||0)} hrs</td><td><strong>${daysToHrs(accruals.vacationBal)} hrs</strong></td>
     </tr>`;
   }).join('');
 
@@ -2009,12 +2015,20 @@ function renderMealPenalties() {
   // Add all-time totals footer row
   if (MEAL_PENALTIES.length) {
     const totalPenalty = MEAL_PENALTIES.reduce((s,p) => s + (p.penaltyAmount||0), 0);
+    // Total time owed: each violation = 30 min (0.5 hr)
+    const totalViolations = MEAL_PENALTIES.filter(p => p.penaltyAmount > 0).length;
+    const totalMins  = totalViolations * 30;
+    const totalHrsWhole = Math.floor(totalMins / 60);
+    const totalMinsRem  = totalMins % 60;
+    const timeOwedStr   = totalMinsRem > 0
+      ? `${totalHrsWhole}h ${totalMinsRem}m`
+      : `${totalHrsWhole}h`;
     const totalRow = document.createElement('tr');
     totalRow.style.cssText = 'background:#fef2f2;font-weight:700;border-top:2px solid #fca5a5';
     totalRow.innerHTML = `
       <td colspan="8" style="text-align:right;padding:10px;font-size:.85rem;color:#991b1b">ALL-TIME TOTAL LIABILITY</td>
       <td style="padding:10px;font-size:.85rem;color:#991b1b">—</td>
-      <td style="padding:10px;font-size:.85rem;color:#991b1b">—</td>
+      <td style="padding:10px;font-size:.85rem;color:#b45309;font-weight:700">${timeOwedStr} total</td>
       <td style="padding:10px;font-size:1rem;color:#dc2626">$${totalPenalty.toFixed(2)}</td>
       <td></td>`;
     tbody.appendChild(totalRow);
