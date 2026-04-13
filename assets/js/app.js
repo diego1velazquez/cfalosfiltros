@@ -2034,6 +2034,7 @@ function deleteMealPenalty(id) {
   if (!confirm('Delete this penalty record?')) return;
   MEAL_PENALTIES = MEAL_PENALTIES.filter(p => p.id !== id);
   saveMealData();
+  saveToCloud();           // ← persist to Supabase
   renderMealPenalties();
   showToast('🗑 Penalty record deleted.');
 }
@@ -2042,6 +2043,7 @@ function clearAllMealPenalties() {
   if (!confirm('⚠️ This will delete ALL meal penalty records. Are you sure?')) return;
   MEAL_PENALTIES.length = 0;
   saveMealData();
+  saveToCloud();           // ← persist to Supabase so clear survives refresh
   renderMealPenalties();
   showToast('🗑 All meal penalty records cleared.');
 }
@@ -2061,6 +2063,7 @@ function exportMealsCSV() {
 // ══════════════════════════════════════════
 function saveMealData() {
   try { localStorage.setItem('cfa_losfiltros_meals', JSON.stringify(MEAL_PENALTIES)); } catch(e){}
+  saveToCloud();
 }
 
 
@@ -2542,7 +2545,8 @@ function parseMealTimeDetail(lines) {
       violTypeCounts[reason.split('(')[0].trim()] = (violTypeCounts[reason.split('(')[0].trim()]||0) + 1;
 
       const _rate1 = s.wage || 0;
-      const _penalty1 = _rate1 > 0 ? +(_rate1*1.5).toFixed(2) : 0;
+      // Correct formula: rate × 1.5 × 0.5 hr (30-min meal period)
+      const _penalty1 = _rate1 > 0 ? +(_rate1 * 1.5 * 0.5).toFixed(2) : 0;
       violations.push({
         id: Date.now() + Math.random(),
         empKey: s.empName.replace(/[^a-z0-9]/gi,'_').toLowerCase(),
@@ -2566,7 +2570,8 @@ function parseMealTimeDetail(lines) {
         const qualifyingBreaks = allBreaks.filter(br => br.startHour >= 3 && br.startHour < 6 && br.dur >= 30);
         if (qualifyingBreaks.length < 2) {
           const _rate2 = s.wage || 0;
-          const _penalty2 = _rate2 > 0 ? +(_rate2*1.5).toFixed(2) : 0;
+          // Correct formula: rate × 1.5 × 0.5 hr (30-min meal period)
+          const _penalty2 = _rate2 > 0 ? +(_rate2 * 1.5 * 0.5).toFixed(2) : 0;
           violations.push({
             id: Date.now() + Math.random(),
             empKey: s.empName.replace(/[^a-z0-9]/gi,'_').toLowerCase(),
