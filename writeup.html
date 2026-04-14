@@ -3,615 +3,495 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Los Filtros FSU — Reporte de Incidente</title>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<title>Reporte de Amonestación — Los Filtros FSU</title>
 <style>
-  * { box-sizing:border-box; margin:0; padding:0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background:#f1f5f9; min-height:100vh; }
-
-  .header { background:#004f71; color:#fff; padding:16px 20px; display:flex; align-items:center; gap:12px; }
-  .header-logo { font-size:1.4rem; }
-  .header-title { font-size:1rem; font-weight:700; line-height:1.2; }
-  .header-sub { font-size:.75rem; opacity:.8; }
-
-  .container { max-width:600px; margin:0 auto; padding:16px; }
-
-  /* Token gate */
-  #tokenGate { text-align:center; padding:40px 20px; }
-  .gate-icon { font-size:3rem; margin-bottom:16px; }
-  .gate-title { font-size:1.1rem; font-weight:700; color:#004f71; margin-bottom:8px; }
-  .gate-sub { font-size:.85rem; color:#64748b; margin-bottom:20px; }
-
-  /* Cards */
-  .card { background:#fff; border-radius:12px; padding:20px; margin-bottom:16px; box-shadow:0 1px 4px rgba(0,0,0,.08); }
-  .card-title { font-size:.9rem; font-weight:700; color:#004f71; margin-bottom:14px; display:flex; align-items:center; gap:8px; }
-
-  /* Form elements */
-  label { font-size:.8rem; font-weight:600; color:#374151; display:block; margin-bottom:4px; }
-  label .req { color:#dc2626; }
-  input[type=text], input[type=time], input[type=date], input[type=number], select, textarea {
-    width:100%; padding:10px 12px; border:1.5px solid #d1d5db; border-radius:8px;
-    font-size:.9rem; font-family:inherit; background:#fff; outline:none;
-    transition:border-color .15s;
-  }
-  input:focus, select:focus, textarea:focus { border-color:#004f71; }
-  textarea { resize:vertical; line-height:1.5; }
-  .field { margin-bottom:14px; }
-  .field-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px; }
-
-  /* Yes/No radio */
-  .yn-group { display:flex; gap:16px; margin-top:6px; }
-  .yn-label { display:flex; align-items:center; gap:7px; font-size:.9rem; font-weight:500; cursor:pointer; }
-  .yn-label input { width:auto; accent-color:#004f71; width:18px; height:18px; }
-
-  /* Buttons */
-  .btn { padding:12px 20px; border-radius:8px; font-size:.9rem; font-weight:600; cursor:pointer; border:none; transition:opacity .15s; }
-  .btn:active { opacity:.85; }
-  .btn-primary { background:#004f71; color:#fff; width:100%; font-size:1rem; padding:14px; }
-  .btn-secondary { background:#f1f5f9; color:#374151; }
-  .btn:disabled { opacity:.5; cursor:not-allowed; }
-
-  /* Hints */
-  .hint { font-size:.75rem; color:#6b7280; margin-top:4px; }
-  .hint-warning { font-size:.78rem; color:#92400e; background:#fef9c3; padding:8px 12px; border-radius:6px; border-left:3px solid #d97706; margin-top:8px; }
-  .hint-ok { font-size:.78rem; color:#166534; background:#dcfce7; padding:8px 12px; border-radius:6px; border-left:3px solid #16a34a; margin-top:8px; }
-
-  /* Progress steps */
-  .steps { display:flex; gap:0; margin-bottom:20px; }
-  .step { flex:1; text-align:center; font-size:.7rem; font-weight:600; padding:8px 4px; color:#94a3b8; border-bottom:3px solid #e2e8f0; }
-  .step.active { color:#004f71; border-color:#004f71; }
-  .step.done { color:#16a34a; border-color:#16a34a; }
-
-  /* Validation result */
-  #validationResult { display:none; margin-bottom:16px; }
-  .val-issue { background:#fef2f2; border:1px solid #fecaca; border-radius:8px; padding:12px 14px; margin-bottom:8px; }
-  .val-issue-title { font-size:.85rem; font-weight:700; color:#dc2626; margin-bottom:4px; }
-  .val-issue-text { font-size:.82rem; color:#7f1d1d; line-height:1.5; }
-  .val-ok { background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px; padding:12px 14px; }
-  .val-ok-title { font-size:.85rem; font-weight:700; color:#166534; }
-
-  /* Success screen */
-  #successScreen { display:none; text-align:center; padding:40px 20px; }
-  .success-icon { font-size:4rem; margin-bottom:16px; }
-  .success-title { font-size:1.2rem; font-weight:700; color:#166534; margin-bottom:8px; }
-  .success-sub { font-size:.85rem; color:#64748b; line-height:1.6; }
-
-  /* Section divider */
-  .section-header { font-size:.75rem; font-weight:700; color:#004f71; text-transform:uppercase; letter-spacing:.07em; margin:20px 0 12px; padding-bottom:6px; border-bottom:2px solid #e2e8f0; }
-
-  /* Loading spinner */
-  .spinner { display:inline-block; width:18px; height:18px; border:2px solid rgba(255,255,255,.4); border-top-color:#fff; border-radius:50%; animation:spin .7s linear infinite; vertical-align:middle; margin-right:8px; }
-  @keyframes spin { to { transform:rotate(360deg); } }
-
-  .shift-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-  .shift-row input[type=number] { width:60px; text-align:center; }
-  .shift-row select { width:80px; }
-  .shift-row span { color:#6b7280; font-size:.85rem; }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f6fa;min-height:100vh;padding:20px}
+  .wrap{max-width:600px;margin:0 auto}
+  .logo{text-align:center;margin-bottom:24px;padding-top:12px}
+  .logo-title{font-size:1.4rem;font-weight:800;color:#00205b;margin-top:8px}
+  .logo-sub{font-size:.85rem;color:#6b7280;margin-top:2px}
+  .card{background:#fff;border-radius:14px;padding:24px;box-shadow:0 2px 16px rgba(0,0,0,.08);margin-bottom:16px}
+  .card-title{font-size:1rem;font-weight:700;color:#00205b;margin-bottom:16px;padding-bottom:10px;border-bottom:2px solid #f0f0f0}
+  label{font-size:.8rem;font-weight:600;color:#4b5563;display:block;margin-bottom:4px}
+  input,select,textarea{width:100%;padding:10px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.9rem;color:#111;background:#fff;outline:none;transition:border .2s}
+  input:focus,select:focus,textarea:focus{border-color:#00205b}
+  textarea{resize:vertical;min-height:80px}
+  .field{margin-bottom:14px}
+  .frow{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px}
+  @media(max-width:480px){.frow{grid-template-columns:1fr}}
+  .yesno{display:flex;gap:20px;margin-top:6px}
+  .yesno label{display:flex;align-items:center;gap:8px;font-size:.9rem;font-weight:500;cursor:pointer}
+  .yesno input[type=radio]{width:18px;height:18px;accent-color:#00205b;cursor:pointer}
+  .req{color:#dc2626}
+  .hint{font-size:.75rem;background:#fef3c7;color:#92400e;border-radius:6px;padding:8px 10px;margin-top:6px;border-left:3px solid #f59e0b;display:none}
+  .hint.show{display:block}
+  .level-badge{display:inline-block;padding:4px 12px;border-radius:20px;font-size:.78rem;font-weight:700;margin-top:4px}
+  .level-verbal{background:#fef9c3;color:#854d0e}
+  .level-escrita{background:#ffedd5;color:#9a3412}
+  .level-final{background:#fee2e2;color:#991b1b}
+  .level-terminacion{background:#1e293b;color:#f8fafc}
+  .btn{width:100%;padding:14px;border:none;border-radius:10px;font-size:1rem;font-weight:700;cursor:pointer;transition:all .2s;margin-top:8px}
+  .btn-primary{background:#00205b;color:#fff}
+  .btn-primary:hover{background:#003080}
+  .btn-primary:disabled{background:#94a3b8;cursor:not-allowed}
+  .btn-secondary{background:#f1f5f9;color:#475569;margin-top:6px}
+  .success{background:#f0fdf4;border:2px solid #86efac;border-radius:14px;padding:32px;text-align:center;display:none}
+  .success-icon{font-size:3rem;margin-bottom:12px}
+  .success-title{font-size:1.2rem;font-weight:700;color:#15803d;margin-bottom:8px}
+  .success-msg{font-size:.9rem;color:#4b5563;line-height:1.6}
+  .error-msg{background:#fee2e2;color:#991b1b;border-radius:8px;padding:10px 14px;font-size:.85rem;margin-top:8px;display:none}
+  .screen{display:none}
+  .screen.active{display:block}
+  #screen-password.active{display:flex;align-items:center;justify-content:center;min-height:80vh}
+  .pw-card{background:#fff;border-radius:16px;padding:32px;box-shadow:0 4px 24px rgba(0,0,0,.1);max-width:360px;width:100%;text-align:center}
+  .pw-icon{font-size:3rem;margin-bottom:12px}
+  .pw-title{font-size:1.1rem;font-weight:700;color:#00205b;margin-bottom:6px}
+  .pw-sub{font-size:.85rem;color:#6b7280;margin-bottom:20px}
+  .pw-input{text-align:center;font-size:1.2rem;font-weight:700;letter-spacing:.1em}
+  .pw-error{color:#dc2626;font-size:.82rem;margin-top:8px;display:none}
+  .section-hidden{display:none}
 </style>
 </head>
 <body>
 
-<div class="header">
-  <div class="header-logo">🐔</div>
-  <div>
-    <div class="header-title">Los Filtros FSU</div>
-    <div class="header-sub">Reporte de Incidente — Líderes</div>
+<!-- SCREEN 1: Password -->
+<div id="screen-password" class="screen active">
+  <div class="pw-card">
+    <div class="pw-icon">🔒</div>
+    <div class="pw-title">Los Filtros FSU</div>
+    <div class="pw-sub">Ingrese la contraseña de líderes para continuar</div>
+    <div class="field">
+      <input type="password" id="pwInput" class="pw-input" placeholder="••••••••" onkeydown="if(event.key==='Enter')checkPassword()"/>
+    </div>
+    <button class="btn btn-primary" onclick="checkPassword()">Continuar</button>
+    <div class="pw-error" id="pwError">Contraseña incorrecta. Intente nuevamente.</div>
   </div>
 </div>
 
-<!-- TOKEN GATE -->
-<div id="tokenGate" class="container">
-  <div class="gate-icon">🔒</div>
-  <div class="gate-title">Acceso Requerido</div>
-  <div class="gate-sub">Esta página es para uso exclusivo de líderes autorizados de Los Filtros FSU.</div>
-  <div style="color:#dc2626;font-size:.85rem;margin-top:16px">Acceso no autorizado. Escanee el código QR correcto o contacte a su director.</div>
-</div>
-
-<!-- MAIN FORM -->
-<div id="mainForm" style="display:none">
-  <div class="container">
-
-    <!-- Steps -->
-    <div class="steps">
-      <div class="step active" id="step1">1. Información</div>
-      <div class="step" id="step2">2. Incidente</div>
-      <div class="step" id="step3">3. Revisión IA</div>
-      <div class="step" id="step4">4. Enviar</div>
+<!-- SCREEN 2: Form -->
+<div id="screen-form" class="screen">
+  <div class="wrap">
+    <div class="logo">
+      <div style="font-size:2rem">🐔</div>
+      <div class="logo-title">Reporte de Amonestación</div>
+      <div class="logo-sub">Chick-fil-A Los Filtros FSU — #30014</div>
     </div>
 
-    <!-- STEP 1: Basic info -->
-    <div id="formStep1">
-      <div class="card">
-        <div class="card-title">👤 Información del Miembro del Equipo</div>
+    <!-- Employee & Leader -->
+    <div class="card">
+      <div class="card-title">👤 Información del Empleado y Líder</div>
+      <div class="field">
+        <label>Empleado <span class="req">*</span></label>
+        <select id="empSelect" onchange="onEmpChange()">
+          <option value="">Cargando empleados...</option>
+        </select>
+      </div>
+      <div class="field section-hidden" id="empManualWrap">
+        <label>Nombre completo del empleado <span class="req">*</span></label>
+        <input type="text" id="empManual" placeholder="Apellido, Nombre"/>
+      </div>
+      <div class="field">
+        <label>Nombre del líder que reporta <span class="req">*</span></label>
+        <input type="text" id="leaderName" placeholder="Tu nombre completo"/>
+      </div>
+      <div class="frow">
         <div class="field">
-          <label>Nombre completo del Miembro del Equipo <span class="req">*</span></label>
-          <input type="text" id="ldrEmpName" placeholder="Nombre y apellido"/>
-        </div>
-        <div class="field-row">
-          <div>
-            <label>Fecha del Incidente <span class="req">*</span></label>
-            <input type="date" id="ldrDate"/>
-          </div>
-          <div>
-            <label>Su nombre (Supervisor/Líder) <span class="req">*</span></label>
-            <input type="text" id="ldrSupervisor" placeholder="Su nombre"/>
-          </div>
+          <label>Fecha del incidente <span class="req">*</span></label>
+          <input type="date" id="incDate"/>
         </div>
         <div class="field">
-          <label>Horario del turno <span class="req">*</span></label>
-          <div class="shift-row">
-            <span>De:</span>
-            <input type="number" id="ldrShiftStartH" min="1" max="12" value="8"/>
-            <span>:</span>
-            <input type="number" id="ldrShiftStartM" min="0" max="59" value="0" style="width:60px"/>
-            <select id="ldrShiftStartAMPM"><option>AM</option><option>PM</option></select>
-            <span style="margin-left:8px">A:</span>
-            <input type="number" id="ldrShiftEndH" min="1" max="12" value="4"/>
-            <span>:</span>
-            <input type="number" id="ldrShiftEndM" min="0" max="59" value="0" style="width:60px"/>
-            <select id="ldrShiftEndAMPM"><option>AM</option><option selected>PM</option></select>
-          </div>
-        </div>
-        <div class="field">
-          <label>Categoría de Violación <span class="req">*</span></label>
-          <select id="ldrCategory" onchange="ldrOnCategoryChange()">
-            <option value="">Seleccionar...</option>
-            <option>Asistencia y Puntualidad</option>
-            <option>Normas de Conducta</option>
-            <option>Inocuidad de Alimentos / Seguridad Alimentaria</option>
-            <option>Deberes y Responsabilidades del Puesto</option>
-            <option>Ambiente de Trabajo Civil y Respetuoso</option>
-            <option>Apariencia y Aseo Personal</option>
-            <option>Seguridad en el Lugar de Trabajo</option>
-            <option>Responsabilidad de Efectivo y Cupones</option>
-            <option>Política de Uniformes</option>
-            <option>Comunicaciones Telefónicas</option>
-          </select>
+          <label>Hora del incidente <span class="req">*</span></label>
+          <input type="time" id="incTime"/>
         </div>
       </div>
-      <button class="btn btn-primary" onclick="ldrGoStep2()">Continuar →</button>
-    </div>
-
-    <!-- STEP 2: Category-specific fields -->
-    <div id="formStep2" style="display:none">
-      <div class="card">
-        <div class="card-title">📋 Detalles del Incidente</div>
-        <div class="hint-warning" style="margin-bottom:16px">
-          ⚖️ Esta información será utilizada para generar un documento legal. Por favor sea específico y preciso. Todos los campos marcados con * son obligatorios.
+      <div class="field">
+        <label>Horario del turno del empleado <span class="req">*</span></label>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input type="time" id="shiftStart" style="width:130px"/>
+          <span style="color:#6b7280;font-weight:600">a</span>
+          <input type="time" id="shiftEnd" style="width:130px"/>
         </div>
-        <div id="ldrCategoryFields"></div>
-      </div>
-      <div style="display:flex;gap:10px">
-        <button class="btn btn-secondary" onclick="ldrGoStep1()" style="flex:1">← Atrás</button>
-        <button class="btn btn-primary" onclick="ldrValidateWithAI()" id="ldrValidateBtn" style="flex:2">✨ Validar con IA →</button>
       </div>
     </div>
 
-    <!-- STEP 3: AI validation result -->
-    <div id="formStep3" style="display:none">
-      <div id="validationResult"></div>
-      <div style="display:flex;gap:10px">
-        <button class="btn btn-secondary" onclick="ldrGoStep2Back()" style="flex:1">← Corregir</button>
-        <button class="btn btn-primary" id="ldrProceedBtn" onclick="ldrGoStep4()" style="flex:2;display:none">Enviar al Director →</button>
+    <!-- Category -->
+    <div class="card">
+      <div class="card-title">📋 Categoría de Violación</div>
+      <div class="field">
+        <label>Categoría <span class="req">*</span></label>
+        <select id="category" onchange="onCategoryChange()">
+          <option value="">Seleccionar categoría...</option>
+          <option value="Asistencia y Puntualidad">Asistencia y Puntualidad</option>
+          <option value="Normas de Conducta">Normas de Conducta</option>
+          <option value="Inocuidad de Alimentos / Seguridad Alimentaria">Inocuidad de Alimentos / Seguridad Alimentaria</option>
+          <option value="Deberes y Responsabilidades del Puesto">Deberes y Responsabilidades del Puesto</option>
+          <option value="Ambiente de Trabajo Civil y Respetuoso">Ambiente de Trabajo Civil y Respetuoso</option>
+          <option value="Apariencia y Aseo Personal">Apariencia y Aseo Personal</option>
+          <option value="Seguridad en el Lugar de Trabajo">Seguridad en el Lugar de Trabajo</option>
+          <option value="Responsabilidad de Efectivo y Cupones">Responsabilidad de Efectivo y Cupones</option>
+          <option value="Política de Uniformes">Política de Uniformes</option>
+          <option value="Comunicaciones Telefónicas">Comunicaciones Telefónicas</option>
+        </select>
+      </div>
+      <div id="categoryFields"></div>
+    </div>
+
+    <!-- Additional notes -->
+    <div class="card">
+      <div class="card-title">📝 Notas Adicionales</div>
+      <div class="field">
+        <label>Descripción adicional (opcional)</label>
+        <textarea id="extraNotes" placeholder="Cualquier información adicional relevante al incidente..."></textarea>
       </div>
     </div>
 
-    <!-- STEP 4: Submit -->
-    <div id="formStep4" style="display:none">
-      <div class="card">
-        <div class="card-title">📤 Confirmar y Enviar</div>
-        <p style="font-size:.85rem;color:#374151;line-height:1.6;margin-bottom:14px">
-          Al enviar este reporte, el director recibirá una notificación para revisar y finalizar la amonestación.
-          <strong>Este reporte no es la amonestación oficial</strong> — el director la revisará y firmará antes de entregársela al empleado.
-        </p>
-        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px;font-size:.85rem;margin-bottom:4px">
-          <div style="font-weight:700;color:#004f71;margin-bottom:6px">Resumen del Reporte</div>
-          <div id="ldrSummary" style="line-height:1.8;color:#374151"></div>
-        </div>
-      </div>
-      <div style="display:flex;gap:10px">
-        <button class="btn btn-secondary" onclick="ldrGoStep3Back()" style="flex:1">← Atrás</button>
-        <button class="btn btn-primary" onclick="ldrSubmit()" id="ldrSubmitBtn" style="flex:2">✅ Enviar Reporte</button>
-      </div>
-    </div>
-
+    <div class="error-msg" id="formError"></div>
+    <button class="btn btn-primary" id="submitBtn" onclick="submitForm()">Enviar Reporte</button>
   </div>
 </div>
 
-<!-- SUCCESS -->
-<div id="successScreen" class="container">
-  <div class="success-icon">✅</div>
-  <div class="success-title">Reporte Enviado</div>
-  <div class="success-sub">
-    Su reporte fue enviado exitosamente al director.<br><br>
-    El director revisará la información, completará la amonestación oficial y se la entregará al miembro del equipo para su firma.<br><br>
-    <strong>No tome ninguna acción disciplinaria adicional</strong> hasta que el director confirme.
+<!-- SCREEN 3: Success -->
+<div id="screen-success" class="screen">
+  <div class="wrap">
+    <div class="success" style="display:block;margin-top:40px">
+      <div class="success-icon">✅</div>
+      <div class="success-title">Reporte enviado exitosamente</div>
+      <div class="success-msg">
+        Tu reporte fue recibido y está pendiente de revisión por un director.<br><br>
+        Se envió una notificación al equipo de dirección de Los Filtros FSU.<br><br>
+        <strong>Puedes cerrar esta ventana.</strong>
+      </div>
+    </div>
   </div>
 </div>
 
 <script>
-// ── Config ────────────────────────────────────────────────────
-const SUPABASE_URL  = 'https://ccmprabfwhfvrkeyfamg.supabase.co';
+const SUPABASE_URL = 'https://ccmprabfwhfvrkeyfamg.supabase.co';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNjbXByYWJmd2hmdnJrZXlmYW1nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2MzUzODYsImV4cCI6MjA5MDIxMTM4Nn0.PV2tAkcC2p7QuQQNBw31GIjmr--qu-ULoqqtDBg6lH8';
-const WU_PROXY_URL  = `${SUPABASE_URL}/functions/v1/claude-proxy`;
-const VALID_TOKEN   = 'filtros-ldr-2026';
-// Director's email for notifications — only Diego gets notified
-const DIRECTOR_EMAIL = 'diego.velazquez@cfafranchisee.pr';
+const PASSWORD = 'LF30014';
 
-let _supa = null;
-function getSupa() {
-  if (!_supa) _supa = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
-  return _supa;
+// ── Password ──────────────────────────────────────────────────────────
+function checkPassword() {
+  const val = document.getElementById('pwInput').value;
+  if (val === PASSWORD) {
+    showScreen('form');
+    loadEmployees();
+    document.getElementById('incDate').value = new Date().toISOString().split('T')[0];
+  } else {
+    document.getElementById('pwError').style.display = 'block';
+    document.getElementById('pwInput').value = '';
+  }
 }
 
-// ── Token check ───────────────────────────────────────────────
-const params = new URLSearchParams(window.location.search);
-const token  = params.get('wu');
-if (token === VALID_TOKEN) {
-  document.getElementById('tokenGate').style.display = 'none';
-  document.getElementById('mainForm').style.display  = 'block';
-  document.getElementById('ldrDate').value = new Date().toISOString().split('T')[0];
+function showScreen(name) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById('screen-' + name).classList.add('active');
 }
 
-// ── Category fields config (same as director hub) ────────────
-const CATEGORY_FIELDS = {
+// ── Load employees from Supabase ──────────────────────────────────────
+async function loadEmployees() {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_data?key=eq.appdata&select=employees`, {
+      headers: { 'apikey': SUPABASE_ANON, 'Authorization': 'Bearer ' + SUPABASE_ANON }
+    });
+    const data = await res.json();
+    const employees = data?.[0]?.employees || {};
+    const sel = document.getElementById('empSelect');
+    sel.innerHTML = '<option value="">— Seleccionar empleado —</option>';
+    Object.entries(employees)
+      .filter(([, e]) => e.status === 'active')
+      .sort((a, b) => a[1].name.localeCompare(b[1].name))
+      .forEach(([key, emp]) => {
+        const opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = emp.name;
+        sel.appendChild(opt);
+      });
+    const other = document.createElement('option');
+    other.value = '__manual__';
+    other.textContent = '— Otro / Ingresar nombre manualmente —';
+    sel.appendChild(other);
+  } catch(e) {
+    document.getElementById('empSelect').innerHTML = '<option value="__manual__">— Ingresar nombre manualmente —</option>';
+    document.getElementById('empManualWrap').classList.remove('section-hidden');
+  }
+}
+
+function onEmpChange() {
+  const val = document.getElementById('empSelect').value;
+  const wrap = document.getElementById('empManualWrap');
+  if (val === '__manual__') {
+    wrap.classList.remove('section-hidden');
+  } else {
+    wrap.classList.add('section-hidden');
+    document.getElementById('empManual').value = '';
+  }
+}
+
+// ── Category fields ───────────────────────────────────────────────────
+const FIELDS = {
   'Asistencia y Puntualidad': [
-    { id:'horaProgram',  label:'Hora exacta programada de entrada',                 type:'time',   required:true },
-    { id:'horaLlegada',  label:'Hora exacta de llegada (según sistema de marcaje)', type:'time',   required:true },
-    { id:'minutosT',     label:'Minutos totales de tardanza',                       type:'number', required:true },
-    { id:'reloj',        label:'¿El sistema de reloj registró la entrada?',         type:'yesno',  required:true },
-    { id:'llamo',        label:'¿Llamó para avisar antes de su turno?',             type:'yesno',  required:true },
-    { id:'horaLlamo',    label:'Si llamó — ¿a qué hora?',                          type:'time',   required:false, showIf:{id:'llamo',val:'Sí'} },
-    { id:'quienAtendio', label:'Si llamó — ¿a quién?',                             type:'text',   required:false, showIf:{id:'llamo',val:'Sí'} },
+    {id:'tipo_ausencia', label:'Tipo de incidente', type:'select', options:['Tardanza','Ausencia injustificada'], required:true},
+    {id:'horaProgram', label:'Hora programada de entrada', type:'time', required:true},
+    {id:'horaLlegada', label:'Hora de llegada real (tardanza) o turno completo perdido (ausencia)', type:'time', required:false, showIf:{id:'tipo_ausencia', val:'Tardanza'}},
+    {id:'minutosT', label:'Minutos de tardanza', type:'number', required:true, showIf:{id:'tipo_ausencia', val:'Tardanza'}},
+    {id:'reloj', label:'¿El sistema de marcaje lo registró?', type:'yesno', required:true},
+    {id:'llamo', label:'¿Llamó para avisar antes del turno?', type:'yesno', required:true},
+    {id:'horaLlamo', label:'Si llamó — ¿a qué hora?', type:'time', required:false, showIf:{id:'llamo', val:'Sí'}},
+    {id:'quienAtendio', label:'Si llamó — ¿a quién?', type:'text', required:false, showIf:{id:'llamo', val:'Sí'}},
+    {id:'ocasiones_previas', label:'¿Ha tenido incidentes de asistencia previos en los últimos 90 días?', type:'yesno', required:true},
   ],
   'Normas de Conducta': [
-    { id:'descripcion',  label:'Descripción exacta (palabras textuales si aplica)', type:'textarea',required:true },
-    { id:'area',         label:'Área específica donde ocurrió',                    type:'text',   required:true },
-    { id:'horaInc',      label:'Hora exacta del incidente',                         type:'time',   required:true },
-    { id:'clientes',     label:'¿Hubo clientes presentes?',                         type:'yesno',  required:true },
-    { id:'testigos',     label:'Nombre(s) de testigo(s) presentes',                type:'text',   required:false },
-    { id:'testigoDecl',  label:'¿El testigo está dispuesto a declarar?',            type:'yesno',  required:false, showIf:{id:'testigos',notEmpty:true} },
-    { id:'dano',         label:'¿Hubo daño a la operación, reputación o persona? Describa', type:'text', required:false },
+    {id:'descripcion', label:'Descripción exacta del incidente (palabras textuales si aplica)', type:'textarea', required:true},
+    {id:'area', label:'Área específica donde ocurrió', type:'text', required:true},
+    {id:'horaInc', label:'Hora exacta del incidente', type:'time', required:true},
+    {id:'clientes', label:'¿Hubo clientes presentes?', type:'yesno', required:true},
+    {id:'testigos', label:'Nombre(s) de testigo(s)', type:'text', required:false},
+    {id:'testigoDecl', label:'¿El testigo está dispuesto a declarar?', type:'yesno', required:false, showIf:{id:'testigos', notEmpty:true}},
+    {id:'dano', label:'¿Hubo daño a la operación o persona? Describa', type:'text', required:false},
   ],
   'Inocuidad de Alimentos / Seguridad Alimentaria': [
-    { id:'regulacion',   label:'Regulación o política específica violada (citar la regla)', type:'textarea', required:true },
-    { id:'productoArea', label:'Producto, equipo o área involucrada',               type:'text',   required:true },
-    { id:'riesgo',       label:'¿Hubo riesgo directo de contaminación o daño al cliente?', type:'yesno', required:true },
-    { id:'temperatura',  label:'Temperatura del producto (si aplica)',               type:'text',   required:false },
-    { id:'descarto',     label:'¿Se descartó el producto?',                         type:'yesno',  required:false },
-    { id:'entrenado',    label:'¿El empleado había recibido entrenamiento en esta regla?', type:'yesno', required:true },
-    { id:'corrigioMom',  label:'¿Fue corregido en el momento?',                     type:'yesno',  required:true },
+    {id:'regulacion', label:'Regulación específica violada', type:'textarea', required:true},
+    {id:'productoArea', label:'Producto, equipo o área involucrada', type:'text', required:true},
+    {id:'riesgo', label:'¿Hubo riesgo de contaminación o daño al cliente?', type:'yesno', required:true},
+    {id:'temperatura', label:'Temperatura del producto (si aplica)', type:'text', required:false},
+    {id:'descarto', label:'¿Se descartó el producto?', type:'yesno', required:false},
+    {id:'entrenado', label:'¿El empleado había recibido entrenamiento en esta regla?', type:'yesno', required:true},
+    {id:'corrigioMom', label:'¿Fue corregido en el momento?', type:'yesno', required:true},
   ],
   'Deberes y Responsabilidades del Puesto': [
-    { id:'tarea',        label:'Tarea o responsabilidad específica no cumplida',   type:'textarea',required:true },
-    { id:'enDescripcion',label:'¿Estaba en la descripción oficial del puesto?',    type:'yesno',  required:true },
-    { id:'instruccionDir',label:'¿Se le dio instrucción directa de realizarla ese día?', type:'yesno', required:true },
-    { id:'quienInstruyo',label:'¿Por quién se le instruyó?',                       type:'text',   required:false, showIf:{id:'instruccionDir',val:'Sí'} },
-    { id:'impacto',      label:'Impacto directo en la operación',                  type:'textarea',required:true },
-    { id:'quejaCliente', label:'¿Hubo queja de cliente o incidente relacionado?',  type:'yesno',  required:true },
+    {id:'tarea', label:'Tarea o responsabilidad específica no cumplida', type:'textarea', required:true},
+    {id:'enDescripcion', label:'¿Estaba en la descripción oficial del puesto?', type:'yesno', required:true},
+    {id:'instruccionDir', label:'¿Se le dio instrucción directa ese día?', type:'yesno', required:true},
+    {id:'quienInstruyo', label:'¿Por quién se le instruyó?', type:'text', required:false, showIf:{id:'instruccionDir', val:'Sí'}},
+    {id:'impacto', label:'Impacto directo en la operación', type:'textarea', required:true},
+    {id:'quejaCliente', label:'¿Hubo queja de cliente o incidente relacionado?', type:'yesno', required:true},
   ],
   'Ambiente de Trabajo Civil y Respetuoso': [
-    { id:'descripcion',  label:'¿Qué dijo o hizo exactamente? (palabras textuales si aplica)', type:'textarea', required:true },
-    { id:'dirigidoA',    label:'¿Fue dirigido a compañero, supervisor, o cliente?', type:'select', options:['Compañero de trabajo','Supervisor','Cliente','Varios'], required:true },
-    { id:'area',         label:'Área donde ocurrió',                               type:'text',   required:true },
-    { id:'horaInc',      label:'Hora del incidente',                                type:'time',   required:true },
-    { id:'testigos',     label:'Nombre(s) de testigo(s)',                           type:'text',   required:false },
-    { id:'testigoDecl',  label:'¿El testigo está dispuesto a declarar?',            type:'yesno',  required:false, showIf:{id:'testigos',notEmpty:true} },
-    { id:'contactoFisico',label:'¿Hubo contacto físico?',                           type:'yesno',  required:true },
-    { id:'tipoContacto', label:'Si hubo contacto físico — ¿de qué tipo?',          type:'text',   required:false, showIf:{id:'contactoFisico',val:'Sí'} },
-    { id:'quejaFormal',  label:'¿La otra persona presentó queja formal?',           type:'yesno',  required:true },
-    { id:'hostigamiento',label:'¿Constituyó hostigamiento, discriminación o acoso?', type:'yesno', required:true },
+    {id:'descripcion', label:'¿Qué dijo o hizo exactamente?', type:'textarea', required:true},
+    {id:'dirigidoA', label:'¿Fue dirigido a...?', type:'select', options:['Compañero de trabajo','Supervisor','Cliente','Varios'], required:true},
+    {id:'area', label:'Área donde ocurrió', type:'text', required:true},
+    {id:'horaInc', label:'Hora del incidente', type:'time', required:true},
+    {id:'testigos', label:'Nombre(s) de testigo(s)', type:'text', required:false},
+    {id:'testigoDecl', label:'¿El testigo está dispuesto a declarar?', type:'yesno', required:false, showIf:{id:'testigos', notEmpty:true}},
+    {id:'contactoFisico', label:'¿Hubo contacto físico?', type:'yesno', required:true},
+    {id:'tipoContacto', label:'Si hubo contacto físico — ¿de qué tipo?', type:'text', required:false, showIf:{id:'contactoFisico', val:'Sí'}},
+    {id:'quejaFormal', label:'¿La otra persona presentó queja formal?', type:'yesno', required:true},
+    {id:'hostigamiento', label:'¿Constituyó hostigamiento, discriminación o acoso?', type:'yesno', required:true},
   ],
   'Apariencia y Aseo Personal': [
-    { id:'articulo',     label:'Artículo o requisito específico no cumplido',      type:'text',   required:true },
-    { id:'tenia',        label:'¿Tenía el empleado el artículo en su poder ese día?', type:'yesno', required:true },
-    { id:'oportunidad',  label:'¿Se le dio oportunidad de corregirlo antes de la amonestación?', type:'yesno', required:true },
-    { id:'corrigio',     label:'¿Lo corrigió cuando se le indicó?',                type:'yesno',  required:true },
-    { id:'impactoCliente',label:'¿Hubo impacto en la interacción con clientes?',   type:'yesno',  required:true },
+    {id:'articulo', label:'Artículo o requisito específico no cumplido', type:'text', required:true},
+    {id:'tenia', label:'¿Tenía el empleado el artículo ese día?', type:'yesno', required:true},
+    {id:'oportunidad', label:'¿Se le dio oportunidad de corregirlo?', type:'yesno', required:true},
+    {id:'corrigio', label:'¿Lo corrigió cuando se le indicó?', type:'yesno', required:true},
+    {id:'impactoCliente', label:'¿Hubo impacto en la interacción con clientes?', type:'yesno', required:true},
   ],
   'Seguridad en el Lugar de Trabajo': [
-    { id:'regla',        label:'Regla o procedimiento de seguridad violado (citar específicamente)', type:'textarea', required:true },
-    { id:'lugar',        label:'Lugar exacto donde ocurrió',                       type:'text',   required:true },
-    { id:'horaInc',      label:'Hora del incidente',                                type:'time',   required:true },
-    { id:'riesgoLesion', label:'¿Hubo riesgo de lesión para el empleado u otros?', type:'yesno',  required:true },
-    { id:'entrenado',    label:'¿El empleado había recibido entrenamiento en este procedimiento?', type:'yesno', required:true },
-    { id:'fechaEntren',  label:'¿Cuándo recibió el entrenamiento?',                type:'date',   required:false, showIf:{id:'entrenado',val:'Sí'} },
-    { id:'camara',       label:'¿Hay registro en cámara u otro sistema?',          type:'yesno',  required:true },
-    { id:'reportoGerente',label:'¿Se reportó al gerente de turno inmediatamente?', type:'yesno',  required:true },
+    {id:'regla', label:'Regla de seguridad violada (citar específicamente)', type:'textarea', required:true},
+    {id:'lugar', label:'Lugar exacto donde ocurrió', type:'text', required:true},
+    {id:'horaInc', label:'Hora del incidente', type:'time', required:true},
+    {id:'riesgoLesion', label:'¿Hubo riesgo de lesión?', type:'yesno', required:true},
+    {id:'entrenado', label:'¿El empleado había recibido entrenamiento en este procedimiento?', type:'yesno', required:true},
+    {id:'fechaEntren', label:'¿Cuándo recibió el entrenamiento?', type:'date', required:false, showIf:{id:'entrenado', val:'Sí'}},
+    {id:'camara', label:'¿Hay registro en cámara?', type:'yesno', required:true},
+    {id:'reportoGerente', label:'¿Se reportó al gerente inmediatamente?', type:'yesno', required:true},
   ],
   'Responsabilidad de Efectivo y Cupones': [
-    { id:'discrepancia', label:'Discrepancia exacta en dólares y centavos ($)',    type:'number', required:true },
-    { id:'tipoDisc',     label:'Tipo de discrepancia',                              type:'select', options:['Faltante','Sobrante'], required:true },
-    { id:'caja',         label:'Caja o terminal donde ocurrió',                    type:'text',   required:true },
-    { id:'horaConteo',   label:'Hora en que se hizo el conteo',                    type:'time',   required:true },
-    { id:'soloEnCaja',   label:'¿Estuvo el empleado solo/a en esa caja durante el turno?', type:'yesno', required:true },
-    { id:'reviso',       label:'¿Se revisó el conteo con el empleado presente?',   type:'yesno',  required:true },
-    { id:'firmoConteo',  label:'¿El empleado firmó el conteo?',                    type:'yesno',  required:true },
-    { id:'registroPOS',  label:'¿Hay registro del sistema POS?',                   type:'yesno',  required:true },
+    {id:'discrepancia', label:'Discrepancia exacta en dólares ($)', type:'number', required:true},
+    {id:'tipoDisc', label:'Tipo de discrepancia', type:'select', options:['Faltante','Sobrante'], required:true},
+    {id:'caja', label:'Caja o terminal donde ocurrió', type:'text', required:true},
+    {id:'horaConteo', label:'Hora en que se hizo el conteo', type:'time', required:true},
+    {id:'soloEnCaja', label:'¿Estuvo el empleado solo/a en esa caja?', type:'yesno', required:true},
+    {id:'reviso', label:'¿Se revisó el conteo con el empleado presente?', type:'yesno', required:true},
+    {id:'firmoConteo', label:'¿El empleado firmó el conteo?', type:'yesno', required:true},
+    {id:'registroPOS', label:'¿Hay registro del sistema POS?', type:'yesno', required:true},
   ],
   'Política de Uniformes': [
-    { id:'articulo',     label:'Artículo específico faltante o incorrecto',        type:'text',   required:true },
-    { id:'orientado',    label:'¿Se le notificó la política de uniformes en su orientación?', type:'yesno', required:true },
-    { id:'tenia',        label:'¿Tenía el artículo disponible ese día?',           type:'yesno',  required:true },
-    { id:'oportunidad',  label:'¿Se le dio oportunidad de corregirlo?',            type:'yesno',  required:true },
-    { id:'corrigio',     label:'¿Lo corrigió?',                                    type:'yesno',  required:true },
+    {id:'articulo', label:'Artículo específico faltante o incorrecto', type:'text', required:true},
+    {id:'orientado', label:'¿Se le notificó la política en su orientación?', type:'yesno', required:true},
+    {id:'tenia', label:'¿Tenía el artículo disponible ese día?', type:'yesno', required:true},
+    {id:'oportunidad', label:'¿Se le dio oportunidad de corregirlo?', type:'yesno', required:true},
+    {id:'corrigio', label:'¿Lo corrigió?', type:'yesno', required:true},
   ],
   'Comunicaciones Telefónicas': [
-    { id:'politica',     label:'Política específica de uso de teléfono violada',   type:'textarea',required:true },
-    { id:'area',         label:'Área donde estaba el empleado',                    type:'text',   required:true },
-    { id:'horasTrabajo', label:'¿Estaba en horas activas o en descanso?',          type:'select', options:['Horas activas de trabajo','Período de descanso'], required:true },
-    { id:'afectoServicio',label:'¿Afectó directamente el servicio al cliente?',    type:'yesno',  required:true },
-    { id:'clienteTestigo',label:'¿Hubo un cliente afectado o testigo?',            type:'yesno',  required:true },
-    { id:'camara',       label:'¿Hay registro en cámara?',                         type:'yesno',  required:true },
+    {id:'politica', label:'Política específica de uso de teléfono violada', type:'textarea', required:true},
+    {id:'area', label:'Área donde estaba el empleado', type:'text', required:true},
+    {id:'horasTrabajo', label:'¿Estaba en horas activas o en descanso?', type:'select', options:['Horas activas de trabajo','Período de descanso'], required:true},
+    {id:'afectoServicio', label:'¿Afectó el servicio al cliente?', type:'yesno', required:true},
+    {id:'clienteTestigo', label:'¿Hubo un cliente afectado o testigo?', type:'yesno', required:true},
+    {id:'camara', label:'¿Hay registro en cámara?', type:'yesno', required:true},
   ],
 };
 
-function setStep(n) {
-  [1,2,3,4].forEach(i => {
-    const s = document.getElementById(`step${i}`);
-    s.className = 'step' + (i<n?' done':i===n?' active':'');
-  });
-  ['formStep1','formStep2','formStep3','formStep4'].forEach((id,i) => {
-    document.getElementById(id).style.display = (i+1===n) ? 'block' : 'none';
+function onCategoryChange() {
+  const cat = document.getElementById('category').value;
+  const container = document.getElementById('categoryFields');
+  if (!cat) { container.innerHTML = ''; return; }
+  const fields = FIELDS[cat] || [];
+  container.innerHTML = fields.map(f => renderField(f)).join('');
+  // attach conditionals
+  container.querySelectorAll('input,select,textarea').forEach(el => {
+    el.addEventListener('change', checkConditionals);
+    el.addEventListener('input', checkConditionals);
   });
 }
 
-function ldrOnCategoryChange() {
-  const cat = document.getElementById('ldrCategory').value;
-  const container = document.getElementById('ldrCategoryFields');
-  const fields = CATEGORY_FIELDS[cat] || [];
-  if (!fields.length) { container.innerHTML=''; return; }
-  container.innerHTML = fields.map(f => {
-    const req = f.required ? '<span class="req"> *</span>' : '';
-    const showStyle = f.showIf ? 'display:none;' : '';
-    const showAttr  = f.showIf ? `data-showif='${JSON.stringify(f.showIf)}'` : '';
-    let input = '';
-    if (f.type==='yesno') {
-      input = `<div class="yn-group">
-        <label class="yn-label"><input type="radio" name="lf_${f.id}" value="Sí" onchange="ldrCheckCond()"> Sí</label>
-        <label class="yn-label"><input type="radio" name="lf_${f.id}" value="No" onchange="ldrCheckCond()"> No</label>
-      </div>`;
-    } else if (f.type==='select') {
-      input = `<select id="lf_${f.id}" onchange="ldrCheckCond()"><option value="">Seleccionar...</option>${(f.options||[]).map(o=>`<option>${o}</option>`).join('')}</select>`;
-    } else if (f.type==='textarea') {
-      input = `<textarea id="lf_${f.id}" rows="3" placeholder="Ingrese detalles específicos..."></textarea>`;
-    } else if (f.type==='time') {
-      input = `<input type="time" id="lf_${f.id}"/>`;
-    } else if (f.type==='date') {
-      input = `<input type="date" id="lf_${f.id}"/>`;
-    } else if (f.type==='number') {
-      input = `<input type="number" id="lf_${f.id}" min="0" step="0.01" placeholder="0"/>`;
-    } else {
-      input = `<input type="text" id="lf_${f.id}" placeholder="Ingrese información..."/>`;
-    }
-    return `<div id="lf_wrap_${f.id}" ${showAttr} style="${showStyle}margin-bottom:14px">
-      <label>${f.label}${req}</label>${input}</div>`;
-  }).join('');
+function renderField(f) {
+  const req = f.required ? '<span class="req"> *</span>' : '';
+  const hidden = f.showIf ? 'style="display:none"' : '';
+  const showAttr = f.showIf ? `data-showif='${JSON.stringify(f.showIf)}'` : '';
+  let input = '';
+  if (f.type === 'yesno') {
+    input = `<div class="yesno"><label><input type="radio" name="wuf_${f.id}" value="Sí"> Sí</label><label><input type="radio" name="wuf_${f.id}" value="No"> No</label></div>`;
+  } else if (f.type === 'select') {
+    input = `<select id="wuf_${f.id}"><option value="">Seleccionar...</option>${(f.options||[]).map(o=>`<option>${o}</option>`).join('')}</select>`;
+  } else if (f.type === 'textarea') {
+    input = `<textarea id="wuf_${f.id}" placeholder="Ingrese detalles..."></textarea>`;
+  } else if (f.type === 'time') {
+    input = `<input type="time" id="wuf_${f.id}"/>`;
+  } else if (f.type === 'date') {
+    input = `<input type="date" id="wuf_${f.id}"/>`;
+  } else if (f.type === 'number') {
+    input = `<input type="number" id="wuf_${f.id}" min="0" step="0.01" placeholder="0"/>`;
+  } else {
+    input = `<input type="text" id="wuf_${f.id}" placeholder="Ingrese información..."/>`;
+  }
+  return `<div id="wuf_wrap_${f.id}" ${showAttr} ${hidden} class="field">${f.type==='yesno'?`<label>${f.label}${req}</label>${input}`:`<label for="wuf_${f.id}">${f.label}${req}</label>${input}`}</div>`;
 }
 
-function ldrCheckCond() {
-  const cat = document.getElementById('ldrCategory').value;
-  (CATEGORY_FIELDS[cat]||[]).forEach(f => {
+function checkConditionals() {
+  const cat = document.getElementById('category').value;
+  (FIELDS[cat]||[]).forEach(f => {
     if (!f.showIf) return;
-    const wrap = document.getElementById(`lf_wrap_${f.id}`);
+    const wrap = document.getElementById(`wuf_wrap_${f.id}`);
     if (!wrap) return;
-    let show = false;
     const si = f.showIf;
+    let show = false;
     if (si.val !== undefined) {
-      document.querySelectorAll(`[name="lf_${si.id}"]`).forEach(r=>{ if(r.checked&&r.value===si.val) show=true; });
-      const sel = document.getElementById(`lf_${si.id}`);
-      if (sel&&sel.value===si.val) show=true;
+      const radios = document.querySelectorAll(`[name="wuf_${si.id}"]`);
+      radios.forEach(r => { if (r.checked && r.value === si.val) show = true; });
+      const sel = document.getElementById(`wuf_${si.id}`);
+      if (sel && sel.value === si.val) show = true;
     } else if (si.notEmpty) {
-      const el = document.getElementById(`lf_${si.id}`);
-      if (el&&el.value.trim()) show=true;
+      const el = document.getElementById(`wuf_${si.id}`);
+      if (el && el.value.trim()) show = true;
     }
     wrap.style.display = show ? 'block' : 'none';
   });
 }
 
-function ldrGetVals() {
-  const cat = document.getElementById('ldrCategory').value;
+function getFieldValues() {
+  const cat = document.getElementById('category').value;
   const vals = {};
-  (CATEGORY_FIELDS[cat]||[]).forEach(f => {
-    if (f.type==='yesno') {
-      const c = document.querySelector(`[name="lf_${f.id}"]:checked`);
+  (FIELDS[cat]||[]).forEach(f => {
+    if (f.type === 'yesno') {
+      const c = document.querySelector(`[name="wuf_${f.id}"]:checked`);
       vals[f.id] = c ? c.value : '';
     } else {
-      const el = document.getElementById(`lf_${f.id}`);
+      const el = document.getElementById(`wuf_${f.id}`);
       vals[f.id] = el ? el.value.trim() : '';
     }
   });
   return vals;
 }
 
-function ldrGoStep1() { setStep(1); }
+function validateForm() {
+  const cat = document.getElementById('category').value;
+  const empVal = document.getElementById('empSelect').value;
+  const empManual = document.getElementById('empManual').value.trim();
+  const leader = document.getElementById('leaderName').value.trim();
+  const date = document.getElementById('incDate').value;
+  const shiftStart = document.getElementById('shiftStart').value;
+  const shiftEnd = document.getElementById('shiftEnd').value;
 
-function ldrGoStep2() {
-  const empName   = document.getElementById('ldrEmpName').value.trim();
-  const date      = document.getElementById('ldrDate').value;
-  const supervisor= document.getElementById('ldrSupervisor').value.trim();
-  const category  = document.getElementById('ldrCategory').value;
-  if (!empName)   { alert('Por favor ingrese el nombre del miembro del equipo.'); return; }
-  if (!date)      { alert('Por favor seleccione la fecha del incidente.'); return; }
-  if (!supervisor){ alert('Por favor ingrese su nombre como supervisor/líder.'); return; }
-  if (!category)  { alert('Por favor seleccione la categoría de violación.'); return; }
-  ldrOnCategoryChange();
-  setStep(2);
-  window.scrollTo(0,0);
-}
+  const errors = [];
+  if (!empVal && !empManual) errors.push('Seleccione o ingrese el nombre del empleado');
+  if (empVal === '__manual__' && !empManual) errors.push('Ingrese el nombre del empleado manualmente');
+  if (!leader) errors.push('Ingrese su nombre como líder');
+  if (!date) errors.push('Seleccione la fecha del incidente');
+  if (!shiftStart || !shiftEnd) errors.push('Ingrese el horario del turno');
+  if (!cat) errors.push('Seleccione una categoría de violación');
 
-function ldrGoStep2Back() { setStep(2); }
-function ldrGoStep3Back() { setStep(3); }
-
-function ldrGetShift() {
-  const sh  = String(document.getElementById('ldrShiftStartH').value).padStart(2,'0');
-  const sm  = String(document.getElementById('ldrShiftStartM').value).padStart(2,'0');
-  const sap = document.getElementById('ldrShiftStartAMPM').value;
-  const eh  = String(document.getElementById('ldrShiftEndH').value).padStart(2,'0');
-  const em  = String(document.getElementById('ldrShiftEndM').value).padStart(2,'0');
-  const eap = document.getElementById('ldrShiftEndAMPM').value;
-  return `${sh}:${sm} ${sap} – ${eh}:${em} ${eap}`;
-}
-
-function ldrValidateMissing() {
-  const cat = document.getElementById('ldrCategory').value;
-  const vals = ldrGetVals();
-  const missing = [];
-  (CATEGORY_FIELDS[cat]||[]).forEach(f => {
+  // validate required category fields
+  const fieldVals = getFieldValues();
+  (FIELDS[cat]||[]).forEach(f => {
     if (!f.required) return;
-    const wrap = document.getElementById(`lf_wrap_${f.id}`);
-    if (wrap && wrap.style.display==='none') return;
-    if (!vals[f.id]||vals[f.id]==='') missing.push(f.label);
+    const wrap = document.getElementById(`wuf_wrap_${f.id}`);
+    if (wrap && wrap.style.display === 'none') return;
+    if (!fieldVals[f.id]) errors.push(f.label);
   });
-  return missing;
+
+  return errors;
 }
 
-async function ldrValidateWithAI() {
-  const missing = ldrValidateMissing();
-  if (missing.length > 0) {
-    alert('Por favor complete los campos obligatorios:\n\n• ' + missing.join('\n• '));
+async function submitForm() {
+  const errors = validateForm();
+  const errEl = document.getElementById('formError');
+  if (errors.length) {
+    errEl.textContent = 'Complete los siguientes campos: ' + errors.join(', ');
+    errEl.style.display = 'block';
+    errEl.scrollIntoView({ behavior: 'smooth' });
     return;
   }
+  errEl.style.display = 'none';
 
-  const btn = document.getElementById('ldrValidateBtn');
+  const btn = document.getElementById('submitBtn');
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span>Validando con IA...';
+  btn.textContent = 'Enviando...';
 
-  const category   = document.getElementById('ldrCategory').value;
-  const empName    = document.getElementById('ldrEmpName').value.trim();
-  const supervisor = document.getElementById('ldrSupervisor').value.trim();
-  const date       = document.getElementById('ldrDate').value;
-  const vals       = ldrGetVals();
-
-  const prompt = `Eres un especialista en recursos humanos y derecho laboral en Puerto Rico.
-Un líder de restaurante está reportando un incidente disciplinario. Tu trabajo es VALIDAR si la información proporcionada es suficientemente específica y completa para ser legalmente defendible.
-
-Empleado: ${empName}
-Categoría: ${category}
-Fecha: ${date}
-Supervisor: ${supervisor}
-Datos del incidente: ${JSON.stringify(vals, null, 2)}
-
-Analiza si la información es:
-1. Suficientemente específica (hechos concretos, no vagos)
-2. Completa para esta categoría
-3. Consistente y sin contradicciones
-
-Responde SOLO con JSON válido:
-{
-  "approved": true/false,
-  "issues": [
-    { "field": "nombre del campo con problema", "issue": "descripción del problema específico en español" }
-  ],
-  "overall": "Un párrafo corto en español explicando si el reporte está completo o qué necesita mejorar."
-}
-
-Si apruebas, issues debe ser []. Si hay problemas, lista cada uno. Sé específico sobre qué información falta o es insuficiente.`;
-
-  try {
-    const res = await fetch(WU_PROXY_URL, {
-      method:'POST',
-      headers:{'Content-Type':'application/json','Authorization':`Bearer ${SUPABASE_ANON}`},
-      body: JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:800, messages:[{role:'user',content:prompt}] })
-    });
-    if (!res.ok) throw new Error(`Error ${res.status}`);
-    const data = await res.json();
-    const parsed = JSON.parse((data.content?.[0]?.text||'').replace(/```json|```/g,'').trim());
-
-    const resultEl = document.getElementById('validationResult');
-    resultEl.style.display = 'block';
-
-    if (parsed.approved && parsed.issues.length === 0) {
-      resultEl.innerHTML = `<div class="val-ok">
-        <div class="val-ok-title">✅ Reporte Completo</div>
-        <div style="font-size:.82rem;color:#166534;margin-top:6px;line-height:1.5">${parsed.overall}</div>
-      </div>`;
-      document.getElementById('ldrProceedBtn').style.display = 'block';
-    } else {
-      resultEl.innerHTML =
-        `<div style="font-size:.85rem;font-weight:700;color:#dc2626;margin-bottom:10px">⚠️ El reporte necesita más información</div>` +
-        parsed.issues.map(i => `<div class="val-issue">
-          <div class="val-issue-title">${i.field}</div>
-          <div class="val-issue-text">${i.issue}</div>
-        </div>`).join('') +
-        `<div style="font-size:.82rem;color:#374151;margin-top:8px;padding:10px;background:#f8fafc;border-radius:6px;line-height:1.5">${parsed.overall}</div>`;
-      document.getElementById('ldrProceedBtn').style.display = 'none';
-    }
-
-    setStep(3);
-    window.scrollTo(0,0);
-  } catch(err) {
-    alert('Error al validar: ' + err.message);
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = '✨ Validar con IA →';
-  }
-}
-
-function ldrGoStep4() {
-  const empName    = document.getElementById('ldrEmpName').value.trim();
-  const date       = document.getElementById('ldrDate').value;
-  const supervisor = document.getElementById('ldrSupervisor').value.trim();
-  const category   = document.getElementById('ldrCategory').value;
-  const shift      = ldrGetShift();
-  const dateStr    = date ? new Date(date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'}) : '';
-
-  document.getElementById('ldrSummary').innerHTML = `
-    <div><strong>Empleado:</strong> ${empName}</div>
-    <div><strong>Fecha del incidente:</strong> ${dateStr}</div>
-    <div><strong>Turno:</strong> ${shift}</div>
-    <div><strong>Categoría:</strong> ${category}</div>
-    <div><strong>Reportado por:</strong> ${supervisor}</div>
-  `;
-  setStep(4);
-  window.scrollTo(0,0);
-}
-
-async function ldrSubmit() {
-  const btn = document.getElementById('ldrSubmitBtn');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span>Enviando...';
-
-  const empName    = document.getElementById('ldrEmpName').value.trim();
-  const date       = document.getElementById('ldrDate').value;
-  const supervisor = document.getElementById('ldrSupervisor').value.trim();
-  const category   = document.getElementById('ldrCategory').value;
-  const shift      = ldrGetShift();
-  const vals       = ldrGetVals();
+  const cat = document.getElementById('category').value;
+  const empSel = document.getElementById('empSelect');
+  const empName = empSel.value === '__manual__' || !empSel.value
+    ? document.getElementById('empManual').value.trim()
+    : empSel.options[empSel.selectedIndex].text;
+  const empKey = empSel.value !== '__manual__' ? empSel.value : null;
 
   const submission = {
-    emp_name:   empName,
-    date,
-    supervisor,
-    category,
-    shift,
-    fields:     vals,
-    status:     'pending_review',
+    emp_name: empName,
+    emp_key: empKey,
+    leader_name: document.getElementById('leaderName').value.trim(),
+    inc_date: document.getElementById('incDate').value,
+    inc_time: document.getElementById('incTime').value,
+    shift_start: document.getElementById('shiftStart').value,
+    shift_end: document.getElementById('shiftEnd').value,
+    category: cat,
+    fields: getFieldValues(),
+    extra_notes: document.getElementById('extraNotes').value.trim(),
+    status: 'pending',
     submitted_at: new Date().toISOString(),
-    submitted_by: supervisor
   };
 
   try {
-    // Save to Supabase wu_leader_submissions table
-    const { error } = await getSupa().from('wu_leader_submissions').insert(submission);
-    if (error) throw error;
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/wu_submissions`, {
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_ANON,
+        'Authorization': 'Bearer ' + SUPABASE_ANON,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation'
+      },
+      body: JSON.stringify(submission)
+    });
+    if (!res.ok) throw new Error('Save failed');
 
-    // Show success
-    document.getElementById('mainForm').style.display   = 'none';
-    document.getElementById('successScreen').style.display = 'block';
-    window.scrollTo(0,0);
-  } catch(err) {
-    // If table doesn't exist yet, save to localStorage as fallback
-    const all = JSON.parse(localStorage.getItem('wu_leader_submissions')||'[]');
-    all.push({ ...submission, id: 'local_'+Date.now() });
-    localStorage.setItem('wu_leader_submissions', JSON.stringify(all));
+    // Trigger email notification
+    await fetch(`${SUPABASE_URL}/functions/v1/wu-notify`, {
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_ANON,
+        'Authorization': 'Bearer ' + SUPABASE_ANON,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ empName, leader: submission.leader_name, category: cat, date: submission.inc_date })
+    }).catch(() => {}); // Don't block on email failure
 
-    document.getElementById('mainForm').style.display   = 'none';
-    document.getElementById('successScreen').style.display = 'block';
-    window.scrollTo(0,0);
-  } finally {
+    showScreen('success');
+  } catch(e) {
     btn.disabled = false;
-    btn.innerHTML = '✅ Enviar Reporte';
+    btn.textContent = 'Enviar Reporte';
+    errEl.textContent = 'Error al enviar. Verifique su conexión e intente nuevamente.';
+    errEl.style.display = 'block';
   }
 }
 </script>

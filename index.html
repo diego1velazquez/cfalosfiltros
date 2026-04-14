@@ -376,9 +376,18 @@
 
     <!-- ════ WRITE-UPS PAGE ════ -->
     <div class="page" id="p-writeups">
+      <!-- Pending Review Queue -->
+      <div class="ccard" style="margin-bottom:16px;border-left:4px solid #f59e0b">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <h2 style="margin:0;font-size:1.1rem;color:var(--navy)">⏳ Cola de Revisión — Reportes Pendientes</h2>
+          <button class="btn btn-sm" onclick="wuLoadPendingQueue()">🔄 Actualizar</button>
+        </div>
+        <div id="wuPendingQueue"><div style="color:#888;font-size:.85rem">Cargando...</div></div>
+      </div>
+
       <div class="ccard" style="margin-bottom:16px">
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:16px">
-          <h2 style="margin:0;font-size:1.2rem;color:var(--navy)">📋 Sistema de Amonestaciones Disciplinarias</h2>
+          <h2 style="margin:0;font-size:1.2rem;color:var(--navy)">📋 Expedientes de Amonestaciones</h2>
           <button class="btn btn-navy" onclick="wuOpenNewForm()">+ Nueva Amonestación</button>
         </div>
         <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
