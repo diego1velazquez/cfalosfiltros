@@ -3789,13 +3789,14 @@ function wuRenderQueue(pending, reviewed) {
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-navy btn-sm" onclick="wuReviewSubmission('${s.id}')">📋 Revisar y Generar</button>
+        <button class="btn btn-sm" onclick="wuDeleteSubmission('${s.id}')" style="border-color:#dc2626;color:#dc2626;font-size:.75rem;padding:4px 10px">🗑 Eliminar</button>
       </div>
     </div>`).join('')
     : '<div style="color:#16a34a;font-size:.85rem;padding:12px 0">✅ No hay amonestaciones pendientes de revisión.</div>';
 
   const reviewedHtml = reviewed.length ? `
     <div style="margin-top:20px">
-      <div style="font-size:.85rem;font-weight:700;color:var(--navy);margin-bottom:10px">Historial de Reportes Revisados</div>
+      <div style="font-size:.85rem;font-weight:700;color:var(--navy);margin-bottom:10px">Historial</div>
       ${reviewed.slice(0,10).map(s => `
         <div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:8px;background:#fff;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
           <div>
@@ -3807,13 +3808,14 @@ function wuRenderQueue(pending, reviewed) {
               ${s.status==='approved'?'✅ Aprobado':'✗ Rechazado'}
             </span>
             ${s.status==='approved' ? `<button class="btn btn-sm" onclick="wuPrintApproved('${s.id}')" style="border-color:#7c3aed;color:#7c3aed;font-size:.75rem;padding:4px 10px">🖨 Imprimir</button>` : ''}
+            <button class="btn btn-sm" onclick="wuDeleteSubmission('${s.id}')" style="border-color:#dc2626;color:#dc2626;font-size:.75rem;padding:4px 10px">🗑</button>
           </div>
         </div>`).join('')}
     </div>` : '';
 
   container.innerHTML = `
     <div style="font-size:.85rem;font-weight:700;color:var(--navy);margin-bottom:12px">
-      ⏳ Pendientes de Revisión (${pending.length})
+      Reportes Pendientes (${pending.length})
     </div>
     ${pendingHtml}
     ${reviewedHtml}`;
@@ -3963,6 +3965,19 @@ async function wuRejectSubmission(id) {
     showToast('✗ Reporte rechazado.');
   } catch(e) {
     alert('Error al rechazar: ' + e.message);
+  }
+}
+
+async function wuDeleteSubmission(id) {
+  if (!confirm('¿Está seguro que desea eliminar este reporte? Esta acción no se puede deshacer.')) return;
+  try {
+    // Also delete associated wu_record if exists
+    await getSupa().from('wu_records').delete().eq('submission_id', id);
+    await getSupa().from('wu_submissions').delete().eq('id', id);
+    wuLoadPendingQueue();
+    showToast('🗑 Reporte eliminado.');
+  } catch(e) {
+    alert('Error al eliminar: ' + e.message);
   }
 }
 
