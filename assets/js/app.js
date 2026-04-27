@@ -2004,6 +2004,7 @@ function renderMealPenalties() {
   // Populate week selector
   mealPopulateWeekSelector();
   renderMealPayrollView();
+  mealUpdateAllWeeksTotal();
 }
 
 function mealGetWeekEnding(dateStr) {
@@ -2019,6 +2020,15 @@ function mealGetWeekEnding(dateStr) {
   const diff = day === 6 ? 0 : 6 - day;
   d.setDate(d.getDate() + diff);
   return d.toISOString().split('T')[0];
+}
+
+function mealUpdateAllWeeksTotal() {
+  const el = document.getElementById('mealAllWeeksTotal');
+  if (!el) return;
+  const totalMins = MEAL_PENALTIES.length * 30;
+  const h = Math.floor(totalMins / 60).toString().padStart(2, '0');
+  const m = (totalMins % 60).toString().padStart(2, '0');
+  el.textContent = totalMins > 0 ? `${h}:${m}` : '—';
 }
 
 function mealPopulateWeekSelector() {
@@ -2037,13 +2047,7 @@ function mealPopulateWeekSelector() {
   if (!sel.value && weeks.length) sel.value = weeks[0];
 
   // Update all-weeks total
-  const allWeeksEl = document.getElementById('mealAllWeeksTotal');
-  if (allWeeksEl) {
-    const totalMins = MEAL_PENALTIES.length * 30;
-    const h = Math.floor(totalMins / 60).toString().padStart(2, '0');
-    const m = (totalMins % 60).toString().padStart(2, '0');
-    allWeeksEl.textContent = totalMins > 0 ? `${h}:${m}` : '00:00';
-  }
+  mealUpdateAllWeeksTotal();
 }
 
 function renderMealPayrollView() {
