@@ -2018,7 +2018,7 @@ function mealGetWeekEnding(dateStr) {
 function mealPopulateWeekSelector() {
   const sel = document.getElementById('mealWeekSel');
   if (!sel) return;
-  const weeks = [...new Set(MEAL_PENALTIES.filter(p=>p.penaltyAmount>0).map(p => mealGetWeekEnding(p.date)))].sort((a,b)=>b.localeCompare(a));
+  const weeks = [...new Set(MEAL_PENALTIES.map(p => mealGetWeekEnding(p.date)))].sort((a,b)=>b.localeCompare(a));
   const current = sel.value;
   sel.innerHTML = weeks.length
     ? weeks.map(w => {
@@ -2048,7 +2048,7 @@ function renderMealPayrollView() {
   const weekStartStr = weekStart.toISOString().split('T')[0];
 
   const weekViolations = MEAL_PENALTIES.filter(p => {
-    return p.penaltyAmount > 0 && p.date >= weekStartStr && p.date <= weekEnd;
+    return p.date >= weekStartStr && p.date <= weekEnd;
   });
 
   if (!weekViolations.length) {
