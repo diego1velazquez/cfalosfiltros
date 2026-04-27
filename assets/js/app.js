@@ -2035,6 +2035,15 @@ function mealPopulateWeekSelector() {
     : '<option value="">— Upload a Time Detail Report first —</option>';
   // Auto-select most recent if nothing selected
   if (!sel.value && weeks.length) sel.value = weeks[0];
+
+  // Update all-weeks total
+  const allWeeksEl = document.getElementById('mealAllWeeksTotal');
+  if (allWeeksEl) {
+    const totalMins = MEAL_PENALTIES.length * 30;
+    const h = Math.floor(totalMins / 60).toString().padStart(2, '0');
+    const m = (totalMins % 60).toString().padStart(2, '0');
+    allWeeksEl.textContent = totalMins > 0 ? `${h}:${m}` : '00:00';
+  }
 }
 
 function renderMealPayrollView() {

@@ -280,7 +280,10 @@
           <select id="mealWeekSel" onchange="renderMealPayrollView()" style="padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:.88rem;color:var(--navy);background:#fff">
             <option value="">— Upload a Time Detail Report first —</option>
           </select>
-          <button class="btn btn-sm" onclick="renderMealPayrollView()" style="border-color:#6b7280;color:#6b7280">🔄 Refresh</button>
+          <div style="display:flex;align-items:center;gap:8px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:7px 14px">
+            <span style="font-size:.75rem;font-weight:700;color:#166534;text-transform:uppercase">All Weeks Total</span>
+            <span style="font-size:1rem;font-weight:800;color:#15803d;font-family:monospace" id="mealAllWeeksTotal">—</span>
+          </div>
         </div>
 
         <!-- Summary cards -->
