@@ -2008,7 +2008,13 @@ function renderMealPenalties() {
 
 function mealGetWeekEnding(dateStr) {
   // Returns the Saturday on or after the given date
-  const d = new Date(dateStr + 'T12:00:00');
+  // dateStr may be MM/DD/YYYY or YYYY-MM-DD — normalize to YYYY-MM-DD
+  let iso = dateStr;
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr)) {
+    const [mo, da, yr] = dateStr.split('/');
+    iso = `${yr}-${mo}-${da}`;
+  }
+  const d = new Date(iso + 'T12:00:00');
   const day = d.getDay(); // 0=Sun, 6=Sat
   const diff = day === 6 ? 0 : 6 - day;
   d.setDate(d.getDate() + diff);
@@ -2629,7 +2635,7 @@ function parseMealTimeDetail(lines) {
         id: Date.now() + Math.random(),
         empKey: s.empName.replace(/[^a-z0-9]/gi,'_').toLowerCase(),
         empName: s.empName,
-        date: s.date,
+        date: (()=>{ const d=s.date; if(/^\d{2}\/\d{2}\/\d{4}$/.test(d)){const[mo,da,yr]=d.split('/');return `${yr}-${mo}-${da}`;}return d; })(),
         rate: _rate1,
         shiftStart: s.shiftIn,
         shiftEnd: s.shiftOut,
@@ -2654,7 +2660,7 @@ function parseMealTimeDetail(lines) {
             id: Date.now() + Math.random(),
             empKey: s.empName.replace(/[^a-z0-9]/gi,'_').toLowerCase(),
             empName: s.empName,
-            date: s.date,
+            date: (()=>{ const d=s.date; if(/^\d{2}\/\d{2}\/\d{4}$/.test(d)){const[mo,da,yr]=d.split('/');return `${yr}-${mo}-${da}`;}return d; })(),
             rate: _rate2,
             shiftStart: s.shiftIn,
             shiftEnd: s.shiftOut,
