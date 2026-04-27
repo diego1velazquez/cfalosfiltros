@@ -1992,57 +1992,120 @@ function submitMealPenalty() {
 
 function renderMealPenalties() {
   const tbody = document.getElementById('mealTbody');
-  if (!tbody) return;
-
-  if (!MEAL_PENALTIES.length) {
-    tbody.innerHTML = '<tr><td colspan="11"><div class="empty"><div class="ei">🍽</div><p>No violations logged.</p></div></td></tr>';
-  } else {
-    tbody.innerHTML = [...MEAL_PENALTIES].sort((a,b)=>b.date.localeCompare(a.date)).map(p => `<tr>
-      <td><strong>${p.empName}</strong></td>
-      <td>${p.date}</td>
-      <td style="font-size:.8rem">${p.shiftStart||'—'}</td>
-      <td style="font-size:.8rem">${p.shiftEnd||'—'}</td>
-      <td style="font-size:.8rem">${p.breakStart||'None'}</td>
-      <td style="font-size:.8rem">${p.breakEnd||'—'}</td>
-      <td style="font-size:.8rem;color:${p.breakDuration<30&&p.breakDuration>0?'var(--red)':'inherit'}">${p.breakDuration?p.breakDuration+' min':'—'}</td>
-      <td style="font-size:.75rem">${p.violationTypes.map(v=>`<span class="badge bg-red" style="font-size:.65rem">${v}</span>`).join(' ')}</td>
-      <td style="font-size:.8rem">${p.rate?'$'+p.rate:'—'}</td>
-      <td style="font-size:.8rem;color:#b45309;font-weight:600">${p.penaltyAmount>0?'30 min @ 1.5×':'—'}</td>
-      <td style="font-weight:700;color:${p.penaltyAmount>0?'var(--red)':'#888'}">${p.penaltyAmount>0?'$'+p.penaltyAmount:'—'}</td>
-      <td><button class="btn btn-red2 btn-sm" onclick="deleteMealPenalty(${p.id})">✕</button></td>
-    </tr>`).join('');
-  }
-
-  // Add all-time totals footer row
-  if (MEAL_PENALTIES.length) {
-    const totalPenalty = MEAL_PENALTIES.reduce((s,p) => s + (p.penaltyAmount||0), 0);
-    // Total time owed: each violation = 30 min (0.5 hr)
-    const totalViolations = MEAL_PENALTIES.filter(p => p.penaltyAmount > 0).length;
-    const totalMins  = totalViolations * 30;
-    const totalHrsWhole = Math.floor(totalMins / 60);
-    const totalMinsRem  = totalMins % 60;
-    const timeOwedStr   = totalMinsRem > 0
-      ? `${totalHrsWhole}h ${totalMinsRem}m`
-      : `${totalHrsWhole}h`;
-    const totalRow = document.createElement('tr');
-    totalRow.style.cssText = 'background:#fef2f2;font-weight:700;border-top:2px solid #fca5a5';
-    totalRow.innerHTML = `
-      <td colspan="8" style="text-align:right;padding:10px;font-size:.85rem;color:#991b1b">ALL-TIME TOTAL LIABILITY</td>
-      <td style="padding:10px;font-size:.85rem;color:#991b1b">—</td>
-      <td style="padding:10px;font-size:.85rem;color:#b45309;font-weight:700">${timeOwedStr} total</td>
-      <td style="padding:10px;font-size:1rem;color:#dc2626">$${totalPenalty.toFixed(2)}</td>
-      <td></td>`;
-    tbody.appendChild(totalRow);
-  }
-
-  // Update stats
+  // Update stats cards (kept for dashboard use)
   const now = new Date();
   const thisMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
   const monthItems = MEAL_PENALTIES.filter(p => p.date.startsWith(thisMonth));
-  document.getElementById('mealMonthCount').textContent = monthItems.length;
+  if (document.getElementById('mealMonthCount')) document.getElementById('mealMonthCount').textContent = monthItems.length;
   if (document.getElementById('mealEmpCount')) document.getElementById('mealEmpCount').textContent = new Set(monthItems.map(p=>p.empKey)).size;
-  document.getElementById('mealLiability').textContent  = '$'+monthItems.reduce((s,p)=>s+(p.penaltyAmount||0),0).toFixed(2);
-  document.getElementById('mealTotalCount').textContent = MEAL_PENALTIES.length;
+  if (document.getElementById('mealLiability')) document.getElementById('mealLiability').textContent = '$'+monthItems.reduce((s,p)=>s+(p.penaltyAmount||0),0).toFixed(2);
+  if (document.getElementById('mealTotalCount')) document.getElementById('mealTotalCount').textContent = MEAL_PENALTIES.length;
+
+  // Populate week selector
+  mealPopulateWeekSelector();
+  renderMealPayrollView();
+}
+
+function mealGetWeekEnding(dateStr) {
+  // Returns the Saturday on or after the given date
+  const d = new Date(dateStr + 'T12:00:00');
+  const day = d.getDay(); // 0=Sun, 6=Sat
+  const diff = day === 6 ? 0 : 6 - day;
+  d.setDate(d.getDate() + diff);
+  return d.toISOString().split('T')[0];
+}
+
+function mealPopulateWeekSelector() {
+  const sel = document.getElementById('mealWeekSel');
+  if (!sel) return;
+  const weeks = [...new Set(MEAL_PENALTIES.filter(p=>p.penaltyAmount>0).map(p => mealGetWeekEnding(p.date)))].sort((a,b)=>b.localeCompare(a));
+  const current = sel.value;
+  sel.innerHTML = weeks.length
+    ? weeks.map(w => {
+        const d = new Date(w + 'T12:00:00');
+        const label = d.toLocaleDateString('en-US', {month:'2-digit', day:'2-digit', year:'numeric'});
+        return `<option value="${w}" ${w===current?'selected':''}>Week ending ${label}</option>`;
+      }).join('')
+    : '<option value="">— Upload a Time Detail Report first —</option>';
+  // Auto-select most recent if nothing selected
+  if (!sel.value && weeks.length) sel.value = weeks[0];
+}
+
+function renderMealPayrollView() {
+  const sel = document.getElementById('mealWeekSel');
+  const rowsEl = document.getElementById('mealPayrollRows');
+  if (!sel || !rowsEl) return;
+
+  const weekEnd = sel.value;
+  if (!weekEnd) {
+    rowsEl.innerHTML = '<div style="padding:32px;text-align:center;color:var(--text-light)"><div style="font-size:2rem;margin-bottom:8px">🍽</div><div style="font-size:.88rem">Upload a Time Detail Report to see payroll entries</div></div>';
+    return;
+  }
+
+  // Get violations for this week
+  const weekStart = new Date(weekEnd + 'T12:00:00');
+  weekStart.setDate(weekStart.getDate() - 6);
+  const weekStartStr = weekStart.toISOString().split('T')[0];
+
+  const weekViolations = MEAL_PENALTIES.filter(p => {
+    return p.penaltyAmount > 0 && p.date >= weekStartStr && p.date <= weekEnd;
+  });
+
+  if (!weekViolations.length) {
+    rowsEl.innerHTML = '<div style="padding:24px;text-align:center;color:#16a34a;font-size:.88rem">✅ No meal premium violations for this week.</div>';
+    document.getElementById('mealWeekEmpCount').textContent = '0';
+    document.getElementById('mealWeekHours').textContent = '00:00';
+    document.getElementById('mealWeekLiability').textContent = '$0.00';
+    return;
+  }
+
+  // Group by employee
+  const byEmp = {};
+  weekViolations.forEach(p => {
+    const key = p.empKey || p.empName;
+    if (!byEmp[key]) byEmp[key] = { empName: p.empName, violations: [], totalMins: 0, totalAmt: 0 };
+    byEmp[key].violations.push(p);
+    byEmp[key].totalMins += 30;
+    byEmp[key].totalAmt += p.penaltyAmount || 0;
+  });
+
+  const empList = Object.values(byEmp).sort((a,b) => a.empName.localeCompare(b.empName));
+  const totalEmps = empList.length;
+  const totalMins = empList.reduce((s,e) => s + e.totalMins, 0);
+  const totalAmt = empList.reduce((s,e) => s + e.totalAmt, 0);
+
+  const fmtTime = mins => {
+    const h = Math.floor(mins/60).toString().padStart(2,'0');
+    const m = (mins%60).toString().padStart(2,'0');
+    return `${h}:${m}`;
+  };
+
+  rowsEl.innerHTML = empList.map((e, i) => `
+    <div style="display:grid;grid-template-columns:1fr 130px 110px 130px 48px;padding:13px 16px;align-items:center;${i < empList.length-1 ? 'border-bottom:1px solid var(--border)' : ''}">
+      <div style="font-weight:600;font-size:.9rem;color:var(--navy)">${e.empName}</div>
+      <div style="font-size:.82rem;color:var(--text-light)">${e.violations.length} violation${e.violations.length>1?'s':''}</div>
+      <div style="font-size:.95rem;font-weight:700;color:var(--navy);text-align:center;font-family:monospace">${fmtTime(e.totalMins)}</div>
+      <div style="font-size:.95rem;font-weight:700;color:#dc2626;text-align:right">$${e.totalAmt.toFixed(2)}</div>
+      <div style="text-align:center">
+        <button class="btn btn-sm" onclick="mealDeleteWeekEmp('${e.empKey||e.empName}','${weekStartStr}','${weekEnd}')" style="border-color:#dc2626;color:#dc2626;padding:3px 8px;font-size:.72rem">✕</button>
+      </div>
+    </div>`).join('');
+
+  document.getElementById('mealWeekEmpCount').textContent = totalEmps;
+  document.getElementById('mealWeekHours').textContent = fmtTime(totalMins);
+  document.getElementById('mealWeekLiability').textContent = '$' + totalAmt.toFixed(2);
+}
+
+function mealDeleteWeekEmp(empKey, weekStart, weekEnd) {
+  if (!confirm('Delete all meal penalty violations for this employee for this week?')) return;
+  MEAL_PENALTIES = MEAL_PENALTIES.filter(p => {
+    const key = p.empKey || p.empName;
+    return !(key === empKey && p.date >= weekStart && p.date <= weekEnd);
+  });
+  saveMealData();
+  saveToCloud();
+  renderMealPenalties();
+  showToast('🗑 Violations deleted.');
 }
 
 function deleteMealPenalty(id) {
