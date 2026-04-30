@@ -234,11 +234,22 @@ function csvToTxns(text, sourceName) {
   const debitIdx = getHeaderIndex(headers, ['debit', 'withdrawal', 'charge']);
   const creditIdx = getHeaderIndex(headers, ['credit', 'deposit', 'payment']);
 
+  // Detect BPPR format by checking for a 'type' column (CR/DB)
+  const typeIdx = getHeaderIndex(headers, ['type']);
+
   const out = [];
   for (let r = 1; r < rows.length; r++) {
     const row = rows[r];
     const rawDate = dateIdx >= 0 ? row[dateIdx] : '';
     const rawDesc = descIdx >= 0 ? row[descIdx] : `Row ${r + 1}`;
+
+    // If this is a BPPR bank statement, skip credits and cash requests
+    if (sourceName === 'bank' && typeIdx >= 0) {
+      const txType = String(row[typeIdx] || '').trim();
+      if (txType !== 'DB') continue; // skip credits/deposits
+      if (String(rawDesc || '').includes('CURRENCY CASH REQ')) continue; // skip cash requests
+    }
+
     let amount = null;
     if (amountIdx >= 0) amount = parseMoney(row[amountIdx]);
     if (amount == null && debitIdx >= 0) amount = parseMoney(row[debitIdx]);
