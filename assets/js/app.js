@@ -4811,3 +4811,123 @@ function eomSetupDnD() {
     if (files.length) eomHandleCSV({ target: { files } });
   });
 }
+
+// ══════════════════════════════════════════
+// BANCO POPULAR DEBIT PARSER
+// ══════════════════════════════════════════
+let _bpAllDebits = [];
+
+function handleBPStatement(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const text = e.target.result;
+    const lines = text.split(/\r?\n/).filter(l => l.trim());
+    if (lines.length < 2) { showToast('File appears empty', 'error'); return; }
+
+    // Parse CSV header
+    const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+    const typeIdx   = headers.indexOf('Type');
+    const amtIdx    = headers.indexOf('Amount');
+    const dateIdx   = headers.indexOf('Effective Date');
+    const descIdx   = headers.indexOf('Transaction Description');
+    const codeIdx   = headers.indexOf('Transaction Code');
+
+    if (typeIdx === -1 || amtIdx === -1) {
+      showToast('Could not find required columns (Type, Amount)', 'error');
+      return;
+    }
+
+    const debits = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+      if (!cols[typeIdx]) continue;
+      if (cols[typeIdx].trim() !== 'DB') continue; // credits only
+      if ((cols[descIdx] || '').includes('CURRENCY CASH REQ')) continue; // ignore cash requests
+      debits.push({
+        date:   cols[dateIdx]  || '',
+        desc:   cols[descIdx]  || '',
+        amount: parseFloat(cols[amtIdx]) || 0,
+        code:   cols[codeIdx]  || '',
+      });
+    }
+
+    _bpAllDebits = debits.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    // Update file slot note
+    document.getElementById('bpCachedNote').textContent =
+      `✓ ${file.name} — ${debits.length} debits loaded`;
+
+    renderBPDebits(_bpAllDebits);
+  };
+  reader.readAsText(file);
+}
+
+function renderBPDebits(debits) {
+  const panel = document.getElementById('bpDebitPanel');
+  panel.style.display = 'block';
+
+  const total   = debits.reduce((s, r) => s + r.amount, 0);
+  const largest = debits.length ? Math.max(...debits.map(r => r.amount)) : 0;
+
+  document.getElementById('bpTotalAmt').textContent   = '$' + total.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+  document.getElementById('bpTxCount').textContent    = _bpAllDebits.length;
+  document.getElementById('bpLargestAmt').textContent = '$' + largest.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+  document.getElementById('bpShowingCount').textContent = debits.length;
+
+  // Period label
+  if (debits.length) {
+    const dates = debits.map(r => r.date).sort();
+    document.getElementById('bpPeriodLabel').textContent =
+      `Period: ${dates[0]} → ${dates[dates.length-1]} · Acct ending in ...${_bpAllDebits.length > 0 ? '095' : ''}`;
+  }
+
+  // Build rows
+  const typeLabels = {
+    '681': 'EFT Debit',
+    '693': 'Check',
+    '681B': 'Prefunding',
+  };
+
+  const rows = debits.map(r => {
+    const label = r.desc.includes('CHEQUE') ? 'Check'
+                : r.desc.includes('Prefunding') ? 'Pending'
+                : r.desc.includes('CURRENCY CASH') ? 'Cash Req'
+                : 'EFT Debit';
+    const badgeColor = r.desc.includes('CHEQUE') ? '#7c3aed'
+                     : r.desc.includes('Prefunding') ? '#9ca3af'
+                     : r.desc.includes('CURRENCY CASH') ? '#d97706'
+                     : '#dc2626';
+    return `<div style="display:grid;grid-template-columns:110px 1fr 110px 80px;padding:11px 16px;border-bottom:1px solid #f3f4f6;align-items:center;gap:8px;transition:background .1s" onmouseover="this.style.background='#fafafa'" onmouseout="this.style.background=''">
+      <span style="font-size:.82rem;color:var(--text-mid);font-family:monospace">${r.date}</span>
+      <span style="font-size:.85rem;color:var(--navy);font-weight:500">${r.desc.replace(/X{4,}/g, '••••').replace(/XXXXXXXXXXXXXX0/g, '••••')}</span>
+      <span style="font-size:.9rem;font-weight:700;color:#dc2626;text-align:right;font-family:monospace">$${r.amount.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}</span>
+      <span style="text-align:center"><span style="background:${badgeColor}18;color:${badgeColor};font-size:.68rem;font-weight:700;padding:3px 8px;border-radius:20px;white-space:nowrap">${label}</span></span>
+    </div>`;
+  });
+
+  document.getElementById('bpDebitRows').innerHTML = rows.length
+    ? rows.join('')
+    : '<div style="padding:32px;text-align:center;color:var(--text-light)">No debit transactions found</div>';
+}
+
+function filterBPDebits() {
+  const q = (document.getElementById('bpSearch').value || '').toLowerCase();
+  const filtered = q
+    ? _bpAllDebits.filter(r => r.desc.toLowerCase().includes(q) || r.amount.toString().includes(q))
+    : _bpAllDebits;
+  renderBPDebits(filtered);
+}
+
+function exportBPDebitsCSV() {
+  if (!_bpAllDebits.length) { showToast('No data to export', 'error'); return; }
+  const q = (document.getElementById('bpSearch').value || '').toLowerCase();
+  const rows = q ? _bpAllDebits.filter(r => r.desc.toLowerCase().includes(q)) : _bpAllDebits;
+  const csv = ['Date,Description,Amount\n',
+    ...rows.map(r => `${r.date},"${r.desc}",${r.amount}`)
+  ].join('\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = 'bp_debits.csv';
+  a.click();
+}
