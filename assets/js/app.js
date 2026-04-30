@@ -301,6 +301,28 @@ function updateReconHeaderStats() {
   }
 }
 
+// ── Vendor group definitions ─────────────────────────────────────────────────
+// Each group maps one or more CC/bank charge keywords → one or more GASTOS vendor names.
+// Chase charges whose description contains any keyword get pooled together,
+// and their sum is compared against the sum of all matching GASTOS rows.
+const VENDOR_GROUPS = [
+  {
+    label: 'Freshpoint / Sysco (Food)',
+    chargeKeywords: ['SYSCO', 'FRESHPOINT', 'SYGMA'],
+    gastosVendors:  ['FRESHPOINT PUERTO RICO'],
+  },
+  {
+    label: 'Beverages (Coca-Cola / PR Coffee)',
+    chargeKeywords: ['CC1 BEER', 'COCA COLA', 'COCA-COLA', 'PR COFFEE', 'COKE'],
+    gastosVendors:  ['COCA-COLA PR', 'PR COFFEE'],
+  },
+];
+
+function descMatchesKeywords(desc, keywords) {
+  const d = (desc || '').toUpperCase();
+  return keywords.some(k => d.includes(k.toUpperCase()));
+}
+
 function renderReconReport() {
   const wrap = document.getElementById('rRecon');
   if (!wrap) return;
@@ -310,29 +332,135 @@ function renderReconReport() {
     return;
   }
 
-  const mRows = RECON_DATA.matches.map(m => `
-    <tr><td>${fmtDate(m.external.date)}</td><td>${m.external.source.toUpperCase()}</td><td>${m.external.description}</td><td>${m.gastos.description}</td><td>$${m.external.amount.toFixed(2)}</td></tr>
+  // ── 1. Vendor-group section ──────────────────────────────────────────────
+  const groupUsedGastos = new Set();
+  const groupUsedExternal = new Set();
+
+  const groupHtml = VENDOR_GROUPS.map(grp => {
+    // CC/bank charges that belong to this group
+    const charges = [...RECON_DATA.allCC, ...RECON_DATA.bank].filter((x, idx) => {
+      const key = x.id || idx;
+      return descMatchesKeywords(x.description, grp.chargeKeywords);
+    });
+    charges.forEach(x => groupUsedExternal.add(x.id));
+
+    // GASTOS rows that belong to this group
+    const gRows = RECON_DATA.gastos.filter((g, i) => {
+      if (grp.gastosVendors.some(v => (g.description || '').toUpperCase().includes(v.toUpperCase()))) {
+        groupUsedGastos.add(i);
+        return true;
+      }
+      return false;
+    });
+
+    const chargeTotal  = charges.reduce((s, x) => s + x.amount, 0);
+    const gastosTotal  = gRows.reduce((s, g) => s + g.amount, 0);
+    const diff         = gastosTotal - chargeTotal;
+    const isMatch      = Math.abs(diff) < 0.02;
+    const isPending    = diff > 0.01;
+    const isOver       = diff < -0.01;
+
+    const statusBadge = isMatch
+      ? '<span style="background:#dcfce7;color:#166534;font-size:.72rem;font-weight:700;padding:3px 10px;border-radius:20px">✅ MATCHED</span>'
+      : isPending
+        ? `<span style="background:#fef9c3;color:#854d0e;font-size:.72rem;font-weight:700;padding:3px 10px;border-radius:20px">⏳ PENDING $${diff.toFixed(2)}</span>`
+        : `<span style="background:#fee2e2;color:#991b1b;font-size:.72rem;font-weight:700;padding:3px 10px;border-radius:20px">⚠️ OVER BY $${Math.abs(diff).toFixed(2)}</span>`;
+
+    const chargeRows = charges.length
+      ? charges.map(x => `<tr style="font-size:.8rem"><td style="padding:6px 10px;color:#6b7280">${fmtDate(x.date)}</td><td style="padding:6px 10px">${x.description}</td><td style="padding:6px 10px;text-align:right;color:#dc2626;font-weight:600">$${x.amount.toFixed(2)}</td><td style="padding:6px 10px;color:#6b7280">${(x.source||'').toUpperCase()}</td></tr>`).join('')
+      : '<tr><td colspan="4" style="padding:8px 10px;color:#9ca3af;font-size:.8rem">No charges found yet — may still be pending</td></tr>';
+
+    const gastosLineRows = gRows.length
+      ? gRows.map(g => `<tr style="font-size:.8rem"><td style="padding:6px 10px;color:#6b7280">${fmtDate(g.date)}</td><td style="padding:6px 10px">${g.description}</td><td style="padding:6px 10px;text-align:right;font-weight:600">$${g.amount.toFixed(2)}</td><td style="padding:6px 10px;color:#6b7280">GASTOS</td></tr>`).join('')
+      : '<tr><td colspan="4" style="padding:8px 10px;color:#9ca3af;font-size:.8rem">No GASTOS entries</td></tr>';
+
+    return `
+      <div style="border:1px solid ${isMatch ? '#bbf7d0' : isPending ? '#fde047' : '#fecaca'};border-radius:12px;overflow:hidden;margin-bottom:14px">
+        <div style="background:${isMatch ? '#f0fdf4' : isPending ? '#fefce8' : '#fff3f3'};padding:12px 16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+          <div>
+            <div style="font-weight:700;font-size:.95rem;color:var(--navy)">${grp.label}</div>
+            <div style="font-size:.78rem;color:#6b7280;margin-top:2px">
+              CC/Bank charged: <strong>$${chargeTotal.toFixed(2)}</strong> &nbsp;|&nbsp;
+              GASTOS total: <strong>$${gastosTotal.toFixed(2)}</strong>
+              ${!isMatch ? `&nbsp;|&nbsp; Difference: <strong style="color:${isPending?'#854d0e':'#991b1b'}">$${Math.abs(diff).toFixed(2)}</strong>` : ''}
+            </div>
+          </div>
+          ${statusBadge}
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr">
+          <div style="border-right:1px solid #f3f4f6">
+            <div style="padding:8px 10px;font-size:.72rem;font-weight:700;color:#6b7280;text-transform:uppercase;background:#f8fafc;border-bottom:1px solid #f3f4f6">CC / Bank Charges</div>
+            <table style="width:100%;border-collapse:collapse"><tbody>${chargeRows}</tbody>
+              <tr style="background:#f8fafc;border-top:1px solid #f3f4f6"><td colspan="2" style="padding:7px 10px;font-size:.78rem;font-weight:700">Total Charged</td><td style="padding:7px 10px;text-align:right;font-weight:700;color:#dc2626">$${chargeTotal.toFixed(2)}</td><td></td></tr>
+            </table>
+          </div>
+          <div>
+            <div style="padding:8px 10px;font-size:.72rem;font-weight:700;color:#6b7280;text-transform:uppercase;background:#f8fafc;border-bottom:1px solid #f3f4f6">GASTOS Entries</div>
+            <table style="width:100%;border-collapse:collapse"><tbody>${gastosLineRows}</tbody>
+              <tr style="background:#f8fafc;border-top:1px solid #f3f4f6"><td colspan="2" style="padding:7px 10px;font-size:.78rem;font-weight:700">Total in GASTOS</td><td style="padding:7px 10px;text-align:right;font-weight:700">$${gastosTotal.toFixed(2)}</td><td></td></tr>
+            </table>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+
+  // ── 2. Standard 1:1 matching for everything outside vendor groups ─────────
+  const remainingExternal = [...RECON_DATA.allCC, ...RECON_DATA.bank]
+    .filter(x => !groupUsedExternal.has(x.id));
+  const remainingGastos = RECON_DATA.gastos
+    .filter((_, i) => !groupUsedGastos.has(i));
+
+  const usedG = new Set();
+  const matches = [];
+  const unmatchedExternal = [];
+  for (const ext of remainingExternal) {
+    let bestIdx = -1, bestScore = -1;
+    for (let i = 0; i < remainingGastos.length; i++) {
+      if (usedG.has(i)) continue;
+      const g = remainingGastos[i];
+      if (Math.abs(g.amount - ext.amount) > 0.01) continue;
+      const dd = dateDiffDays(g.date, ext.date);
+      if (dd > 5) continue;
+      const score = (5 - dd) + (tokenOverlap(ext.description, g.description) ? 2 : 0);
+      if (score > bestScore) { bestScore = score; bestIdx = i; }
+    }
+    if (bestIdx >= 0) { usedG.add(bestIdx); matches.push({ external: ext, gastos: remainingGastos[bestIdx] }); }
+    else unmatchedExternal.push(ext);
+  }
+  const unmatchedGastos = remainingGastos.filter((_, i) => !usedG.has(i));
+
+  // Store for stats
+  RECON_DATA.matches = matches;
+  RECON_DATA.unmatchedExternal = unmatchedExternal;
+  RECON_DATA.unmatchedGastos = unmatchedGastos;
+
+  const mRows = matches.map(m => `
+    <tr><td>${fmtDate(m.external.date)}</td><td>${(m.external.source||'').toUpperCase()}</td><td>${m.external.description}</td><td>${m.gastos.description}</td><td>$${m.external.amount.toFixed(2)}</td></tr>
   `).join('') || '<tr><td colspan="5">No matches found.</td></tr>';
 
-  const uRows = RECON_DATA.unmatchedExternal.map(x => `
-    <tr><td>${fmtDate(x.date)}</td><td>${x.source.toUpperCase()}</td><td>${x.description}</td><td>$${x.amount.toFixed(2)}</td></tr>
-  `).join('') || '<tr><td colspan="4">No unmatched Bank/CC items.</td></tr>';
+  const uRows = unmatchedExternal.map(x => `
+    <tr><td>${fmtDate(x.date)}</td><td>${(x.source||'').toUpperCase()}</td><td>${x.description}</td><td>$${x.amount.toFixed(2)}</td></tr>
+  `).join('') || '<tr><td colspan="4">All Bank/CC items accounted for.</td></tr>';
 
-  const gRows = RECON_DATA.unmatchedGastos.map(x => `
+  const gRows = unmatchedGastos.map(x => `
     <tr><td>${fmtDate(x.date)}</td><td>${x.description}</td><td>$${x.amount.toFixed(2)}</td></tr>
-  `).join('') || '<tr><td colspan="3">No unmatched GASTOS items.</td></tr>';
+  `).join('') || '<tr><td colspan="3">All GASTOS entries accounted for.</td></tr>';
 
   wrap.innerHTML = `
-    <div class="tbl-wrap" style="margin-top:10px">
-      <div class="tbl-bar"><strong>Bank/CC Matched to GASTOS (${RECON_DATA.matches.length})</strong></div>
+    <div style="margin-top:10px">
+      <div style="font-weight:700;font-size:1rem;color:var(--navy);margin-bottom:10px">🔗 Vendor Group Reconciliation</div>
+      ${groupHtml}
+    </div>
+    <div class="tbl-wrap" style="margin-top:18px">
+      <div class="tbl-bar"><strong>Other Matched (1:1) (${matches.length})</strong></div>
       <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Source</th><th>Bank/CC Description</th><th>GASTOS Description</th><th>Amount</th></tr></thead><tbody>${mRows}</tbody></table></div>
     </div>
     <div class="tbl-wrap" style="margin-top:14px">
-      <div class="tbl-bar"><strong>Missing In GASTOS (from Bank/CC) (${RECON_DATA.unmatchedExternal.length})</strong></div>
+      <div class="tbl-bar"><strong>Missing In GASTOS (from Bank/CC) (${unmatchedExternal.length})</strong></div>
       <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Source</th><th>Description</th><th>Amount</th></tr></thead><tbody>${uRows}</tbody></table></div>
     </div>
     <div class="tbl-wrap" style="margin-top:14px">
-      <div class="tbl-bar"><strong>Only In GASTOS (${RECON_DATA.unmatchedGastos.length})</strong></div>
+      <div class="tbl-bar"><strong>Only In GASTOS — not on any statement (${unmatchedGastos.length})</strong></div>
       <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Description</th><th>Amount</th></tr></thead><tbody>${gRows}</tbody></table></div>
     </div>
   `;
@@ -343,38 +471,9 @@ function runReconciliation() {
   const external = [...RECON_DATA.bank, ...RECON_DATA.allCC];
   if (!RECON_DATA.gastos.length) { alert('Upload at least one GASTOS CSV first.'); return; }
   if (!external.length) { alert('Upload at least one Bank or Credit Card statement first.'); return; }
-
-  const usedG = new Set();
-  const matches = [];
-  const unmatchedExternal = [];
-  for (const ext of external) {
-    let bestIdx = -1;
-    let bestScore = -1;
-    for (let i = 0; i < RECON_DATA.gastos.length; i++) {
-      if (usedG.has(i)) continue;
-      const g = RECON_DATA.gastos[i];
-      if (Math.abs(g.amount - ext.amount) > 0.01) continue;
-      const dd = dateDiffDays(g.date, ext.date);
-      if (dd > 5) continue;
-      const textScore = tokenOverlap(ext.description, g.description) ? 2 : 0;
-      const score = (5 - dd) + textScore;
-      if (score > bestScore) { bestScore = score; bestIdx = i; }
-    }
-    if (bestIdx >= 0) {
-      usedG.add(bestIdx);
-      matches.push({ external: ext, gastos: RECON_DATA.gastos[bestIdx] });
-    } else {
-      unmatchedExternal.push(ext);
-    }
-  }
-
-  const unmatchedGastos = RECON_DATA.gastos.filter((_, i) => !usedG.has(i));
-  RECON_DATA.matches = matches;
-  RECON_DATA.unmatchedExternal = unmatchedExternal;
-  RECON_DATA.unmatchedGastos = unmatchedGastos;
   RECON_DATA.lastRunAt = new Date().toISOString();
   renderReconReport();
-  showToast(`✅ Reconciliation complete: ${matches.length} matched, ${unmatchedExternal.length} missing in GASTOS.`);
+  showToast('✅ Reconciliation complete!');
 }
 
 function applyReconSearchFilter() {
