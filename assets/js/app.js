@@ -2103,12 +2103,11 @@ function submitMealPenalty() {
 function renderMealPenalties() {
   const tbody = document.getElementById('mealTbody');
   // Update stats cards (kept for dashboard use)
-  const now = new Date();
-  const thisMonth = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
-  const monthItems = MEAL_PENALTIES.filter(p => p.date.startsWith(thisMonth));
-  if (document.getElementById('mealMonthCount')) document.getElementById('mealMonthCount').textContent = monthItems.length;
-  if (document.getElementById('mealEmpCount')) document.getElementById('mealEmpCount').textContent = new Set(monthItems.map(p=>p.empKey)).size;
-  if (document.getElementById('mealLiability')) document.getElementById('mealLiability').textContent = '$'+monthItems.reduce((s,p)=>s+(p.penaltyAmount||0),0).toFixed(2);
+  // Cards reflect all violations currently in the log (matches whatever report was uploaded)
+  const allItems = MEAL_PENALTIES;
+  if (document.getElementById('mealMonthCount')) document.getElementById('mealMonthCount').textContent = allItems.length;
+  if (document.getElementById('mealEmpCount')) document.getElementById('mealEmpCount').textContent = new Set(allItems.map(p=>p.empKey)).size;
+  if (document.getElementById('mealLiability')) document.getElementById('mealLiability').textContent = '$'+allItems.reduce((s,p)=>s+(p.penaltyAmount||0),0).toFixed(2);
   if (document.getElementById('mealTotalCount')) document.getElementById('mealTotalCount').textContent = MEAL_PENALTIES.length;
 
   // Populate week selector
@@ -2209,16 +2208,33 @@ function renderMealPayrollView() {
     return `${h}:${m}`;
   };
 
-  rowsEl.innerHTML = empList.map((e, i) => `
-    <div style="display:grid;grid-template-columns:1fr 130px 110px 130px 48px;padding:13px 16px;align-items:center;${i < empList.length-1 ? 'border-bottom:1px solid var(--border)' : ''}">
-      <div style="font-weight:600;font-size:.9rem;color:var(--navy)">${e.empName}</div>
-      <div style="font-size:.82rem;color:var(--text-light)">${e.violations.length} violation${e.violations.length>1?'s':''}</div>
-      <div style="font-size:.95rem;font-weight:700;color:var(--navy);text-align:center;font-family:monospace">${fmtTime(e.totalMins)}</div>
-      <div style="font-size:.95rem;font-weight:700;color:#dc2626;text-align:right">$${e.totalAmt.toFixed(2)}</div>
-      <div style="text-align:center">
-        <button class="btn btn-sm" onclick="mealDeleteWeekEmp('${e.empKey||e.empName}','${weekStartStr}','${weekEnd}')" style="border-color:#dc2626;color:#dc2626;padding:3px 8px;font-size:.72rem">✕</button>
+  rowsEl.innerHTML = empList.map((e, i) => {
+    const violationRows = e.violations.map(v => {
+      const dateLabel = v.date || '';
+      const types = Array.isArray(v.violationTypes) ? v.violationTypes.join('; ') : (v.violationTypes || 'No break taken');
+      const shiftLabel = (v.shiftStart && v.shiftEnd) ? `${v.shiftStart} – ${v.shiftEnd}` : '';
+      return `<div style="display:grid;grid-template-columns:100px 1fr;gap:8px;padding:5px 16px 5px 24px;background:#fafafa;border-top:1px solid #f3f4f6;align-items:start">
+        <div style="font-size:.75rem;color:#6b7280;font-family:monospace;padding-top:1px">${dateLabel}</div>
+        <div>
+          <div style="font-size:.78rem;color:#dc2626;font-weight:600">${types}</div>
+          ${shiftLabel ? `<div style="font-size:.72rem;color:#9ca3af;margin-top:1px">Shift: ${shiftLabel}</div>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+
+    return `<div style="${i < empList.length-1 ? 'border-bottom:1px solid var(--border)' : ''}">
+      <div style="display:grid;grid-template-columns:1fr 130px 110px 130px 48px;padding:13px 16px;align-items:center;">
+        <div style="font-weight:600;font-size:.9rem;color:var(--navy)">${e.empName}</div>
+        <div style="font-size:.82rem;color:var(--text-light)">${e.violations.length} violation${e.violations.length>1?'s':''}</div>
+        <div style="font-size:.95rem;font-weight:700;color:var(--navy);text-align:center;font-family:monospace">${fmtTime(e.totalMins)}</div>
+        <div style="font-size:.95rem;font-weight:700;color:#dc2626;text-align:right">$${e.totalAmt.toFixed(2)}</div>
+        <div style="text-align:center">
+          <button class="btn btn-sm" onclick="mealDeleteWeekEmp('${e.empKey||e.empName}','${weekStartStr}','${weekEnd}')" style="border-color:#dc2626;color:#dc2626;padding:3px 8px;font-size:.72rem">✕</button>
+        </div>
       </div>
-    </div>`).join('');
+      ${violationRows}
+    </div>`;
+  }).join('');
 
   document.getElementById('mealWeekEmpCount').textContent = totalEmps;
   document.getElementById('mealWeekHours').textContent = fmtTime(totalMins);
