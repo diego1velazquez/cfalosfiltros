@@ -98,6 +98,7 @@ function goTab(t) {
   if (t === 'eom')       eomInit();
   if (t === 'meals')     { renderMealPenalties(); populateEmployeeDropdowns(); }
   if (t === 'recon')     { initReconciliationUI(); renderReconReport(); }
+  if (t === 'catering')  cateringInit();
   if (t === 'writeups')  { wuRefreshEmpList(); wuLoadPendingQueue(); }
 }
 
@@ -5056,4 +5057,197 @@ function exportBPDebitsCSV() {
   a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
   a.download = 'bp_debits.csv';
   a.click();
+}
+
+// ══════════════════════════════════════════════════════════════════
+// CATERING TAB
+// ══════════════════════════════════════════════════════════════════
+
+let _cateringAllOrders = [];
+let _cateringFiltered  = [];
+let _cateringActiveId  = null;
+
+async function cateringInit() {
+  await cateringRefresh();
+}
+
+async function cateringRefresh() {
+  document.getElementById('cateringTableBody').innerHTML =
+    '<div style="padding:40px;text-align:center;color:var(--text-light)">Cargando órdenes...</div>';
+  try {
+    const { data, error } = await getSupa()
+      .from('catering_orders')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    _cateringAllOrders = data || [];
+    cateringApplyFilters();
+  } catch (err) {
+    document.getElementById('cateringTableBody').innerHTML =
+      `<div style="padding:40px;text-align:center;color:#dc2626">Error al cargar: ${err.message}</div>`;
+  }
+}
+
+function cateringApplyFilters() {
+  const dateF   = document.getElementById('cateringDateFilter').value;
+  const statusF = document.getElementById('cateringStatusFilter').value;
+  const now     = new Date();
+  const todayStr = now.toLocaleDateString('en-US', {
+    timeZone: 'America/Puerto_Rico', month:'2-digit', day:'2-digit', year:'numeric'
+  });
+
+  _cateringFiltered = _cateringAllOrders.filter(o => {
+    if (statusF !== 'all' && o.follow_up_status !== statusF) return false;
+    if (dateF === 'today') {
+      return (o.pickup_time || '').includes(todayStr) || (o.order_date || '') === todayStr;
+    }
+    if (dateF === 'week') {
+      const diff = (now - new Date(o.created_at)) / (1000 * 60 * 60 * 24);
+      return diff <= 7;
+    }
+    if (dateF === 'month') {
+      const d = new Date(o.created_at);
+      return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+    }
+    return true;
+  });
+
+  cateringRenderStats();
+  cateringRenderTable();
+}
+
+function cateringRenderStats() {
+  const all      = _cateringAllOrders;
+  const pending  = all.filter(o => o.follow_up_status === 'Pending').length;
+  const done     = all.filter(o => o.follow_up_status === 'Completed').length;
+  const todayStr = new Date().toLocaleDateString('en-US', {
+    timeZone: 'America/Puerto_Rico', month:'2-digit', day:'2-digit', year:'numeric'
+  });
+  const today = all.filter(o =>
+    (o.pickup_time || '').includes(todayStr) || (o.order_date || '') === todayStr
+  ).length;
+  document.getElementById('catStatTotal').textContent   = all.length;
+  document.getElementById('catStatPending').textContent = pending;
+  document.getElementById('catStatDone').textContent    = done;
+  document.getElementById('catStatToday').textContent   = today;
+}
+
+function cateringRenderTable() {
+  const tbody = document.getElementById('cateringTableBody');
+  if (_cateringFiltered.length === 0) {
+    tbody.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-light)">No hay órdenes que mostrar.</div>';
+    return;
+  }
+  tbody.innerHTML = _cateringFiltered.map(o => {
+    const isPending   = o.follow_up_status !== 'Completed';
+    const statusColor = isPending ? '#d97706' : '#16a34a';
+    const statusBg    = isPending ? '#fef3c7' : '#dcfce7';
+    const statusLabel = isPending ? 'Pendiente' : 'Completado';
+    const items       = (o.items || '—');
+    const itemsShort  = items.length > 45 ? items.substring(0,45)+'…' : items;
+    const pickup      = o.pickup_time || o.order_date || '—';
+    return `<div style="display:grid;grid-template-columns:110px 150px 130px 1fr 100px 130px 130px 60px;padding:12px 16px;border-bottom:1px solid var(--border);gap:8px;align-items:center;min-width:920px" onmouseenter="this.style.background='#f8fafc'" onmouseleave="this.style.background=''">
+      <div style="font-size:.8rem;color:var(--text-mid)">${pickup}</div>
+      <div style="font-size:.85rem;font-weight:600;color:var(--navy)">${o.guest_name||'—'}</div>
+      <div style="font-size:.8rem;color:var(--text-mid)">${o.phone||'—'}</div>
+      <div style="font-size:.78rem;color:var(--text-mid);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${items}">${itemsShort}</div>
+      <div style="font-size:.85rem;font-weight:700;color:var(--navy);text-align:right">${o.total_amount||'—'}</div>
+      <div style="font-size:.78rem;color:var(--text-mid);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${o.submitted_by||'—'}</div>
+      <div style="text-align:center"><span style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:.72rem;font-weight:700;background:${statusBg};color:${statusColor}">${statusLabel}</span></div>
+      <div style="text-align:center"><button onclick="cateringOpenModal('${o.id}')" style="padding:4px 10px;border:1.5px solid var(--navy);border-radius:6px;background:#fff;color:var(--navy);font-size:.75rem;font-weight:600;cursor:pointer">Ver</button></div>
+    </div>`;
+  }).join('');
+}
+
+function cateringOpenModal(id) {
+  const o = _cateringAllOrders.find(x => x.id === id);
+  if (!o) return;
+  _cateringActiveId = id;
+  const isPending   = o.follow_up_status !== 'Completed';
+  const statusColor = isPending ? '#d97706' : '#16a34a';
+  const statusLabel = isPending ? 'Pendiente' : 'Completado';
+  document.getElementById('cateringModalContent').innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+      <div style="background:#f8fafc;border-radius:10px;padding:12px">
+        <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:4px">Invitado</div>
+        <div style="font-weight:600;color:var(--navy)">${o.guest_name||'—'}</div>
+      </div>
+      <div style="background:#f8fafc;border-radius:10px;padding:12px">
+        <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:4px">Teléfono</div>
+        <div style="font-weight:600;color:var(--navy)">${o.phone||'—'}</div>
+      </div>
+      <div style="background:#f8fafc;border-radius:10px;padding:12px">
+        <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:4px">Hora de Recogido</div>
+        <div style="font-weight:600;color:var(--navy)">${o.pickup_time||'—'}</div>
+      </div>
+      <div style="background:#f8fafc;border-radius:10px;padding:12px">
+        <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:4px">Total</div>
+        <div style="font-weight:700;color:var(--navy);font-size:1rem">${o.total_amount||'—'}</div>
+      </div>
+    </div>
+    <div style="background:#f8fafc;border-radius:10px;padding:12px;margin-bottom:12px">
+      <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:6px">Ítems Pedidos</div>
+      <div style="font-size:.85rem;color:var(--text-mid);line-height:1.5">${o.items||'—'}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="background:#f8fafc;border-radius:10px;padding:12px">
+        <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:4px">Líder que registró</div>
+        <div style="font-size:.83rem;color:var(--text-mid)">${o.submitted_by||'—'}</div>
+      </div>
+      <div style="background:#f8fafc;border-radius:10px;padding:12px">
+        <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:4px">Estado</div>
+        <span style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:.75rem;font-weight:700;background:${isPending?'#fef3c7':'#dcfce7'};color:${statusColor}">${statusLabel}</span>
+      </div>
+    </div>
+    ${o.notes && o.notes !== 'N/A' ? `<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:12px;margin-top:12px"><div style="font-size:.7rem;font-weight:700;color:#1e40af;text-transform:uppercase;margin-bottom:4px">Notas Especiales</div><div style="font-size:.83rem;color:#1e40af">${o.notes}</div></div>` : ''}`;
+  document.getElementById('cateringDirectorNotes').value = o.director_notes || '';
+  const btn = document.getElementById('cateringCompleteBtn');
+  btn.textContent = isPending ? '✅ Marcar Completado' : '✅ Ya Completado';
+  btn.disabled    = !isPending;
+  btn.style.opacity = isPending ? '1' : '0.5';
+  om('cateringModal');
+}
+
+async function cateringSaveNotes() {
+  if (!_cateringActiveId) return;
+  const notes = document.getElementById('cateringDirectorNotes').value.trim();
+  try {
+    const { error } = await getSupa().from('catering_orders')
+      .update({ director_notes: notes }).eq('id', _cateringActiveId);
+    if (error) throw error;
+    const idx = _cateringAllOrders.findIndex(x => x.id === _cateringActiveId);
+    if (idx !== -1) _cateringAllOrders[idx].director_notes = notes;
+    alert('✅ Notas guardadas.');
+  } catch (err) { alert('Error: ' + err.message); }
+}
+
+async function cateringMarkComplete() {
+  if (!_cateringActiveId) return;
+  const notes = document.getElementById('cateringDirectorNotes').value.trim();
+  try {
+    const { error } = await getSupa().from('catering_orders')
+      .update({ follow_up_status: 'Completed', director_notes: notes })
+      .eq('id', _cateringActiveId);
+    if (error) throw error;
+    const idx = _cateringAllOrders.findIndex(x => x.id === _cateringActiveId);
+    if (idx !== -1) { _cateringAllOrders[idx].follow_up_status = 'Completed'; _cateringAllOrders[idx].director_notes = notes; }
+    cm('cateringModal');
+    cateringApplyFilters();
+    alert('✅ Seguimiento marcado como completado.');
+  } catch (err) { alert('Error: ' + err.message); }
+}
+
+function cateringExportCSV() {
+  const headers = ['Hora Recogido','Invitado','Teléfono','Ítems','Total','# Orden','Notas Especiales','Líder','Estado','Notas Director'];
+  const rows = _cateringFiltered.map(o =>
+    [o.pickup_time||'', o.guest_name||'', o.phone||'', o.items||'', o.total_amount||'',
+     o.order_number||'', o.notes||'', o.submitted_by||'', o.follow_up_status||'', o.director_notes||'']
+    .map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')
+  );
+  const csv  = [headers.join(','), ...rows].join('\n');
+  const blob = new Blob([csv], { type:'text/csv' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = `catering_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click(); URL.revokeObjectURL(url);
 }
