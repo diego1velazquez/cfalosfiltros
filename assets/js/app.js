@@ -2381,7 +2381,7 @@ function parseMealViolations(lines, filename) {
             const dur  = brk.outMin - brk.inMin;
             const hrIn = (brk.inMin - shift.inMin) / 60;
             if (dur < 30)   viols.push(`Break too short (${dur} min — minimum 30 min)`);
-            if (hrIn <= 2)  viols.push(`Break too early (hr ${hrIn.toFixed(1)} — must start after hour 2)`);
+            if (hrIn < 2)   viols.push(`Break too early (hr ${hrIn.toFixed(1)} — must start at or after hour 2)`);
             if (hrIn >= 6)  viols.push(`Break too late (hr ${hrIn.toFixed(1)} — must start before hour 6)`);
           }
         }
@@ -2711,12 +2711,46 @@ function parseMealTimeDetail(lines) {
     }
   }
 
+  // ── Merge consecutive same-day shifts split by unpaid breaks ──────────────
+  // The PDF parser creates a new shift entry for every Regular punch line.
+  // An unpaid break appears as a gap between two Regular entries — neither
+  // segment may individually exceed 6 hrs, so we must stitch them back into
+  // one continuous shift before running the meal-penalty check.
+  // Strategy: group by emp+date, sort by start time, merge segments that are
+  // within 90 min of each other (covers any reasonable unpaid break), carrying
+  // all break punches from merged segments into the surviving record.
+  const mergedShifts = [];
+  const dayMap = {}; // key: "empName|date"
+  for (const s of shifts) {
+    const key = `${s.empName}|${s.date}`;
+    if (!dayMap[key]) dayMap[key] = [];
+    dayMap[key].push(s);
+  }
+  for (const segs of Object.values(dayMap)) {
+    segs.sort((a, b) => toMin(a.shiftIn) - toMin(b.shiftIn));
+    const stack = [{ ...segs[0], breaks: [...segs[0].breaks] }];
+    for (let i = 1; i < segs.length; i++) {
+      const top  = stack[stack.length - 1];
+      const topOut = toMin(top.shiftOut);
+      const segIn  = toMin(segs[i].shiftIn);
+      // Gap ≤ 90 min → same continuous shift (unpaid break in between)
+      if (segIn - topOut <= 90) {
+        // Extend the window and absorb this segment's breaks
+        top.shiftOut = segs[i].shiftOut;
+        top.breaks.push(...segs[i].breaks);
+      } else {
+        stack.push({ ...segs[i], breaks: [...segs[i].breaks] });
+      }
+    }
+    mergedShifts.push(...stack);
+  }
+
   // ── Apply PR Act 379 violation logic ─────────────────────
   const violations = [];
   const compliant  = [];
   const violTypeCounts = {};
 
-  for (const s of shifts) {
+  for (const s of mergedShifts) {
     const ssMin = toMin(s.shiftIn);
     const seMin_raw = toMin(s.shiftOut);
     if (ssMin === null || seMin_raw === null || isNaN(ssMin) || isNaN(seMin_raw)) continue;
