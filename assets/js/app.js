@@ -1353,17 +1353,6 @@ function submitAddEmployee() {
 // ══════════════════════════════════════════
 
 
-function editEmployee(key) {
-  const emp = EMPLOYEES[key];
-  if (!emp) return;
-  const newStatus = emp.status === 'active' ? 'inactive' : 'active';
-  if (confirm(`Toggle ${emp.name} to ${newStatus}?`)) {
-    emp.status = newStatus;
-    saveToStorage();
-    recalculateAll();
-    updateEmployeesTab();
-  }
-}
 
 // ══════════════════════════════════════════
 // TIME-OFF REQUESTS — employee submit + admin approve/reject
@@ -2254,14 +2243,6 @@ function mealDeleteWeekEmp(empKey, weekStart, weekEnd) {
   showToast('🗑 Violations deleted.');
 }
 
-function deleteMealPenalty(id) {
-  if (!confirm('Delete this penalty record?')) return;
-  MEAL_PENALTIES = MEAL_PENALTIES.filter(p => p.id !== id);
-  saveMealData();
-  saveToCloud();           // ← persist to Supabase
-  renderMealPenalties();
-  showToast('🗑 Penalty record deleted.');
-}
 
 function clearAllMealPenalties() {
   if (!confirm('⚠️ This will delete ALL meal penalty records. Are you sure?')) return;
@@ -2306,187 +2287,18 @@ function saveMealData() {
 // ══════════════════════════════════════════════════════
 
 // ── Core parser ──────────────────────────────────────────
-function parseMealViolations(lines, filename) {
-  const PUNCH_RE = /^(\w+),\s+(\d{2}\/\d{2}\/\d{4})\s+(\d+:\d+\s*[ap])\s+(\d+:\d+\s*[ap])\s+(\d+:\d+)\s+(Regular|Break)/i;
-  const EMP_TOTALS_RE = /^Employee Totals/i;
-
-  // Reconstruct full-line strings from pdf.js tokens
-  // pdf.js returns individual tokens; punch rows span multiple tokens.
-  // We join consecutive tokens into candidate lines and test with regex.
-  const candidates = buildCandidateLines(lines);
-
-  // Group punches by employee
-  const empMap = {}; // empName → { date → { shifts:[], breaks:[] } }
-  let currentEmp = null;
-
-  for (const line of candidates) {
-    if (EMP_TOTALS_RE.test(line)) {
-      currentEmp = null;
-      continue;
-    }
-
-    const pm = PUNCH_RE.exec(line);
-    if (pm) {
-      const [, , date, timeIn, timeOut, , payType] = pm;
-      if (!currentEmp) continue;
-
-      if (!empMap[currentEmp]) empMap[currentEmp] = {};
-      if (!empMap[currentEmp][date]) empMap[currentEmp][date] = { shifts:[], breaks:[] };
-
-      const inMin  = parseTimeMin(timeIn);
-      const outMin = parseTimeOut(timeOut, inMin);
-
-      if (payType.toLowerCase() === 'regular') {
-        empMap[currentEmp][date].shifts.push({ inMin, outMin });
-      } else {
-        empMap[currentEmp][date].breaks.push({ inMin, outMin });
-      }
-      continue;
-    }
-
-    // If it's not a punch line and not a total line, check if it's an employee name
-    const possibleEmp = detectEmployeeName(line);
-    if (possibleEmp) currentEmp = possibleEmp;
-  }
-
-  // Now evaluate violations
-  const violations = [];
-  for (const [empName, dates] of Object.entries(empMap)) {
-    for (const [date, { shifts, breaks }] of Object.entries(dates)) {
-      // Sort and merge consecutive shifts (same day, touching)
-      shifts.sort((a,b) => a.inMin - b.inMin);
-      const merged = mergeShifts(shifts);
-
-      for (const shift of merged) {
-        const shiftHrs = (shift.outMin - shift.inMin) / 60;
-        if (shiftHrs <= 6) continue; // ≤6 hrs: no break required
-
-        // Find breaks within this shift window (with 5 min buffer)
-        const shiftBreaks = breaks.filter(b =>
-          b.inMin >= shift.inMin - 5 &&
-          b.outMin <= shift.outMin + 5
-        );
-
-        // Only qualifying breaks: ≥30 min
-        const mealBreaks = shiftBreaks.filter(b => (b.outMin - b.inMin) >= 30);
-
-        const viols = [];
-
-        if (mealBreaks.length === 0) {
-          // >6 hrs with no qualifying break = violation
-          viols.push(`No meal break (shift ${shiftHrs.toFixed(1)} hrs — 30-min break required before hour 6)`);
-        } else {
-          // Break must START after hour 3 and before hour 6 of the shift
-          for (const brk of mealBreaks) {
-            const dur  = brk.outMin - brk.inMin;
-            const hrIn = (brk.inMin - shift.inMin) / 60;
-            if (dur < 30)   viols.push(`Break too short (${dur} min — minimum 30 min)`);
-            if (hrIn < 2)   viols.push(`Break too early (hr ${hrIn.toFixed(1)} — must start at or after hour 2)`);
-            if (hrIn >= 6)  viols.push(`Break too late (hr ${hrIn.toFixed(1)} — must start before hour 6)`);
-          }
-        }
-
-        if (viols.length > 0) {
-          const firstBreak = mealBreaks[0];
-          violations.push({
-            id:             `${empName}|${date}|${shift.inMin}`,
-            empName,
-            empKey:         empName,
-            date,
-            shiftStart:     minToTimeStr(shift.inMin),
-            shiftEnd:       minToTimeStr(shift.outMin),
-            shiftHours:     +shiftHrs.toFixed(2),
-            breakStart:     firstBreak ? minToTimeStr(firstBreak.inMin) : '',
-            breakEnd:       firstBreak ? minToTimeStr(firstBreak.outMin) : '',
-            breakDuration:  firstBreak ? (firstBreak.outMin - firstBreak.inMin) : 0,
-            violationTypes: viols,
-            rate:           0,
-            penaltyAmount:  0,
-            notes:          `Imported from ${filename}`,
-            loggedAt:       new Date().toISOString()
-          });
-        }
-      }
-    }
-  }
-
-  return violations;
-}
 
 // ── Helper: build candidate lines from pdf.js token stream ─
-function buildCandidateLines(tokens) {
-  // pdf.js gives us tokens like: "Mon,", "02/16/2026", "7:31", "a", "3:04", "p", ...
-  // We need to reassemble them. Strategy: sliding window join
-  const lines = [];
-  const joined = tokens.join(' ');
-  // Split on employee totals and name patterns
-  const rawLines = joined.split(/(?=Employee Totals|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+\d{2}\/\d{2}\/\d{4})/);
-  for (const l of rawLines) {
-    lines.push(l.trim());
-  }
-  // Also add individual tokens for name detection
-  for (const t of tokens) {
-    lines.push(t);
-  }
-  return lines;
-}
 
 // ── Helper: detect employee name lines ──────────────────────
-function detectEmployeeName(line) {
-  // Employee names look like: "Lastname Lastname, Firstname Middle" 
-  // They contain a comma, no date pattern, no pay type keywords
-  if (!line || line.length < 4) return null;
-  if (/\d{2}\/\d{2}\/\d{4}/.test(line)) return null;
-  if (/Regular|Break|Totals|Punch|clock|Page \d/i.test(line)) return null;
-  if (/From |through |FSU|Los Filtros|Employee Time Detail/i.test(line)) return null;
-  // Must contain a comma (Last, First format) or look like a proper name
-  if (/^[A-ZÀ-Ü][a-zà-ü\s\-]+,\s+[A-ZÀ-Ü]/.test(line)) return line.trim();
-  return null;
-}
 
 // ── Helper: merge overlapping/touching shifts ───────────────
-function mergeShifts(shifts) {
-  if (!shifts.length) return [];
-  const merged = [{ ...shifts[0] }];
-  for (let i = 1; i < shifts.length; i++) {
-    const last = merged[merged.length - 1];
-    // If shifts are within 30 min of each other, merge (split shifts)
-    if (shifts[i].inMin <= last.outMin + 30) {
-      last.outMin = Math.max(last.outMin, shifts[i].outMin);
-    } else {
-      merged.push({ ...shifts[i] });
-    }
-  }
-  return merged;
-}
 
 // ── Helper: parse time string to minutes ───────────────────
-function parseTimeMin(t) {
-  const m = t.trim().match(/(\d+):(\d+)\s*([ap])/i);
-  if (!m) return 0;
-  let h = parseInt(m[1]), mi = parseInt(m[2]);
-  const ampm = m[3].toLowerCase();
-  if (ampm === 'p' && h !== 12) h += 12;
-  if (ampm === 'a' && h === 12) h = 0;
-  return h * 60 + mi;
-}
 
 // ── Helper: parse time out (handle overnight) ──────────────
-function parseTimeOut(t, inMin) {
-  let out = parseTimeMin(t);
-  // If out < in, shift crosses midnight
-  if (out < inMin) out += 24 * 60;
-  return out;
-}
 
 // ── Helper: convert minutes to HH:MM ──────────────────────
-function minToTimeStr(min) {
-  const h = Math.floor(min / 60) % 24;
-  const m = min % 60;
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
-  return `${h12}:${String(m).padStart(2,'0')} ${ampm}`;
-}
 
 
 // ══════════════════════════════════════════════════════════
@@ -4280,16 +4092,6 @@ function wuRenderHistory(records) {
   const lc0=LC[records[0].level]||LC.verbal; statusEl.innerHTML=`<span class="badge" style="background:${lc0.bg};color:${lc0.color}">Última: ${WU.LEVELS[records[0].level]||records[0].level}</span>`;
   listEl.innerHTML='<div style="display:flex;flex-direction:column;gap:8px">'+records.map(r=>{const lc=LC[r.level]||LC.verbal;const d=r.date?new Date(r.date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'short',day:'numeric'}):'';return`<div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden"><div style="display:flex;align-items:center;gap:10px;padding:9px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;flex-wrap:wrap"><span class="badge" style="background:${lc.bg};color:${lc.color}">${WU.LEVELS[r.level]||r.level}</span><span style="font-size:.82rem;color:var(--text-mid)">${d}</span>${r.shift?`<span style="font-size:.82rem;color:var(--text-mid)">🕐 ${r.shift}</span>`:''}<span style="font-size:.82rem;color:var(--text-mid);margin-left:auto">${r.category||''}</span></div><div style="padding:10px 14px;font-size:.82rem;line-height:1.5;color:#374151">${(r.incident||'').substring(0,200)}${(r.incident||'').length>200?'…':''}</div></div>`;}).join('')+'</div>';
 }
-function wuDeleteAllConfirm() {
-  if(!WU.currentEmpKey||!WU.currentEmpName)return;
-  if(!WU.currentRecords.length){alert('Este empleado no tiene amonestaciones registradas.');return;}
-  const first=confirm(`⚠️ ¿Está seguro que desea eliminar TODAS las amonestaciones de ${WU.currentEmpName}?\n\nSe eliminarán ${WU.currentRecords.length} registro(s). Esta acción NO se puede deshacer.`);
-  if(!first)return;
-  const typed=prompt(`VERIFICACIÓN FINAL\n\nEscriba exactamente el nombre del empleado:\n\n"${WU.currentEmpName}"`);
-  if(typed===null)return;
-  if(typed.trim()!==WU.currentEmpName.trim()){alert('❌ El nombre no coincide. No se eliminaron los registros.');return;}
-  WU.deleteAllRecords(WU.currentEmpKey).then(()=>{WU.currentRecords=[];wuRenderHistory([]);document.getElementById('wuFormPanel').style.display='none';document.getElementById('wuAIOutput').style.display='none';alert(`✅ Se eliminaron todos los registros de ${WU.currentEmpName}.`);}).catch(err=>alert('Error: '+err.message));
-}
 function wuOpenNewForm() {
   // If employee not set via dropdown change, try reading it directly now
   if(!WU.currentEmpKey) {
@@ -5180,13 +4982,12 @@ function cateringRenderTable() {
     const items       = (o.items || '—');
     const itemsShort  = items.length > 45 ? items.substring(0,45)+'…' : items;
     const pickup      = o.pickup_time || o.order_date || '—';
-    return `<div style="display:grid;grid-template-columns:110px 150px 130px 1fr 100px 130px 130px 60px;padding:12px 16px;border-bottom:1px solid var(--border);gap:8px;align-items:center;min-width:920px" onmouseenter="this.style.background='#f8fafc'" onmouseleave="this.style.background=''">
+    return `<div style="display:grid;grid-template-columns:110px 150px 130px 1fr 100px 130px 60px;padding:12px 16px;border-bottom:1px solid var(--border);gap:8px;align-items:center;min-width:780px" onmouseenter="this.style.background='#f8fafc'" onmouseleave="this.style.background=''">
       <div style="font-size:.8rem;color:var(--text-mid)">${pickup}</div>
       <div style="font-size:.85rem;font-weight:600;color:var(--navy)">${o.guest_name||'—'}</div>
       <div style="font-size:.8rem;color:var(--text-mid)">${o.phone||'—'}</div>
       <div style="font-size:.78rem;color:var(--text-mid);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${items}">${itemsShort}</div>
       <div style="font-size:.85rem;font-weight:700;color:var(--navy);text-align:right">${o.total_amount||'—'}</div>
-      <div style="font-size:.78rem;color:var(--text-mid);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${o.submitted_by||'—'}</div>
       <div style="text-align:center"><span style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:.72rem;font-weight:700;background:${statusBg};color:${statusColor}">${statusLabel}</span></div>
       <div style="text-align:center"><button onclick="cateringOpenModal('${o.id}')" style="padding:4px 10px;border:1.5px solid var(--navy);border-radius:6px;background:#fff;color:var(--navy);font-size:.75rem;font-weight:600;cursor:pointer">Ver</button></div>
     </div>`;
@@ -5223,11 +5024,7 @@ function cateringOpenModal(id) {
       <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:6px">Ítems Pedidos</div>
       <div style="font-size:.85rem;color:var(--text-mid);line-height:1.5">${o.items||'—'}</div>
     </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      <div style="background:#f8fafc;border-radius:10px;padding:12px">
-        <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:4px">Líder que registró</div>
-        <div style="font-size:.83rem;color:var(--text-mid)">${o.submitted_by||'—'}</div>
-      </div>
+    <div style="display:grid;grid-template-columns:1fr;gap:12px">
       <div style="background:#f8fafc;border-radius:10px;padding:12px">
         <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:4px">Estado</div>
         <span style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:.75rem;font-weight:700;background:${isPending?'#fef3c7':'#dcfce7'};color:${statusColor}">${statusLabel}</span>
@@ -5236,7 +5033,7 @@ function cateringOpenModal(id) {
     ${o.notes && o.notes !== 'N/A' ? `<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:12px;margin-top:12px"><div style="font-size:.7rem;font-weight:700;color:#1e40af;text-transform:uppercase;margin-bottom:4px">Notas Especiales</div><div style="font-size:.83rem;color:#1e40af">${o.notes}</div></div>` : ''}`;
   document.getElementById('cateringDirectorNotes').value = o.director_notes || '';
   const btn = document.getElementById('cateringCompleteBtn');
-  btn.textContent = isPending ? '✅ Marcar Completado' : '✅ Ya Completado';
+  btn.textContent = isPending ? 'Marcar Completado' : 'Ya Completado';
   btn.disabled    = !isPending;
   btn.style.opacity = isPending ? '1' : '0.5';
   om('cateringModal');
@@ -5251,7 +5048,7 @@ async function cateringSaveNotes() {
     if (error) throw error;
     const idx = _cateringAllOrders.findIndex(x => x.id === _cateringActiveId);
     if (idx !== -1) _cateringAllOrders[idx].director_notes = notes;
-    alert('✅ Notas guardadas.');
+    alert('Notas guardadas.');
   } catch (err) { alert('Error: ' + err.message); }
 }
 
@@ -5267,15 +5064,15 @@ async function cateringMarkComplete() {
     if (idx !== -1) { _cateringAllOrders[idx].follow_up_status = 'Completed'; _cateringAllOrders[idx].director_notes = notes; }
     cm('cateringModal');
     cateringApplyFilters();
-    alert('✅ Seguimiento marcado como completado.');
+    alert('Seguimiento marcado como completado.');
   } catch (err) { alert('Error: ' + err.message); }
 }
 
 function cateringExportCSV() {
-  const headers = ['Hora Recogido','Invitado','Teléfono','Ítems','Total','# Orden','Notas Especiales','Líder','Estado','Notas Director'];
+  const headers = ['Hora Recogido','Invitado','Teléfono','Ítems','Total','# Orden','Notas Especiales','Estado','Notas Director'];
   const rows = _cateringFiltered.map(o =>
     [o.pickup_time||'', o.guest_name||'', o.phone||'', o.items||'', o.total_amount||'',
-     o.order_number||'', o.notes||'', o.submitted_by||'', o.follow_up_status||'', o.director_notes||'']
+     o.order_number||'', o.notes||'', o.follow_up_status||'', o.director_notes||'']
     .map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')
   );
   const csv  = [headers.join(','), ...rows].join('\n');
