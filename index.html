@@ -348,6 +348,12 @@
               <div class="cached-note">✓ No file cached — upload to add</div>
             </div>
             <div class="file-slot">
+              <h4>Amazon Business Statement</h4>
+              <p>Amazon Business credit card activity (CSV)</p>
+              <input type="file" accept=".csv"/>
+              <div class="cached-note">✓ No file cached — upload to add</div>
+            </div>
+            <div class="file-slot">
               <h4>Banco Popular Statement</h4>
               <p>Bank statement CSV — debits (money out) only. Credits/deposits are ignored.</p>
               <input type="file" accept=".csv" id="bpStatementFile" onchange="handleBPStatement(this.files[0])"/>
@@ -440,7 +446,7 @@
           <div class="cc-summary">
             <div class="cc-card blue"><div class="cc-name">AMEX Platinum ••••</div><div class="cc-amt">$0.00</div><div class="cc-sub">0 charges</div></div>
             <div class="cc-card green"><div class="cc-name">Chase Ink Premiere ••••</div><div class="cc-amt">$0.00</div><div class="cc-sub">0 charges</div></div>
-            <div class="cc-card orange"><div class="cc-name">CC3 ••••</div><div class="cc-amt">$0.00</div><div class="cc-sub">0 charges</div></div>
+            <div class="cc-card orange"><div class="cc-name">Amazon Business ••••</div><div class="cc-amt">$0.00</div><div class="cc-sub">0 charges</div></div>
           </div>
           <div class="recon-tabs">
             <div class="rtab active" onclick="switchRtab(this,'rRecon')">Reconciliation <span class="rtab-count">0</span></div>
@@ -650,16 +656,17 @@
     </div>
     <div style="background:#fff;border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:20px">
       <div style="overflow-x:auto">
-        <div style="display:grid;grid-template-columns:110px 150px 130px 1fr 100px 130px 60px;padding:10px 16px;border-bottom:1px solid var(--border);background:#f8fafc;gap:8px;min-width:920px">
+        <div style="display:grid;grid-template-columns:110px 150px 130px 1fr 100px 120px 130px 60px;padding:10px 16px;border-bottom:1px solid var(--border);background:#f8fafc;gap:8px;min-width:900px">
           <span style="font-size:.72rem;font-weight:700;color:var(--text-light);text-transform:uppercase">Recogido</span>
           <span style="font-size:.72rem;font-weight:700;color:var(--text-light);text-transform:uppercase">Invitado</span>
           <span style="font-size:.72rem;font-weight:700;color:var(--text-light);text-transform:uppercase">Teléfono</span>
           <span style="font-size:.72rem;font-weight:700;color:var(--text-light);text-transform:uppercase">Ítems</span>
           <span style="font-size:.72rem;font-weight:700;color:var(--text-light);text-transform:uppercase;text-align:right">Total</span>
+          <span style="font-size:.72rem;font-weight:700;color:var(--text-light);text-transform:uppercase;text-align:center">Tipo</span>
           <span style="font-size:.72rem;font-weight:700;color:var(--text-light);text-transform:uppercase;text-align:center">Estado</span>
           <span style="font-size:.72rem;font-weight:700;color:var(--text-light);text-transform:uppercase;text-align:center">Ver</span>
         </div>
-        <div id="cateringTableBody" style="min-width:780px">
+        <div id="cateringTableBody" style="min-width:900px">
           <div style="padding:40px;text-align:center;color:var(--text-light)">Cargando órdenes...</div>
         </div>
       </div>
@@ -763,16 +770,28 @@
   <div class="modal" style="max-width:560px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
       <h3 style="margin:0;color:var(--navy)">Detalle de Orden</h3>
-      <button class="btn btn-sm" onclick="cm('cateringModal')">✕ Cerrar</button>
+      <button class="btn btn-sm" onclick="cm('cateringModal')">Cerrar</button>
     </div>
     <div id="cateringModalContent" style="font-size:.88rem;color:var(--text-mid)"></div>
     <div style="margin-top:20px">
+      <label style="font-size:.8rem;font-weight:700;color:var(--navy);display:block;margin-bottom:6px">Tipo de Orden</label>
+      <select id="cateringOrderType" style="width:100%;padding:10px;border:1.5px solid var(--border);border-radius:8px;font-size:.85rem;color:var(--navy);background:#fff;box-sizing:border-box">
+        <option value="">Seleccionar tipo...</option>
+        <option value="Personal/Familiar">Personal / Familiar</option>
+        <option value="Negocio">Negocio</option>
+        <option value="Escuela">Escuela</option>
+        <option value="Iglesia">Iglesia</option>
+        <option value="Gobierno">Gobierno</option>
+        <option value="Otro">Otro</option>
+      </select>
+    </div>
+    <div style="margin-top:16px">
       <label style="font-size:.8rem;font-weight:700;color:var(--navy);display:block;margin-bottom:6px">Notas del Director</label>
-      <textarea id="cateringDirectorNotes" rows="3" style="width:100%;padding:10px;border:1.5px solid var(--border);border-radius:8px;font-size:.85rem;font-family:inherit;resize:vertical;box-sizing:border-box" placeholder="Ej: Llamé al invitado, confirmó satisfacción..."></textarea>
+      <textarea id="cateringDirectorNotes" rows="6" style="width:100%;padding:10px;border:1.5px solid var(--border);border-radius:8px;font-size:.85rem;font-family:inherit;resize:vertical;box-sizing:border-box" placeholder="Ej: Llamé al invitado, confirmó satisfacción..."></textarea>
     </div>
     <div style="display:flex;gap:10px;margin-top:16px">
       <button class="btn btn-navy" onclick="cateringSaveNotes()" style="flex:1">Guardar Notas</button>
-      <button class="btn" onclick="cateringMarkComplete()" style="flex:1;border-color:#16a34a;color:#16a34a" id="cateringCompleteBtn">Marcar Completado</button>
+      <button class="btn" onclick="cateringToggleStatus()" style="flex:1;border-color:#16a34a;color:#16a34a" id="cateringCompleteBtn">Marcar Completado</button>
     </div>
   </div>
 </div>

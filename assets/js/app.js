@@ -134,6 +134,7 @@ const RECON_DATA = {
   bank: [],
   amex: [],
   chase: [],
+  amazon: [],
   allCC: [],
   matches: [],
   unmatchedExternal: [],
@@ -507,7 +508,8 @@ async function handleReconUpload(kind, files) {
   if (kind === 'bank') RECON_DATA.bank = uploaded;
   if (kind === 'amex') RECON_DATA.amex = uploaded;
   if (kind === 'chase') RECON_DATA.chase = uploaded;
-  RECON_DATA.allCC = [...RECON_DATA.amex, ...RECON_DATA.chase];
+  if (kind === 'amazon') RECON_DATA.amazon = uploaded;
+  RECON_DATA.allCC = [...RECON_DATA.amex, ...RECON_DATA.chase, ...RECON_DATA.amazon];
   RECON_DATA.lastRunAt = null;
   RECON_DATA.matches = [];
   RECON_DATA.unmatchedExternal = [];
@@ -520,7 +522,7 @@ function initReconciliationUI() {
   const page = document.getElementById('p-recon');
   if (!page) return;
   const slots = page.querySelectorAll('.file-slot input[type="file"]');
-  if (slots.length < 4) return;
+  if (slots.length < 5) return;
 
   const notes = page.querySelectorAll('.cached-note');
   const runBtn = page.querySelector('.ccard-top .btn.btn-red2');
@@ -539,8 +541,12 @@ function initReconciliationUI() {
     if (notes[1]) notes[1].textContent = `✓ ${RECON_DATA.chase.length} rows cached`;
   });
   slots[3].addEventListener('change', async (e) => {
+    await handleReconUpload('amazon', e.target.files);
+    if (notes[2]) notes[2].textContent = `✓ ${RECON_DATA.amazon.length} rows cached`;
+  });
+  slots[4].addEventListener('change', async (e) => {
     await handleReconUpload('bank', e.target.files);
-    if (notes[2]) notes[2].textContent = `✓ ${RECON_DATA.bank.length} rows cached`;
+    if (notes[3]) notes[3].textContent = `✓ ${RECON_DATA.bank.length} rows cached`;
   });
 
   if (runBtn) runBtn.addEventListener('click', runReconciliation);
@@ -4968,6 +4974,12 @@ function cateringRenderStats() {
   document.getElementById('catStatToday').textContent   = today;
 }
 
+const CATERING_NOTES_TEMPLATE =
+  '¿Cómo estuvo la experiencia en general?\n\n' +
+  '¿Llegó la orden completa y a tiempo?\n\n' +
+  '¿Hubo algún problema con la comida o el servicio?\n\n' +
+  '¿Le interesaría volver a ordenar o tiene un evento próximo?\n\n';
+
 function cateringRenderTable() {
   const tbody = document.getElementById('cateringTableBody');
   if (_cateringFiltered.length === 0) {
@@ -4982,12 +4994,16 @@ function cateringRenderTable() {
     const items       = (o.items || '—');
     const itemsShort  = items.length > 45 ? items.substring(0,45)+'…' : items;
     const pickup      = o.pickup_time || o.order_date || '—';
-    return `<div style="display:grid;grid-template-columns:110px 150px 130px 1fr 100px 130px 60px;padding:12px 16px;border-bottom:1px solid var(--border);gap:8px;align-items:center;min-width:780px" onmouseenter="this.style.background='#f8fafc'" onmouseleave="this.style.background=''">
+    const typeCell    = o.order_type
+      ? `<span style="display:inline-block;padding:3px 9px;border-radius:20px;font-size:.7rem;font-weight:700;background:#eef2ff;color:#4338ca">${o.order_type}</span>`
+      : '<span style="color:var(--text-light);font-size:.78rem">—</span>';
+    return `<div style="display:grid;grid-template-columns:110px 150px 130px 1fr 100px 120px 130px 60px;padding:12px 16px;border-bottom:1px solid var(--border);gap:8px;align-items:center;min-width:900px" onmouseenter="this.style.background='#f8fafc'" onmouseleave="this.style.background=''">
       <div style="font-size:.8rem;color:var(--text-mid)">${pickup}</div>
       <div style="font-size:.85rem;font-weight:600;color:var(--navy)">${o.guest_name||'—'}</div>
       <div style="font-size:.8rem;color:var(--text-mid)">${o.phone||'—'}</div>
       <div style="font-size:.78rem;color:var(--text-mid);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${items}">${itemsShort}</div>
       <div style="font-size:.85rem;font-weight:700;color:var(--navy);text-align:right">${o.total_amount||'—'}</div>
+      <div style="text-align:center">${typeCell}</div>
       <div style="text-align:center"><span style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:.72rem;font-weight:700;background:${statusBg};color:${statusColor}">${statusLabel}</span></div>
       <div style="text-align:center"><button onclick="cateringOpenModal('${o.id}')" style="padding:4px 10px;border:1.5px solid var(--navy);border-radius:6px;background:#fff;color:var(--navy);font-size:.75rem;font-weight:600;cursor:pointer">Ver</button></div>
     </div>`;
@@ -5031,48 +5047,71 @@ function cateringOpenModal(id) {
       </div>
     </div>
     ${o.notes && o.notes !== 'N/A' ? `<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:12px;margin-top:12px"><div style="font-size:.7rem;font-weight:700;color:#1e40af;text-transform:uppercase;margin-bottom:4px">Notas Especiales</div><div style="font-size:.83rem;color:#1e40af">${o.notes}</div></div>` : ''}`;
-  document.getElementById('cateringDirectorNotes').value = o.director_notes || '';
+  document.getElementById('cateringDirectorNotes').value =
+    (o.director_notes && o.director_notes.trim()) ? o.director_notes : CATERING_NOTES_TEMPLATE;
+  document.getElementById('cateringOrderType').value = o.order_type || '';
   const btn = document.getElementById('cateringCompleteBtn');
-  btn.textContent = isPending ? 'Marcar Completado' : 'Ya Completado';
-  btn.disabled    = !isPending;
-  btn.style.opacity = isPending ? '1' : '0.5';
+  btn.disabled = false;
+  btn.style.opacity = '1';
+  if (isPending) {
+    btn.textContent = 'Marcar Completado';
+    btn.style.borderColor = '#16a34a';
+    btn.style.color = '#16a34a';
+  } else {
+    btn.textContent = 'Marcar como Pendiente';
+    btn.style.borderColor = '#d97706';
+    btn.style.color = '#d97706';
+  }
   om('cateringModal');
 }
 
 async function cateringSaveNotes() {
   if (!_cateringActiveId) return;
   const notes = document.getElementById('cateringDirectorNotes').value.trim();
+  const orderType = document.getElementById('cateringOrderType').value;
   try {
     const { error } = await getSupa().from('catering_orders')
-      .update({ director_notes: notes }).eq('id', _cateringActiveId);
+      .update({ director_notes: notes, order_type: orderType }).eq('id', _cateringActiveId);
     if (error) throw error;
     const idx = _cateringAllOrders.findIndex(x => x.id === _cateringActiveId);
-    if (idx !== -1) _cateringAllOrders[idx].director_notes = notes;
+    if (idx !== -1) { _cateringAllOrders[idx].director_notes = notes; _cateringAllOrders[idx].order_type = orderType; }
+    cateringApplyFilters();
     alert('Notas guardadas.');
   } catch (err) { alert('Error: ' + err.message); }
 }
 
-async function cateringMarkComplete() {
+async function cateringSetStatus(newStatus) {
   if (!_cateringActiveId) return;
   const notes = document.getElementById('cateringDirectorNotes').value.trim();
+  const orderType = document.getElementById('cateringOrderType').value;
   try {
     const { error } = await getSupa().from('catering_orders')
-      .update({ follow_up_status: 'Completed', director_notes: notes })
+      .update({ follow_up_status: newStatus, director_notes: notes, order_type: orderType })
       .eq('id', _cateringActiveId);
     if (error) throw error;
     const idx = _cateringAllOrders.findIndex(x => x.id === _cateringActiveId);
-    if (idx !== -1) { _cateringAllOrders[idx].follow_up_status = 'Completed'; _cateringAllOrders[idx].director_notes = notes; }
+    if (idx !== -1) {
+      _cateringAllOrders[idx].follow_up_status = newStatus;
+      _cateringAllOrders[idx].director_notes   = notes;
+      _cateringAllOrders[idx].order_type       = orderType;
+    }
     cm('cateringModal');
     cateringApplyFilters();
-    alert('Seguimiento marcado como completado.');
+    alert(newStatus === 'Completed' ? 'Seguimiento marcado como completado.' : 'Orden marcada como pendiente.');
   } catch (err) { alert('Error: ' + err.message); }
 }
 
+function cateringToggleStatus() {
+  const o = _cateringAllOrders.find(x => x.id === _cateringActiveId);
+  if (!o) return;
+  cateringSetStatus(o.follow_up_status === 'Completed' ? 'Pending' : 'Completed');
+}
+
 function cateringExportCSV() {
-  const headers = ['Hora Recogido','Invitado','Teléfono','Ítems','Total','# Orden','Notas Especiales','Estado','Notas Director'];
+  const headers = ['Hora Recogido','Invitado','Teléfono','Ítems','Total','# Orden','Tipo','Notas Especiales','Estado','Notas Director'];
   const rows = _cateringFiltered.map(o =>
     [o.pickup_time||'', o.guest_name||'', o.phone||'', o.items||'', o.total_amount||'',
-     o.order_number||'', o.notes||'', o.follow_up_status||'', o.director_notes||'']
+     o.order_number||'', o.order_type||'', o.notes||'', o.follow_up_status||'', o.director_notes||'']
     .map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')
   );
   const csv  = [headers.join(','), ...rows].join('\n');
