@@ -493,23 +493,20 @@ async function handleReconUpload(kind, files) {
   for (const file of Array.from(files)) {
     const ext = (file.name.split('.').pop() || '').toLowerCase();
 
-    // Chase: accept PDF (native parser) or CSV (generic parser)
-    if (kind === 'chase') {
-      if (ext === 'pdf') {
-        try {
-          const txns = await parseChaseStatementPDF(file);
-          if (!txns.length) {
-            alert(`No transactions found in "${file.name}". Make sure this is a Chase Ink Premier statement PDF.`);
-          }
-          uploaded.push(...txns);
-        } catch (err) {
-          alert(`Error parsing Chase PDF "${file.name}": ${err.message}`);
+    // Chase: PDF statement (native parser) or CSV (generic parser)
+    if (kind === 'chase' && ext === 'pdf') {
+      try {
+        const txns = await parseChaseStatementPDF(file);
+        if (!txns.length) {
+          alert(`No charges found in "${file.name}". Make sure this is a Chase Ink statement PDF.`);
+        } else {
+          showToast(`✅ Chase PDF loaded — ${txns.length} charges parsed.`);
         }
-        continue;
-      } else if (ext !== 'csv') {
-        alert(`Chase upload accepts PDF or CSV. "${file.name}" is neither.`);
-        continue;
+        uploaded.push(...txns);
+      } catch (err) {
+        alert(`Error parsing Chase PDF: ${err.message}`);
       }
+      continue;
     }
 
     if (kind === 'amex' && ext !== 'csv') {
@@ -792,14 +789,8 @@ function updateDashboard() {
 // ══════════════════════════════════════════
 // PDF PARSER — Chase Ink Premier Statement
 // ══════════════════════════════════════════
-// Handles the Chase Ink Premier PDF statement format.
-// Transaction data lives on the ACCOUNT ACTIVITY page with columns:
-//   MM/DD   Merchant Name or Transaction Description   $Amount
-// Payments ("Payment Thank You") are negative and are skipped.
-// Year is resolved from the "Opening/Closing Date: MM/DD/YY - MM/DD/YY" header.
 
 async function parseChaseStatementPDF(file) {
-  // Load pdf.js if not already present
   if (typeof pdfjsLib === 'undefined') {
     await new Promise((res, rej) => {
       const s = document.createElement('script');
@@ -814,45 +805,41 @@ async function parseChaseStatementPDF(file) {
   const ab  = await file.arrayBuffer();
   const pdf = await window.pdfjsLib.getDocument({ data: ab }).promise;
 
-  // ── Extract all text tokens across all pages ──────────────
+  // Extract all text, grouping tokens by Y position to reconstruct lines
   let fullText = '';
   for (let p = 1; p <= pdf.numPages; p++) {
-    const page  = await pdf.getPage(p);
-    const tc    = await page.getTextContent();
-    // Join tokens; preserve line breaks by grouping by Y position
-    const byY = {};
+    const page = await pdf.getPage(p);
+    const tc   = await page.getTextContent();
+    const byY  = {};
     for (const item of tc.items) {
       const y = Math.round(item.transform[5]);
       if (!byY[y]) byY[y] = [];
       byY[y].push(item.str);
     }
-    const ys = Object.keys(byY).map(Number).sort((a, b) => b - a); // top-to-bottom
+    const ys = Object.keys(byY).map(Number).sort((a, b) => b - a);
     for (const y of ys) fullText += byY[y].join(' ') + '\n';
     fullText += '\n';
   }
 
-  // ── Resolve year from "Opening/Closing Date: MM/DD/YY - MM/DD/YY" ──
+  // Resolve statement year from "Opening/Closing Date: MM/DD/YY - MM/DD/YY"
   let statYear = new Date().getFullYear();
-  const periodMatch = fullText.match(/Opening\/Closing Date:\s*(\d{2}\/\d{2}\/(\d{2,4}))/i);
+  let closingMonth = new Date().getMonth() + 1;
+  const periodMatch = fullText.match(/Opening\/Closing Date:\s*(\d{2})\/(\d{2})\/(\d{2,4})\s*-\s*(\d{2})\/(\d{2})\/(\d{2,4})/i);
   if (periodMatch) {
-    const rawYear = periodMatch[2];
-    statYear = rawYear.length === 2 ? 2000 + parseInt(rawYear) : parseInt(rawYear);
+    const rawYear = periodMatch[6];
+    statYear      = rawYear.length === 2 ? 2000 + parseInt(rawYear) : parseInt(rawYear);
+    closingMonth  = parseInt(periodMatch[4]);
   }
 
-  // ── Parse transaction rows ────────────────────────────────
-  // Pattern: line starts with MM/DD (optional spaces/bullet) then description then amount
-  // Amount may be negative (payments/credits) or positive (charges)
+  // Parse transaction lines: MM/DD  Description  Amount
   const txnRe = /^(\d{2}\/\d{2})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})\s*$/;
   const lines  = fullText.split('\n');
-
-  // Find the ACCOUNT ACTIVITY section boundaries
   let inActivity = false;
   const txns = [];
 
   for (const rawLine of lines) {
     const line = rawLine.trim();
-
-    if (/ACCOUNT ACTIVITY/i.test(line)) { inActivity = true; continue; }
+    if (/ACCOUNT ACTIVITY/i.test(line))                     { inActivity = true;  continue; }
     if (/INTEREST CHARGES|Year-to-date totals/i.test(line)) { inActivity = false; }
     if (!inActivity) continue;
 
@@ -861,18 +848,10 @@ async function parseChaseStatementPDF(file) {
 
     const [, datePart, desc, amtRaw] = m;
     const amount = parseFloat(amtRaw.replace(/[$,]/g, ''));
-
-    // Skip payments and credits (negative amounts)
     if (amount <= 0) continue;
-    // Skip fee/interest summary lines
     if (/Total fees|Total interest/i.test(desc)) continue;
 
-    // Resolve full date: MM/DD + statement year
-    // If month > closing month by >3, it's probably prior year
     const [mm, dd] = datePart.split('/').map(Number);
-    const closingMonth = periodMatch
-      ? parseInt(periodMatch[1].split('/')[0])
-      : new Date().getMonth() + 1;
     const year = mm > closingMonth + 3 ? statYear - 1 : statYear;
     const date = new Date(year, mm - 1, dd);
 
