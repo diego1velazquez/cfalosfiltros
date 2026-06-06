@@ -789,6 +789,11 @@ function updateDashboard() {
 // ══════════════════════════════════════════
 // PDF PARSER — Chase Ink Premier Statement
 // ══════════════════════════════════════════
+// The Chase statement PDF uses a doubled-character font for section headers
+// (e.g. "AACCCCOOUUNNTT AACCTTIIVVIITTYY") so we cannot rely on matching
+// "ACCOUNT ACTIVITY" directly. Instead we detect the start of transactions
+// by finding the "Merchant Name or Transaction Description" header line,
+// and stop at the "DIEGO VELAZQUEZ" footer or "Year-to-Date" summary.
 
 async function parseChaseStatementPDF(file) {
   if (typeof pdfjsLib === 'undefined') {
@@ -805,7 +810,7 @@ async function parseChaseStatementPDF(file) {
   const ab  = await file.arrayBuffer();
   const pdf = await window.pdfjsLib.getDocument({ data: ab }).promise;
 
-  // Extract all text, grouping tokens by Y position to reconstruct lines
+  // Extract text grouped by Y position to reconstruct logical lines
   let fullText = '';
   for (let p = 1; p <= pdf.numPages; p++) {
     const page = await pdf.getPage(p);
@@ -816,13 +821,13 @@ async function parseChaseStatementPDF(file) {
       if (!byY[y]) byY[y] = [];
       byY[y].push(item.str);
     }
-    const ys = Object.keys(byY).map(Number).sort((a, b) => b - a);
+    const ys = Object.keys(byY).map(Number).sort((a, b) => b - a); // top→bottom
     for (const y of ys) fullText += byY[y].join(' ') + '\n';
     fullText += '\n';
   }
 
-  // Resolve statement year from "Opening/Closing Date: MM/DD/YY - MM/DD/YY"
-  let statYear = new Date().getFullYear();
+  // Resolve statement year + closing month from "Opening/Closing Date: MM/DD/YY - MM/DD/YY"
+  let statYear     = new Date().getFullYear();
   let closingMonth = new Date().getMonth() + 1;
   const periodMatch = fullText.match(/Opening\/Closing Date:\s*(\d{2})\/(\d{2})\/(\d{2,4})\s*-\s*(\d{2})\/(\d{2})\/(\d{2,4})/i);
   if (periodMatch) {
@@ -831,16 +836,30 @@ async function parseChaseStatementPDF(file) {
     closingMonth  = parseInt(periodMatch[4]);
   }
 
-  // Parse transaction lines: MM/DD  Description  Amount
+  // Transaction line pattern: MM/DD  <description words>  <amount>
   const txnRe = /^(\d{2}\/\d{2})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})\s*$/;
   const lines  = fullText.split('\n');
+
+  // Section boundaries:
+  //   START: "Merchant Name or Transaction Description" column header
+  //   STOP:  summary lines that follow the last transaction
   let inActivity = false;
   const txns = [];
 
   for (const rawLine of lines) {
     const line = rawLine.trim();
-    if (/ACCOUNT ACTIVITY/i.test(line))                     { inActivity = true;  continue; }
-    if (/INTEREST CHARGES|Year-to-date totals/i.test(line)) { inActivity = false; }
+
+    // START: column header line (rendered normally, not doubled)
+    if (/Merchant\s+Name\s+or\s+Transaction\s+Description/i.test(line)) {
+      inActivity = true;
+      continue;
+    }
+
+    // STOP: footer / year-to-date summary section
+    if (inActivity && /TRANSACTIONS THIS CYCLE|Year-to-Date|Total fees charged|INTEREST CHARGES/i.test(line)) {
+      break;
+    }
+
     if (!inActivity) continue;
 
     const m = line.match(txnRe);
@@ -848,10 +867,12 @@ async function parseChaseStatementPDF(file) {
 
     const [, datePart, desc, amtRaw] = m;
     const amount = parseFloat(amtRaw.replace(/[$,]/g, ''));
+
+    // Skip payments and credits (negative amounts)
     if (amount <= 0) continue;
-    if (/Total fees|Total interest/i.test(desc)) continue;
 
     const [mm, dd] = datePart.split('/').map(Number);
+    // If month is significantly after closing month, it belongs to prior year
     const year = mm > closingMonth + 3 ? statYear - 1 : statYear;
     const date = new Date(year, mm - 1, dd);
 
