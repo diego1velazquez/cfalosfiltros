@@ -2571,10 +2571,10 @@ function parseMealTimeDetail(lines) {
   // Date pattern: "Mon, 02/16/2026"
   const dateRe   = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+(\d{2}\/\d{2}\/\d{4})/i;
   // Time row pattern: captures TimeIn TimeOut Total Pay Type
-  // "7:31 a 3:04 p 7:33 Regular" or "9:55 a 10:25 a 0:30 Break"
-  const timeRe   = /(\d{1,2}:\d{2}\s*[ap])\s+(\d{1,2}:\d{2}\s*[ap])\s+[\d:]+\s+(Regular|Break|Break \(Conv to Paid\))/i;
+  // Now includes "Unpaid" — this is how meal breaks appear in CFA Time Detail Reports
+  const timeRe   = /(\d{1,2}:\d{2}\s*[ap])\s+(\d{1,2}:\d{2}\s*[ap])\s+[\d:]+\s+(Regular|Unpaid|Break|Break \(Conv to Paid\))/i;
   // Employee name: "Lastname Firstname" — line with no date, no time, typically has comma
-  const empRe    = /^([A-Z][a-záéíóúñüA-ZÁÉÍÓÚÑÜ\s\-]+,\s+[A-Za-záéíóúñüÁÉÍÓÚÑÜ\s\.]+)$/;
+  const empRe    = /^([A-Z][a-záéíóúñüA-ZÁÉÍÓÚÑÜ\s\-]+,\s+[A-Za-záéíóúñüÁÉÍÓÚÑÜ\s\.\(\)]+)$/;
   // Skip lines
   const skipRe   = /Employee Totals|Grand Total|Punch types|clock-in time|Page \d|From |Los Filtros|Employee Time Detail|Wage Rate|Pay Type/i;
 
@@ -2608,7 +2608,8 @@ function parseMealTimeDetail(lines) {
             breaks: [], wage: currentWage
           };
           shifts.push(currentShift);
-        } else if (type.startsWith('break') && currentShift && currentShift.date === currentDate) {
+        } else if ((type === 'unpaid' || type.startsWith('break')) && currentShift && currentShift.date === currentDate) {
+          // "Unpaid" is how CFA reports meal breaks — treat same as Break
           currentShift.breaks.push({ in: fmtTime(timeMatch[1]), out: fmtTime(timeMatch[2]) });
         }
       }
@@ -2628,7 +2629,8 @@ function parseMealTimeDetail(lines) {
           breaks: [], wage: currentWage
         };
         shifts.push(currentShift);
-      } else if (type.startsWith('break') && currentShift && currentShift.date === currentDate) {
+      } else if ((type === 'unpaid' || type.startsWith('break')) && currentShift && currentShift.date === currentDate) {
+        // "Unpaid" is how CFA reports meal breaks — treat same as Break
         currentShift.breaks.push({ in: fmtTime(timeMatch[1]), out: fmtTime(timeMatch[2]) });
       }
       continue;
