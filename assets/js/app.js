@@ -1235,7 +1235,7 @@ function populateEmployeeDropdowns() {
 // ══════════════════════════════════════════
 // RECORD TIME-OFF — actually saves
 // ══════════════════════════════════════════
-function submitRecordTimeOff() {
+async function submitRecordTimeOff() {
   const empKey  = document.getElementById('rtoEmployeeSel').value;
   const type    = document.getElementById('rtoType').value;
   const inputHrs = parseFloat(document.getElementById('rtoDays').value);
@@ -1693,7 +1693,7 @@ function showImportedPeriods() {
 // ══════════════════════════════════════════
 // ADD EMPLOYEE — saves to EMPLOYEES object
 // ══════════════════════════════════════════
-function submitAddEmployee() {
+async function submitAddEmployee() {
   const first  = document.getElementById('empFirst').value.trim();
   const last   = document.getElementById('empLast').value.trim();
   const pin    = document.getElementById('empPin').value.trim();
@@ -1803,7 +1803,7 @@ function renderTimeOffRequests() {
   }).join('');
 }
 
-function approveRequest(id) {
+async function approveRequest(id) {
   const req = TIME_OFF_REQUESTS.find(r => r.id === id);
   if (!req) return;
   req.status = 'approved';
@@ -1958,7 +1958,7 @@ function filterEmployeesTab() {
   }).join('');
 }
 
-function editHireDate(empKey) {
+async function editHireDate(empKey) {
   const emp = EMPLOYEES[empKey];
   if (!emp) return;
   const current = emp.firstClockIn || '';
@@ -2134,7 +2134,7 @@ function showPeriodHistory() {
   om('periodHistoryModal');
 }
 
-function deletePeriod(monthKey) {
+async function deletePeriod(monthKey) {
   const pd    = IMPORTED_PERIODS[monthKey];
   const label = pd ? new Date(monthKey + '-02').toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : monthKey;
   if (!confirm(`Delete ${label}? All hours for this month will be removed from every employee and accruals will be recalculated.`)) return;
