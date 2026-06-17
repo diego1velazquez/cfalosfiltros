@@ -1100,7 +1100,7 @@ async function handleImport(file) {
       totalHours += emp.totalHours;
     }
 
-    // Register month as imported
+    // Register month as imported (in-memory)
     IMPORTED_PERIODS[monthKey] = {
       monthKey,
       start:      result.periodStart?.toISOString().slice(0, 10),
@@ -1108,6 +1108,68 @@ async function handleImport(file) {
       empCount:   result.employees.length,
       totalHours: +totalHours.toFixed(1)
     };
+
+    // ── Persist to Supabase proper tables ──────────────────
+    _setSaveStatus('saving');
+    try {
+      // 1. Upsert employees
+      for (const empEntry of result.employees) {
+        const key = empEntry.name.toLowerCase().replace(/\s+/g, '_');
+        const emp = EMPLOYEES[key];
+        if (!emp) continue;
+
+        if (!emp.supabase_id) {
+          // Insert new employee
+          const { data: newEmp, error: insErr } = await getSupa().from('employees').insert({
+            name:           emp.name,
+            type:           emp.type || 'hourly',
+            status:         emp.status || 'active',
+            first_clock_in: emp.firstClockIn || result.periodStart?.toISOString().slice(0,10) || null,
+            vac_taken:      0,
+            sick_taken:     0,
+          }).select('id').single();
+          if (!insErr && newEmp) emp.supabase_id = newEmp.id;
+        } else {
+          // Update existing
+          await getSupa().from('employees').update({
+            updated_at: new Date().toISOString(),
+          }).eq('id', emp.supabase_id);
+        }
+
+        // 2. Upsert monthly record
+        if (emp.supabase_id) {
+          const rec = (emp.monthlyRecords || []).find(r => r.year === y && r.month === m);
+          if (rec) {
+            await getSupa().from('monthly_records').upsert({
+              employee_id:  emp.supabase_id,
+              year:         y,
+              month:        m,
+              hours_worked: rec.hoursWorked,
+              report_start: rec.reportStart || null,
+              report_end:   rec.reportEnd || null,
+              imported_at:  new Date().toISOString(),
+            }, { onConflict: 'employee_id,year,month' });
+          }
+        }
+      }
+
+      // 3. Upsert imported_periods
+      await getSupa().from('imported_periods').upsert({
+        month_key:   monthKey,
+        start_date:  result.periodStart?.toISOString().slice(0,10) || null,
+        end_date:    result.periodEnd?.toISOString().slice(0,10) || null,
+        emp_count:   result.employees.length,
+        total_hours: +totalHours.toFixed(1),
+        imported_at: new Date().toISOString(),
+      }, { onConflict: 'month_key' });
+
+      _setSaveStatus('saved');
+      await writeAuditLog('IMPORT', `Imported ${monthName}: ${result.employees.length} employees, ${totalHours.toFixed(1)} hrs`);
+    } catch(saveErr) {
+      console.error('Supabase save error during import:', saveErr);
+      _setSaveStatus('error');
+    }
+    // ──────────────────────────────────────────────────────
 
     // Dashboard counts
     document.getElementById('sActive').textContent   = Object.values(EMPLOYEES).filter(e => e.status === 'active').length;
@@ -1124,7 +1186,7 @@ async function handleImport(file) {
 
     recalculateAll();
     populateEmployeeDropdowns();
-    saveToStorage();
+    _cacheToLocal();
 
     statusEl.innerHTML = `
       <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:14px 16px">
@@ -1231,16 +1293,31 @@ function submitRecordTimeOff() {
   // Log it
   if (!emp.timeOffLog) emp.timeOffLog = [];
   const accrBeforeManual = calcEmployeeAccruals(emp.monthlyRecords||[], emp.firstClockIn, emp.vacTaken||0, emp.sickTaken||0);
-  emp.timeOffLog.push({
+  const logEntry = {
     type, days, date, notes,
     recordedBy: currentUser?.name || currentUser?.pin || 'admin',
     recordedAt: new Date().toISOString(),
     source: 'manual_entry',
     balanceBefore: type === 'Sick' ? accrBeforeManual.sickBal : accrBeforeManual.vacationBal
-  });
+  };
+  emp.timeOffLog.push(logEntry);
 
   recalculateAll();
-  saveToStorage();
+
+  // ── Save to Supabase immediately ──────────────────────────
+  _setSaveStatus('saving');
+  try {
+    await saveEmployee(emp);
+    await saveTimeOffEntry(emp, logEntry);
+    await writeAuditLog('TIME_OFF_RECORDED',
+      `${emp.name} — ${type} — ${daysToHrs(days)} hrs on ${date}${notes ? ' — ' + notes : ''}`);
+    _setSaveStatus('saved');
+  } catch(e) {
+    console.warn('Time-off save error:', e);
+    _setSaveStatus('error');
+  }
+  _cacheToLocal();
+  // ─────────────────────────────────────────────────────────
 
   // Show confirmation
   const btn = document.getElementById('rtoSubmitBtn');
@@ -1270,8 +1347,45 @@ function toggleInactiveEmployees(checked) {
 }
 
 // ══════════════════════════════════════════
-// DATA PERSISTENCE — Supabase Cloud + localStorage fallback
+// DATA PERSISTENCE — Proper Supabase tables
 // ══════════════════════════════════════════
+
+// ── Save status indicator ──────────────────────────────────
+function _setSaveStatus(state, msg) {
+  // state: 'saving' | 'saved' | 'error'
+  const el = document.getElementById('saveStatusBadge');
+  if (!el) return;
+  if (state === 'saving') {
+    el.textContent = '⏳ Saving…';
+    el.style.background = '#fef3c7';
+    el.style.color = '#92400e';
+  } else if (state === 'saved') {
+    const now = new Date().toLocaleString('en-US', { timeZone: 'America/Puerto_Rico', hour12: true, month:'short', day:'numeric', hour:'numeric', minute:'2-digit' });
+    el.textContent = '✅ Saved ' + now;
+    el.style.background = '#dcfce7';
+    el.style.color = '#166534';
+    const sb = document.getElementById('sBackup');
+    if (sb) sb.textContent = now;
+    try { localStorage.setItem('cfa_losfiltros_backup_time', now); } catch(e){}
+  } else {
+    el.textContent = '❌ Save failed — check connection';
+    el.style.background = '#fee2e2';
+    el.style.color = '#991b1b';
+  }
+}
+
+// ── Audit log writer ──────────────────────────────────────
+async function writeAuditLog(action, details) {
+  try {
+    await getSupa().from('audit_log').insert({
+      action,
+      details,
+      performed_by: currentUser?.name || currentUser?.pin || 'admin',
+    });
+  } catch(e) { console.warn('Audit log write failed:', e.message); }
+}
+
+// ── localStorage fallback cache ───────────────────────────
 function _cacheToLocal() {
   try {
     localStorage.setItem('cfa_losfiltros_employees', JSON.stringify(EMPLOYEES));
@@ -1281,43 +1395,187 @@ function _cacheToLocal() {
   } catch(e) { console.warn('localStorage cache failed:', e); }
 }
 
-async function saveToCloud() {
+// ── Save a single employee's core fields to Supabase ─────
+async function saveEmployee(emp) {
+  // emp must have a supabase_id (uuid) to update; otherwise insert
+  if (!emp.supabase_id) {
+    const { data, error } = await getSupa().from('employees').insert({
+      name:          emp.name,
+      type:          emp.type || 'hourly',
+      status:        emp.status || 'active',
+      first_clock_in: emp.firstClockIn || null,
+      vac_taken:     emp.vacTaken || 0,
+      sick_taken:    emp.sickTaken || 0,
+    }).select('id').single();
+    if (!error && data) emp.supabase_id = data.id;
+    return;
+  }
+  await getSupa().from('employees').update({
+    name:           emp.name,
+    type:           emp.type || 'hourly',
+    status:         emp.status || 'active',
+    first_clock_in: emp.firstClockIn || null,
+    vac_taken:      +(emp.vacTaken || 0),
+    sick_taken:     +(emp.sickTaken || 0),
+    updated_at:     new Date().toISOString(),
+  }).eq('id', emp.supabase_id);
+}
+
+// ── Save a time-off log entry to Supabase ────────────────
+async function saveTimeOffEntry(emp, logEntry) {
+  if (!emp.supabase_id) return;
   try {
-    const payload = {
-      key:       'appdata',
-      employees: EMPLOYEES,
-      periods:   IMPORTED_PERIODS,
-      requests:  TIME_OFF_REQUESTS,
-      meals:     MEAL_PENALTIES,
-      saved_at:  new Date().toISOString(),
-    };
-    const { error } = await getSupa().from('app_data').upsert(payload, { onConflict: 'key' });
-    if (error) { console.warn('Cloud save error:', error.message); return; }
-    const now = new Date().toLocaleString();
-    localStorage.setItem('cfa_losfiltros_backup_time', now);
-    const sb = document.getElementById('sBackup');
-    if (sb) sb.textContent = now;
-  } catch(e) { console.warn('Cloud save failed:', e); }
+    await getSupa().from('time_off_log').insert({
+      employee_id:   emp.supabase_id,
+      type:          logEntry.type,
+      days:          logEntry.days,
+      start_date:    logEntry.date || null,
+      end_date:      logEntry.date || null,
+      notes:         logEntry.notes || null,
+      balance_before: logEntry.balanceBefore != null ? logEntry.balanceBefore : null,
+      recorded_by:   logEntry.recordedBy || null,
+    });
+  } catch(e) { console.warn('Time-off log insert failed:', e.message); }
 }
 
-function saveToStorage() {
+// ── Main save — called after every meaningful action ─────
+async function saveToStorage() {
+  _setSaveStatus('saving');
   _cacheToLocal();
-  saveToCloud();
+  try {
+    // Settings / Slack config
+    const slackCfg = {
+      webhookUrl: document.getElementById('slackWebhook')?.value || '',
+      notifOnApprove: true,
+      notifOnRequest: true,
+    };
+    await getSupa().from('app_settings').upsert({ key: 'slack', value: slackCfg }, { onConflict: 'key' });
+
+    // Requests (small table, full upsert)
+    if (TIME_OFF_REQUESTS.length) {
+      const reqPayload = { key: 'requests', value: TIME_OFF_REQUESTS };
+      await getSupa().from('app_settings').upsert(reqPayload, { onConflict: 'key' });
+    }
+
+    // Meals (small table, full upsert)
+    const mealsPayload = { key: 'meals', value: MEAL_PENALTIES };
+    await getSupa().from('app_settings').upsert(mealsPayload, { onConflict: 'key' });
+
+    _setSaveStatus('saved');
+  } catch(e) {
+    console.warn('saveToStorage error:', e.message);
+    _setSaveStatus('error');
+  }
 }
 
+// ── Load all data from Supabase on startup ────────────────
 async function loadFromStorage() {
   try {
-    const { data, error } = await getSupa().from('app_data').select('*').eq('key','appdata').single();
-    if (!error && data) {
-      if (data.employees)  Object.assign(EMPLOYEES, data.employees);
-      if (data.periods)    Object.assign(IMPORTED_PERIODS, data.periods);
-      if (data.requests)   { TIME_OFF_REQUESTS.length = 0; TIME_OFF_REQUESTS.push(...data.requests); }
-      if (data.meals)      { MEAL_PENALTIES.length  = 0; MEAL_PENALTIES.push(...data.meals); }
-      _cacheToLocal();
-      console.log('✅ Loaded from Supabase cloud');
-    } else throw new Error('no cloud data');
+    // Load employees
+    const { data: empRows, error: empErr } = await getSupa().from('employees').select('*').order('name');
+    if (!empErr && empRows && empRows.length) {
+      for (const row of empRows) {
+        const key = row.name.toLowerCase().replace(/\s+/g, '_');
+        const existing = EMPLOYEES[key] || {};
+        EMPLOYEES[key] = {
+          ...existing,
+          supabase_id:  row.id,
+          name:         row.name,
+          type:         row.type || 'hourly',
+          status:       row.status || 'active',
+          firstClockIn: row.first_clock_in || null,
+          vacTaken:     parseFloat(row.vac_taken) || 0,
+          sickTaken:    parseFloat(row.sick_taken) || 0,
+          monthlyRecords: existing.monthlyRecords || [],
+          timeOffLog:   existing.timeOffLog || [],
+        };
+      }
+      console.log(`✅ Loaded ${empRows.length} employees from Supabase`);
+    }
+
+    // Load monthly records
+    const { data: mrRows, error: mrErr } = await getSupa().from('monthly_records').select('*');
+    if (!mrErr && mrRows && mrRows.length) {
+      // Clear existing monthly records first to avoid duplication
+      for (const emp of Object.values(EMPLOYEES)) emp.monthlyRecords = [];
+      // Map by employee supabase_id
+      const empById = {};
+      for (const emp of Object.values(EMPLOYEES)) {
+        if (emp.supabase_id) empById[emp.supabase_id] = emp;
+      }
+      for (const row of mrRows) {
+        const emp = empById[row.employee_id];
+        if (emp) {
+          emp.monthlyRecords.push({
+            year:        row.year,
+            month:       row.month,
+            hoursWorked: parseFloat(row.hours_worked),
+            reportStart: row.report_start,
+            reportEnd:   row.report_end,
+          });
+        }
+      }
+      console.log(`✅ Loaded ${mrRows.length} monthly records from Supabase`);
+    }
+
+    // Load time-off log entries
+    const { data: tolRows, error: tolErr } = await getSupa().from('time_off_log').select('*').order('recorded_at');
+    if (!tolErr && tolRows && tolRows.length) {
+      for (const emp of Object.values(EMPLOYEES)) emp.timeOffLog = [];
+      const empById = {};
+      for (const emp of Object.values(EMPLOYEES)) {
+        if (emp.supabase_id) empById[emp.supabase_id] = emp;
+      }
+      for (const row of tolRows) {
+        const emp = empById[row.employee_id];
+        if (emp) {
+          emp.timeOffLog.push({
+            type:          row.type,
+            days:          parseFloat(row.days),
+            date:          row.start_date,
+            notes:         row.notes || '',
+            balanceBefore: row.balance_before != null ? parseFloat(row.balance_before) : null,
+            recordedBy:    row.recorded_by || 'admin',
+            recordedAt:    row.recorded_at,
+            source:        'manual_entry',
+          });
+        }
+      }
+      console.log(`✅ Loaded ${tolRows.length} time-off log entries from Supabase`);
+    }
+
+    // Load imported periods
+    const { data: ipRows, error: ipErr } = await getSupa().from('imported_periods').select('*').order('month_key');
+    if (!ipErr && ipRows && ipRows.length) {
+      for (const row of ipRows) {
+        IMPORTED_PERIODS[row.month_key] = {
+          monthKey:   row.month_key,
+          start:      row.start_date,
+          end:        row.end_date,
+          empCount:   row.emp_count,
+          totalHours: parseFloat(row.total_hours),
+        };
+      }
+      console.log(`✅ Loaded ${ipRows.length} pay periods from Supabase`);
+    }
+
+    // Load requests and meals from app_settings
+    const { data: settRows } = await getSupa().from('app_settings').select('*');
+    if (settRows) {
+      for (const row of settRows) {
+        if (row.key === 'requests' && Array.isArray(row.value)) {
+          TIME_OFF_REQUESTS.length = 0;
+          TIME_OFF_REQUESTS.push(...row.value);
+        }
+        if (row.key === 'meals' && Array.isArray(row.value)) {
+          MEAL_PENALTIES.length = 0;
+          MEAL_PENALTIES.push(...row.value);
+        }
+      }
+    }
+
   } catch(e) {
-    console.warn('Cloud load failed, using local cache:', e.message);
+    console.warn('Supabase load failed, trying localStorage:', e.message);
     try {
       const empData = localStorage.getItem('cfa_losfiltros_employees');
       if (empData) Object.assign(EMPLOYEES, JSON.parse(empData));
@@ -1325,14 +1583,15 @@ async function loadFromStorage() {
       if (periodData) Object.assign(IMPORTED_PERIODS, JSON.parse(periodData));
       const reqData = localStorage.getItem('cfa_losfiltros_requests');
       if (reqData) { TIME_OFF_REQUESTS.length = 0; TIME_OFF_REQUESTS.push(...JSON.parse(reqData)); }
-        const mp = localStorage.getItem('cfa_losfiltros_meals');
+      const mp = localStorage.getItem('cfa_losfiltros_meals');
       if (mp) { MEAL_PENALTIES.length = 0; MEAL_PENALTIES.push(...JSON.parse(mp)); }
-    } catch(e2) { console.warn('localStorage load failed:', e2); }
+    } catch(e2) { console.warn('localStorage load also failed:', e2); }
   }
 
+  // Restore UI state
   const backupTime = localStorage.getItem('cfa_losfiltros_backup_time');
   if (backupTime) { const sb = document.getElementById('sBackup'); if(sb) sb.textContent = backupTime; }
-  // Restore data range display from imported months
+
   const allMonths = Object.keys(IMPORTED_PERIODS).sort();
   if (allMonths.length) {
     const first = IMPORTED_PERIODS[allMonths[0]];
@@ -1340,24 +1599,27 @@ async function loadFromStorage() {
     const sr    = document.getElementById('sRange');
     if (sr) sr.textContent = (first?.start || allMonths[0]) + ' → ' + (last?.end || allMonths[allMonths.length - 1]);
   }
+
+  document.getElementById('sActive').textContent   = Object.values(EMPLOYEES).filter(e => e.status === 'active').length;
+  document.getElementById('sInactive').textContent = Object.values(EMPLOYEES).filter(e => e.status !== 'active').length;
+
   populateEmployeeDropdowns();
   recalculateAll();
   updateRequestBadge();
-  // Auto-fix any meal penalty records saved with old wrong formula
   migrateMealPenalties();
 }
 
-// Auto-save every 5 minutes and after key actions
+// ── Auto-save every 5 minutes ─────────────────────────────
 setInterval(() => { if (currentUser) saveToStorage(); }, 5 * 60 * 1000);
 window.addEventListener('load', initReconciliationUI);
 
-// Override doBackup to also persist
+// ── Manual backup button ──────────────────────────────────
 async function doBackup() {
   const btn = document.querySelector('[onclick="doBackup()"]');
   if (btn) { btn.textContent = '⏳ Saving...'; btn.disabled = true; }
   try {
-    await saveToCloud();
-    _cacheToLocal();
+    await saveToStorage();
+    await writeAuditLog('MANUAL_BACKUP', 'User triggered manual backup');
     showToast('✅ Backup saved to cloud!');
   } catch(e) {
     showToast('❌ Backup failed: ' + e.message);
@@ -1457,7 +1719,15 @@ function submitAddEmployee() {
     timeOffLog: []
   };
 
-  saveToStorage();
+  (async () => {
+    try {
+      _setSaveStatus('saving');
+      await saveEmployee(EMPLOYEES[key]);
+      await writeAuditLog('EMPLOYEE_ADDED', `${fullName} — start date: ${date || 'today'}`);
+      _setSaveStatus('saved');
+    } catch(e) { console.warn('Add employee save error:', e); _setSaveStatus('error'); }
+  })();
+  _cacheToLocal();
   recalculateAll();
   populateEmployeeDropdowns();
   updateEmployeesTab();
@@ -1574,7 +1844,7 @@ function approveRequest(id) {
 
     if (!emp.timeOffLog) emp.timeOffLog = [];
     const accrBefore = calcEmployeeAccruals(emp.monthlyRecords||[], emp.firstClockIn, emp.vacTaken||0, emp.sickTaken||0);
-    emp.timeOffLog.push({
+    const logEntry = {
       type: req.type, days: req.days, date: req.start,
       notes: 'Approved request',
       recordedBy: req.reviewedBy,
@@ -1582,7 +1852,20 @@ function approveRequest(id) {
       source: 'request_approval',
       requestId: req.id,
       balanceBefore: req.type === 'Sick' ? accrBefore.sickBal : accrBefore.vacationBal
-    });
+    };
+    emp.timeOffLog.push(logEntry);
+
+    // Save to Supabase immediately
+    (async () => {
+      try {
+        _setSaveStatus('saving');
+        await saveEmployee(emp);
+        await saveTimeOffEntry(emp, logEntry);
+        await writeAuditLog('REQUEST_APPROVED',
+          `${emp.name} — ${req.type} — ${daysToHrs(req.days)} hrs on ${req.start}`);
+        _setSaveStatus('saved');
+      } catch(e) { console.warn('Approve save error:', e); _setSaveStatus('error'); }
+    })();
   }
 
   recalculateAll();
@@ -1599,7 +1882,9 @@ function rejectRequest(id) {
   req.status = 'rejected';
   req.reviewedAt = new Date().toISOString();
   req.reviewedBy = currentUser?.name || currentUser?.pin || 'admin';
+  saveToStorage();
   try { localStorage.setItem('cfa_losfiltros_requests', JSON.stringify(TIME_OFF_REQUESTS)); } catch(e){}
+  writeAuditLog('REQUEST_REJECTED', `${req.empName||req.empKey} — ${req.type} — ${daysToHrs(req.days)} hrs`);
   updateRequestBadge();
   renderTimeOffRequests();
   showToast('✗ Request rejected.');
@@ -1688,9 +1973,16 @@ function editHireDate(empKey) {
     return;
   }
   emp.firstClockIn = trimmed || null;
-  saveToStorage();
+  (async () => {
+    try {
+      _setSaveStatus('saving');
+      await saveEmployee(emp);
+      await writeAuditLog('HIRE_DATE_EDITED', `${emp.name} — new hire date: ${trimmed || 'cleared'}`);
+      _setSaveStatus('saved');
+    } catch(e) { console.warn('Hire date save error:', e); _setSaveStatus('error'); }
+  })();
+  _cacheToLocal();
   recalculateAll();
-  // Refresh the detail modal if still open
   showEmpDetail(empKey);
   showToast(`✅ Hire date updated for ${emp.name}`);
 }
@@ -1856,7 +2148,21 @@ function deletePeriod(monthKey) {
   }
 
   delete IMPORTED_PERIODS[monthKey];
-  saveToStorage();
+
+  // Delete from Supabase
+  (async () => {
+    try {
+      _setSaveStatus('saving');
+      // Delete monthly_records for this period
+      await getSupa().from('monthly_records').delete()
+        .eq('year', y).eq('month', mo);
+      // Delete the imported_period row
+      await getSupa().from('imported_periods').delete().eq('month_key', monthKey);
+      await writeAuditLog('PERIOD_DELETED', `Deleted pay period ${monthKey}`);
+      _setSaveStatus('saved');
+    } catch(e) { console.warn('Delete period error:', e); _setSaveStatus('error'); }
+  })();
+  _cacheToLocal();
   recalculateAll();
   showPeriodHistory();
   showToast(`🗑 ${label} deleted — accruals recalculated.`);
@@ -2053,7 +2359,6 @@ function migrateMealPenalties() {
   }
   if (fixed > 0) {
     saveMealData();
-    saveToCloud();
     console.log(`✅ Migrated ${fixed} meal penalty record(s) to correct 30-min formula.`);
   }
   return fixed;
@@ -2363,7 +2668,6 @@ function mealDeleteWeekEmp(empKey, weekStart, weekEnd) {
     return !(key === empKey && p.date >= weekStart && p.date <= weekEnd);
   });
   saveMealData();
-  saveToCloud();
   renderMealPenalties();
   showToast('🗑 Violations deleted.');
 }
@@ -2373,7 +2677,6 @@ function clearAllMealPenalties() {
   if (!confirm('⚠️ This will delete ALL meal penalty records. Are you sure?')) return;
   MEAL_PENALTIES.length = 0;
   saveMealData();
-  saveToCloud();           // ← persist to Supabase so clear survives refresh
   renderMealPenalties();
   showToast('🗑 All meal penalty records cleared.');
 }
@@ -2393,7 +2696,7 @@ function exportMealsCSV() {
 // ══════════════════════════════════════════
 function saveMealData() {
   try { localStorage.setItem('cfa_losfiltros_meals', JSON.stringify(MEAL_PENALTIES)); } catch(e){}
-  saveToCloud();
+  saveToStorage();
 }
 
 
