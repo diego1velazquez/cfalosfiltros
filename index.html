@@ -54,7 +54,7 @@
   <!-- Admin tab nav -->
   <div class="tabnav" id="adminTabNav" style="display:none">
     <div class="tab" onclick="goTab('dashboard')" id="t-dashboard">Dashboard</div>
-    <div class="tab" onclick="goTab('employees')" id="t-employees">Employees</div>
+    <div class="tab" onclick="goTab('employees')" id="t-employees" style="display:none">Employees</div>
     <div class="tab" onclick="goTab('import')" id="t-import">Import Data</div>
     <div class="tab" onclick="goTab('recordto')" id="t-recordto">Record Time-Off</div>
     <div class="tab" onclick="goTab('meals')" id="t-meals">Meal Penalties</div>
@@ -121,10 +121,10 @@
         </div>
         <div style="overflow-x:auto">
           <table><thead><tr>
-            <th>Name</th><th>Type</th><th>Status</th><th>First Clock-In</th><th>Flagged</th><th></th>
+            <th>Name</th><th>Type</th><th>Status</th><th>First Clock-In</th><th>Sick Balance</th><th>Vac Balance</th><th>Tenure</th><th></th>
           </tr></thead>
           <tbody id="empTbody">
-            <tr><td colspan="6"><div class="empty"><div class="ei">👥</div><p>No employees yet.</p></div></td></tr>
+            <tr><td colspan="8"><div class="empty"><div class="ei">👥</div><p>No employees yet.</p></div></td></tr>
           </tbody></table>
         </div>
       </div>
