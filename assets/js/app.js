@@ -5549,30 +5549,45 @@ function handleBPStatement(file) {
     const lines = text.split(/\r?\n/).filter(l => l.trim());
     if (lines.length < 2) { showToast('File appears empty', 'error'); return; }
 
-    // Parse CSV header
+    // Parse CSV header — supports both BP export formats:
+    // Format A (older): Type, Effective Date, Transaction Description, Amount, Transaction Code
+    // Format B (current): Date, Description, Amount
     const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
-    const typeIdx   = headers.indexOf('Type');
-    const amtIdx    = headers.indexOf('Amount');
-    const dateIdx   = headers.indexOf('Effective Date');
-    const descIdx   = headers.indexOf('Transaction Description');
-    const codeIdx   = headers.indexOf('Transaction Code');
 
-    if (typeIdx === -1 || amtIdx === -1) {
-      showToast('Could not find required columns (Type, Amount)', 'error');
+    const typeIdx = headers.findIndex(h => h === 'Type');
+    const amtIdx  = headers.findIndex(h => h === 'Amount');
+    const dateIdx = headers.findIndex(h => h === 'Date' || h === 'Effective Date');
+    const descIdx = headers.findIndex(h => h === 'Description' || h === 'Transaction Description');
+
+    if (amtIdx === -1) {
+      showToast('Could not find Amount column in bank export', 'error');
       return;
     }
+
+    const SKIP_KW = ['CHICK FIL A PR','CHASE CREDIT CRD','AMERICAN EXPRESS','CURRENCY CASH',
+      'TELEPAGO','BPPR MERCHANT','COMM SVC','STATE IVU','MUNICIPAL IVU','AJUSTE','CFA CORP WEB',
+      'CURRENCY CASH REQ'];
 
     const debits = [];
     for (let i = 1; i < lines.length; i++) {
       const cols = lines[i].split(',').map(c => c.trim().replace(/^"|"$/g, ''));
-      if (!cols[typeIdx]) continue;
-      if (cols[typeIdx].trim() !== 'DB') continue; // credits only
-      if ((cols[descIdx] || '').includes('CURRENCY CASH REQ')) continue; // ignore cash requests
+      const rawAmt = parseFloat(cols[amtIdx]);
+      if (isNaN(rawAmt)) continue;
+
+      // Format A: filter by Type === 'DB'
+      if (typeIdx >= 0) {
+        if ((cols[typeIdx] || '').trim() !== 'DB') continue;
+      } else {
+        // Format B: negative = debit, positive = credit — keep only negatives
+        if (rawAmt >= 0) continue;
+      }
+
+      const desc = cols[descIdx] || '';
+      if (SKIP_KW.some(k => desc.toUpperCase().includes(k))) continue;
       debits.push({
-        date:   cols[dateIdx]  || '',
-        desc:   cols[descIdx]  || '',
-        amount: parseFloat(cols[amtIdx]) || 0,
-        code:   cols[codeIdx]  || '',
+        date:   cols[dateIdx] || '',
+        desc:   desc,
+        amount: Math.abs(parseFloat(cols[amtIdx])) || 0,
       });
     }
 
