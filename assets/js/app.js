@@ -292,6 +292,12 @@ function csvToTxns(text, sourceName) {
       const n = parseFloat(raw);
       if (!isFinite(n) || n <= 0) continue;
       amount = +n.toFixed(2);
+    } else if (sourceName === 'bank') {
+      // Bank CSV: negative = debit (money out), positive = deposit — keep only negatives
+      const raw = String(rawAmount || '').replace(/[$,]/g, '').trim();
+      const n = parseFloat(raw);
+      if (!isFinite(n) || n >= 0) continue;  // skip deposits
+      amount = +Math.abs(n).toFixed(2);
     } else {
       amount = parseMoney(rawAmount);
     }
@@ -308,8 +314,7 @@ function csvToTxns(text, sourceName) {
       if (date < twoWeeksPrior) continue;
       const skipKw = ['CHICK FIL A PR','CHASE CREDIT CRD','AMERICAN EXPRESS','CURRENCY CASH',
         'TELEPAGO','BPPR MERCHANT','COMM SVC','STATE IVU','MUNICIPAL IVU','AJUSTE','CFA CORP WEB',
-        'VIRTUAL S DEPOSIT','BPPR MRCH. DEP','EFT DEPOSIT BPPR','EFT DEPOSIT UBER',
-        'UBER USA','DEPOSITO'];
+        'VIRTUAL S DEPOSIT','BPPR MRCH. DEP','EFT DEPOSIT','UBER USA','DEPOSITO'];
       const dUp = (rawDesc || '').toUpperCase();
       if (skipKw.some(k => dUp.includes(k))) continue;
     }
@@ -5569,9 +5574,8 @@ function handleBPStatement(file) {
     const SKIP_KW = ['CHICK FIL A PR','CHASE CREDIT CRD','AMERICAN EXPRESS','CURRENCY CASH',
       'TELEPAGO','BPPR MERCHANT','COMM SVC','STATE IVU','MUNICIPAL IVU','AJUSTE','CFA CORP WEB',
       'CURRENCY CASH REQ',
-      // Deposits / credits — not relevant to expense reconciliation
-      'VIRTUAL S DEPOSIT','BPPR MRCH. DEP','EFT DEPOSIT BPPR','EFT DEPOSIT Uber',
-      'UBER USA','DEPOSITO'];
+      // Deposits — skip all EFT DEPOSIT (EFT PMT = payments out, keep those)
+      'VIRTUAL S DEPOSIT','BPPR MRCH. DEP','EFT DEPOSIT','UBER USA','DEPOSITO'];
 
     const debits = [];
     for (let i = 1; i < lines.length; i++) {
