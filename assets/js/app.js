@@ -319,12 +319,17 @@ function csvToTxns(text, sourceName) {
       if (skipKw.some(k => dUp.includes(k))) continue;
     }
 
+    // For Gastos: also capture expense category
+    const categoryIdx = isGastos ? getHeaderIndex(headers, ['expense_category']) : -1;
+    const category = (isGastos && categoryIdx >= 0) ? String(row[categoryIdx] || '').trim() : '';
+
     out.push({
       id: `${sourceName}-${r}-${fmtDate(date)}-${amount.toFixed(2)}`,
       source: sourceName,
       date,
       amount,
-      description: String(rawDesc || '').trim() || '(no description)'
+      description: String(rawDesc || '').trim() || '(no description)',
+      ...(isGastos && { category })
     });
   }
   return out;
@@ -354,7 +359,7 @@ function updateReconHeaderStats() {
     return x.source !== 'bank' && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
   }).length;
   const achCount = RECON_DATA.unmatchedGastos ? RECON_DATA.unmatchedGastos.filter(g => {
-    const ACH = ['LOOMIS','MCS','HOLSUM','IDEAL ACCOUNTING','CHICK-FIL-A WAREHOUSE','ANGEL BERRIOS','EMPRESAS'];
+    const ACH = ['LOOMIS','MCS','HOLSUM','IDEAL ACCOUNTING','ANGEL BERRIOS'];
     return ACH.some(v => (g.description||'').toUpperCase().includes(v));
   }).length : 0;
 
@@ -479,6 +484,10 @@ function renderReconReport() {
         const d = x.date instanceof Date ? x.date : new Date(x.date);
         if (grp.skipIfDayOfMonth.max && d.getDate() <= grp.skipIfDayOfMonth.max) return false;
       }
+      // Skip prior-month CC charges — only include current month in groups
+      const xDate = x.date instanceof Date ? x.date : new Date(x.date);
+      const now = new Date();
+      if (x.source !== 'bank' && (xDate.getMonth() !== now.getMonth() || xDate.getFullYear() !== now.getFullYear())) return false;
       groupUsedExternal.add(x.id); return true;
     });
     const gRows = RECON_DATA.gastos.filter((g, i) => {
@@ -556,13 +565,13 @@ function renderReconReport() {
   const spillover  = unmatchedExternal.filter(x => { const d = x.date instanceof Date ? x.date : new Date(x.date); return !(d.getMonth() === curMonth && d.getFullYear() === curYear); });
 
   // Separate unmatchedGastos into ACH (no CC expected) vs truly unmatched
-  const achVendors = ['LOOMIS','MCS','HOLSUM','HOLSUM PR','IDEAL ACCOUNTING','CHICK-FIL-A WAREHOUSE','ANGEL BERRIOS','EMPRESAS'];
+  const achVendors = ['LOOMIS','MCS','HOLSUM','HOLSUM PR','IDEAL ACCOUNTING','ANGEL BERRIOS'];
   const achOnly    = unmatchedGastos.filter(g => achVendors.some(v => (g.description||'').toUpperCase().includes(v)));
   const gUnmatched = unmatchedGastos.filter(g => !achVendors.some(v => (g.description||'').toUpperCase().includes(v)));
 
   // ── 3. Summary stat cards ─────────────────────────────────────────────────
   const gastosTotal  = RECON_DATA.gastos.reduce((s,g) => s + g.amount, 0);
-  const ccTotal      = [...RECON_DATA.allCC, ...RECON_DATA.bank].reduce((s,x) => s + x.amount, 0);
+  const ccTotal      = RECON_DATA.allCC.reduce((s,x) => s + x.amount, 0);
   const needsEntry   = juneNeeds.length;
   const matchedCount = matches.length + groupResults.filter(r => r.isMatch).length;
 
@@ -625,10 +634,13 @@ function renderReconReport() {
     const bankMatch = RECON_DATA.bank.find(b => Math.abs(b.amount - g.amount) < 0.05);
     const desc = (g.description||'').toUpperCase();
     let statusTag;
-    if (bankMatch)                              statusTag = tag('✓ Cleared', 'ok');
-    else if (desc.includes('CHICK-FIL-A'))      statusTag = tag('With invoice', 'pend');
+    if (desc.includes('IDEAL')) {
+      // Ideal: $2,000 ACH = $725 Gastos (FCR) + $1,275 owner draw — match by $2,000 in bank
+      const idealBank = RECON_DATA.bank.find(b => Math.abs(b.amount - 2000) < 0.05 && (b.description||'').toUpperCase().includes('IDEAL'));
+      statusTag = idealBank ? tag('✓ Cleared · $1,275 draw', 'ok') : tag('Not paid yet · $1,275 draw', 'pend');
+    } else if (bankMatch)                              statusTag = tag('✓ Cleared', 'ok');
+
     else if (desc.includes('MCS') || desc.includes('LOOMIS')) statusTag = tag('Not paid yet', 'pend');
-    else if (desc.includes('IDEAL'))            statusTag = tag('$1,275 draw', 'note');
     else                                        statusTag = tag('Verify', 'warn');
     achItems.push({ label: g.description, amount: g.amount, status: statusTag });
   }
@@ -714,15 +726,23 @@ function renderReconReport() {
           <tbody>${matchedRows}</tbody>
         </table>`)}
 
-        ${spillover.length ? `
-        ${secHeader('clock', `prior month charges — already in prior gastos (${spillover.length})`)}
-        ${card(`<table style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed">
-          ${tHead([['48px','Date'],['60px','Source'],['','Description'],['80px','Amount','right']])}
-          <tbody>${spillRows}</tbody>
-        </table>`)}` : ''}
+
       </div>
 
     </div>
+
+    ${gUnmatched.length ? `
+    ${secHeader('alert-triangle', `only in gastos — no matching charge (${gUnmatched.length})`)}
+    ${card(`<table style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed">
+      ${tHead([['60px','Date'],['','Gastos vendor'],['120px','Category'],['85px','Amount','right']])}
+      <tbody>${gUnmatched.map(g => `<tr>
+        <td style="padding:6px 10px">${fmtD(g.date)}</td>
+        <td style="padding:6px 10px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${g.description}</td>
+        <td style="padding:6px 10px;color:var(--color-text-secondary,#6b7280);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${g.category||'—'}</td>
+        <td style="padding:6px 10px;text-align:right;font-weight:500;color:var(--color-text-warning,#92400e)">${fmt$(g.amount)}</td>
+      </tr>`).join('')}
+      </tbody>
+    </table>`)}` : ''}
 
     <div style="margin-top:4px;padding:10px 12px;background:var(--color-background-secondary,#f9fafb);border-radius:8px;font-size:12px;color:var(--color-text-secondary,#6b7280);display:flex;align-items:center;gap:8px">
       <i class="ti ti-info-circle" aria-hidden="true"></i>
