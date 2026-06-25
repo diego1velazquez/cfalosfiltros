@@ -816,7 +816,7 @@ function initReconciliationUI() {
   const page = document.getElementById('p-recon');
   if (!page) return;
   const slots = page.querySelectorAll('.file-slot input[type="file"]');
-  if (slots.length < 5) return;
+  if (slots.length < 5) { console.warn('Expected 5 file slots, found', slots.length); return; }
 
   const notes = page.querySelectorAll('.cached-note');
   const runBtn = document.getElementById('runReconBtn');
