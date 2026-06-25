@@ -587,12 +587,7 @@ function renderReconReport() {
 
   // ── 3. Summary stat cards ─────────────────────────────────────────────────
   const gastosTotal  = RECON_DATA.gastos.reduce((s,g) => s + g.amount, 0);
-  // CC total: only current month charges (prior month are spillover, not June's)
-  const now2 = new Date();
-  const ccTotal = RECON_DATA.allCC.filter(x => {
-    const d = x.date instanceof Date ? x.date : new Date(x.date);
-    return d.getMonth() === now2.getMonth() && d.getFullYear() === now2.getFullYear();
-  }).reduce((s,x) => s + x.amount, 0);
+  const ccTotal = RECON_DATA.allCC.reduce((s,x) => s + x.amount, 0);
   const needsEntry   = juneNeeds.length;
   const matchedCount = matches.length + groupResults.filter(r => r.isMatch).length;
 
