@@ -5591,7 +5591,15 @@ function handleBPStatement(file) {
       });
     }
 
-    _bpAllDebits = debits.sort((a, b) => new Date(a.date) - new Date(b.date));
+    // Filter to current month + 14 days prior (same window as reconciliation engine)
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const twoWeeksPrior = new Date(monthStart.getTime() - 14 * 24 * 60 * 60 * 1000);
+    const filteredDebits = debits.filter(d => {
+      const dt = new Date(d.date);
+      return !isNaN(dt) && dt >= twoWeeksPrior;
+    });
+    _bpAllDebits = filteredDebits.sort((a, b) => new Date(a.date) - new Date(b.date));
 
     // Update file slot note
     document.getElementById('bpCachedNote').textContent =
