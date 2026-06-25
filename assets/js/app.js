@@ -193,6 +193,13 @@ function parseDateLoose(v) {
   // YYYY-MM-DD
   m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
   if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
+  // DD-MON-YYYY (e.g. 08-JUN-2026) — Gastos format
+  const MONTHS = {JAN:0,FEB:1,MAR:2,APR:3,MAY:4,JUN:5,JUL:6,AUG:7,SEP:8,OCT:9,NOV:10,DEC:11};
+  m = s.match(/^(\d{1,2})-([A-Z]{3})-(\d{4})$/i);
+  if (m) {
+    const mon = MONTHS[m[2].toUpperCase()];
+    if (mon !== undefined) return new Date(+m[3], mon, +m[1]);
+  }
   const d = new Date(s);
   return isNaN(d.getTime()) ? null : d;
 }
@@ -230,9 +237,14 @@ function csvToTxns(text, sourceName) {
   const rows = parseCsvRows(text);
   if (rows.length < 2) return [];
   const headers = rows[0].map(h => String(h || '').toLowerCase().trim());
-  const dateIdx = getHeaderIndex(headers, ['date', 'posted', 'transaction']);
-  const descIdx = getHeaderIndex(headers, ['description', 'merchant', 'vendor', 'memo', 'name', 'details']);
+  const dateIdx = getHeaderIndex(headers, ['payment_date', 'date', 'posted', 'transaction']);
+  // For Gastos: use VENDOR as the description so matching works against vendor names
+  const isGastos = sourceName === 'gastos';
+  const descIdx = isGastos
+    ? getHeaderIndex(headers, ['vendor'])
+    : getHeaderIndex(headers, ['description', 'merchant', 'vendor', 'memo', 'name', 'details']);
   const amountIdx = getHeaderIndex(headers, ['amount', 'total', 'value']);
+  const voidIdx = isGastos ? getHeaderIndex(headers, ['void_date', 'void']) : -1;
   const debitIdx = getHeaderIndex(headers, ['debit', 'withdrawal', 'charge']);
   const creditIdx = getHeaderIndex(headers, ['credit', 'deposit', 'payment']);
 
@@ -245,6 +257,9 @@ function csvToTxns(text, sourceName) {
     const rawDate = dateIdx >= 0 ? row[dateIdx] : '';
     const rawDesc = descIdx >= 0 ? row[descIdx] : `Row ${r + 1}`;
 
+    // Skip voided Gastos entries
+    if (isGastos && voidIdx >= 0 && String(row[voidIdx] || '').trim()) continue;
+
     // If this is a BPPR bank statement, skip credits and cash requests
     if (sourceName === 'bank' && typeIdx >= 0) {
       const txType = String(row[typeIdx] || '').trim();
@@ -252,10 +267,31 @@ function csvToTxns(text, sourceName) {
       if (String(rawDesc || '').includes('CURRENCY CASH REQ')) continue; // skip cash requests
     }
 
+    // Chase CSV: skip Payment rows (Type column = 'Payment')
+    if (sourceName === 'chase') {
+      const typeColIdx = getHeaderIndex(headers, ['type']);
+      if (typeColIdx >= 0) {
+        const txType = String(row[typeColIdx] || '').trim().toLowerCase();
+        if (txType === 'payment') continue;
+      }
+    }
+
     let amount = null;
-    if (amountIdx >= 0) amount = parseMoney(row[amountIdx]);
-    if (amount == null && debitIdx >= 0) amount = parseMoney(row[debitIdx]);
-    if (amount == null && creditIdx >= 0) amount = parseMoney(row[creditIdx]);
+    let rawAmount = null;
+    if (amountIdx >= 0) rawAmount = row[amountIdx];
+    if (rawAmount == null && debitIdx >= 0) rawAmount = row[debitIdx];
+    if (rawAmount == null && creditIdx >= 0) rawAmount = row[creditIdx];
+
+    // For Amex: positive = charge, negative = payment — skip negatives
+    if (sourceName === 'amex') {
+      const raw = String(rawAmount || '').replace(/[$,]/g, '').trim();
+      const n = parseFloat(raw);
+      if (!isFinite(n) || n <= 0) continue;
+      amount = +n.toFixed(2);
+    } else {
+      amount = parseMoney(rawAmount);
+    }
+
     const date = parseDateLoose(rawDate);
     if (!date || amount == null || amount <= 0) continue;
     out.push({
@@ -289,12 +325,12 @@ function updateReconHeaderStats() {
   const extTotal = RECON_DATA.allCC.length + RECON_DATA.bank.length;
   const progress = extTotal ? Math.round((RECON_DATA.matches.length / extTotal) * 100) : 0;
 
-  cards[0].querySelector('.sval').textContent = `$${RECON_DATA.gastos.reduce((a, x) => a + x.amount, 0).toFixed(2)}`;
-  const txNode = cards[0].querySelector('div[style*="font-size:.75rem"]');
+  if (cards[0]) cards[0].querySelector('.sval').textContent = `$${RECON_DATA.gastos.reduce((a, x) => a + x.amount, 0).toFixed(2)}`;
+  const txNode = cards[0] ? cards[0].querySelector('div[style*="font-size:.75rem"]') : null;
   if (txNode) txNode.textContent = `${RECON_DATA.gastos.length} transactions`;
-  cards[1].querySelector('.sval').textContent = ccMatched.toString();
-  cards[3].querySelector('.sval').textContent = bankNoReceipt.toString();
-  cards[4].querySelector('.sval').textContent = ccNoReceipt.toString();
+  if (cards[1]) cards[1].querySelector('.sval').textContent = ccMatched.toString();
+  if (cards[3]) cards[3].querySelector('.sval').textContent = (ccNoReceipt).toString();
+  if (cards[4]) cards[4].querySelector('.sval').textContent = ccNoReceipt.toString();
 
   const fill = page.querySelector('.recon-progress-fill');
   if (fill) {
@@ -318,6 +354,18 @@ const VENDOR_GROUPS = [
     chargeKeywords: ['CC1 BEER', 'COCA COLA', 'COCA-COLA', 'PR COFFEE', 'COKE'],
     gastosVendors:  ['COCA-COLA PR', 'PR COFFEE'],
   },
+  {
+    label:          'Amazon Business',
+    ccKeywords:     ['AMAZON'],
+    sources:        ['amazon'],
+    gastosVendors:  ['AMAZON BUSINESS', 'AMAZON'],
+  },
+  {
+    label:          'La Casa de los Tornillos / Empresas de Soldaduras',
+    ccKeywords:     ['TORNILLOS', 'TORNI', 'SOLDADURAS', 'CASA DE LOS'],
+    sources:        ['chase', 'amex'],
+    gastosVendors:  ['EMPRESAS DE SOLDADURAS'],
+  },
 ];
 
 function descMatchesKeywords(desc, keywords) {
@@ -328,102 +376,89 @@ function descMatchesKeywords(desc, keywords) {
 function renderReconReport() {
   const wrap = document.getElementById('rRecon');
   if (!wrap) return;
+
   if (!RECON_DATA.lastRunAt) {
-    wrap.innerHTML = '<div class="empty"><div class="ei">📊</div><p>Upload GASTOS + Bank/CC files and click Run Reconciliation.</p></div>';
+    wrap.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:3rem 1rem;gap:12px">
+        <i class="ti ti-chart-bar" style="font-size:40px;color:var(--color-text-tertiary,#9ca3af)"></i>
+        <p style="color:var(--color-text-secondary,#6b7280);font-size:.95rem;margin:0">Upload GASTOS + Bank/CC files and click Run Reconciliation.</p>
+      </div>`;
     updateReconHeaderStats();
     return;
   }
 
-  // ── 1. Vendor-group section ──────────────────────────────────────────────
-  const groupUsedGastos = new Set();
+  // ── helpers ──────────────────────────────────────────────────────────────
+  const fmt$ = v => '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+  const fmtD = d => d ? (d instanceof Date ? d.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit'}) : d) : '—';
+  const srcBadge = s => {
+    const map = {
+      amex:   ['#EAF3DE','#27500A','AMEX'],
+      chase:  ['#E6F1FB','#0C447C','CHASE'],
+      amazon: ['#FEF3C7','#92400E','AMAZON'],
+      bank:   ['#F1EFE8','#444441','BANK'],
+    };
+    const [bg, fg, label] = map[(s||'').toLowerCase()] || ['#f3f4f6','#374151', (s||'').toUpperCase()];
+    return `<span style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:3px;background:${bg};color:${fg};white-space:nowrap">${label}</span>`;
+  };
+  const tag = (text, type) => {
+    const styles = {
+      ok:   'background:var(--color-background-success,#dcfce7);color:var(--color-text-success,#166534)',
+      warn: 'background:var(--color-background-warning,#fef9c3);color:var(--color-text-warning,#854d0e)',
+      flag: 'background:var(--color-background-danger,#fee2e2);color:var(--color-text-danger,#991b1b)',
+      pend: 'background:var(--color-background-info,#dbeafe);color:var(--color-text-info,#1e40af)',
+      note: 'background:var(--color-background-secondary,#f9fafb);color:var(--color-text-secondary,#6b7280)',
+    };
+    return `<span style="display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:6px;white-space:nowrap;${styles[type]||styles.note}">${text}</span>`;
+  };
+  const secHeader = (icon, text) =>
+    `<div style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:var(--color-text-tertiary,#9ca3af);letter-spacing:.06em;text-transform:uppercase;margin:1.5rem 0 8px">
+      <i class="ti ti-${icon}" aria-hidden="true"></i>${text}
+    </div>`;
+  const card = inner =>
+    `<div style="background:var(--color-background-primary,#fff);border:0.5px solid var(--color-border-tertiary,rgba(0,0,0,.12));border-radius:12px;overflow:hidden;margin-bottom:12px">${inner}</div>`;
+  const tHead = cols =>
+    `<thead><tr>${cols.map(([w,label,align])=>`<th style="font-size:11px;font-weight:600;color:var(--color-text-tertiary,#9ca3af);text-align:${align||'left'};padding:6px 10px;border-bottom:0.5px solid var(--color-border-tertiary,rgba(0,0,0,.1));${w?`width:${w}`:''}"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}</div></th>`).join('')}</tr></thead>`;
+
+  // ── 1. Vendor group matching ──────────────────────────────────────────────
   const groupUsedExternal = new Set();
+  const groupUsedGastos   = new Set();
+  const groupResults = [];
 
-  const groupHtml = VENDOR_GROUPS.map(grp => {
-    // CC/bank charges that belong to this group
-    const charges = [...RECON_DATA.allCC, ...RECON_DATA.bank].filter((x, idx) => {
-      const key = x.id || idx;
-      return descMatchesKeywords(x.description, grp.chargeKeywords);
+  VENDOR_GROUPS.forEach(grp => {
+    const keywords = grp.chargeKeywords || grp.ccKeywords || [];
+    const charges = [...RECON_DATA.allCC, ...RECON_DATA.bank].filter(x => {
+      if (!descMatchesKeywords(x.description, keywords)) return false;
+      groupUsedExternal.add(x.id); return true;
     });
-    charges.forEach(x => groupUsedExternal.add(x.id));
-
-    // GASTOS rows that belong to this group
     const gRows = RECON_DATA.gastos.filter((g, i) => {
-      if (grp.gastosVendors.some(v => (g.description || '').toUpperCase().includes(v.toUpperCase()))) {
-        groupUsedGastos.add(i);
-        return true;
+      if (grp.gastosVendors.some(v => (g.description||'').toUpperCase().includes(v.toUpperCase()))) {
+        groupUsedGastos.add(i); return true;
       }
       return false;
     });
+    const ccTotal = charges.reduce((s,x) => s + x.amount, 0);
+    const gTotal  = gRows.reduce((s,g) => s + g.amount, 0);
+    const diff    = gTotal - ccTotal;
+    const isMatch = Math.abs(diff) < 0.05;
+    groupResults.push({ grp, charges, gRows, ccTotal, gTotal, diff, isMatch });
+  });
 
-    const chargeTotal  = charges.reduce((s, x) => s + x.amount, 0);
-    const gastosTotal  = gRows.reduce((s, g) => s + g.amount, 0);
-    const diff         = gastosTotal - chargeTotal;
-    const isMatch      = Math.abs(diff) < 0.02;
-    const isPending    = diff > 0.01;
-    const isOver       = diff < -0.01;
-
-    const statusBadge = isMatch
-      ? '<span style="background:#dcfce7;color:#166534;font-size:.72rem;font-weight:700;padding:3px 10px;border-radius:20px">✅ MATCHED</span>'
-      : isPending
-        ? `<span style="background:#fef9c3;color:#854d0e;font-size:.72rem;font-weight:700;padding:3px 10px;border-radius:20px">⏳ PENDING $${diff.toFixed(2)}</span>`
-        : `<span style="background:#fee2e2;color:#991b1b;font-size:.72rem;font-weight:700;padding:3px 10px;border-radius:20px">⚠️ OVER BY $${Math.abs(diff).toFixed(2)}</span>`;
-
-    const chargeRows = charges.length
-      ? charges.map(x => `<tr style="font-size:.8rem"><td style="padding:6px 10px;color:#6b7280">${fmtDate(x.date)}</td><td style="padding:6px 10px">${x.description}</td><td style="padding:6px 10px;text-align:right;color:#dc2626;font-weight:600">$${x.amount.toFixed(2)}</td><td style="padding:6px 10px;color:#6b7280">${(x.source||'').toUpperCase()}</td></tr>`).join('')
-      : '<tr><td colspan="4" style="padding:8px 10px;color:#9ca3af;font-size:.8rem">No charges found yet — may still be pending</td></tr>';
-
-    const gastosLineRows = gRows.length
-      ? gRows.map(g => `<tr style="font-size:.8rem"><td style="padding:6px 10px;color:#6b7280">${fmtDate(g.date)}</td><td style="padding:6px 10px">${g.description}</td><td style="padding:6px 10px;text-align:right;font-weight:600">$${g.amount.toFixed(2)}</td><td style="padding:6px 10px;color:#6b7280">GASTOS</td></tr>`).join('')
-      : '<tr><td colspan="4" style="padding:8px 10px;color:#9ca3af;font-size:.8rem">No GASTOS entries</td></tr>';
-
-    return `
-      <div style="border:1px solid ${isMatch ? '#bbf7d0' : isPending ? '#fde047' : '#fecaca'};border-radius:12px;overflow:hidden;margin-bottom:14px">
-        <div style="background:${isMatch ? '#f0fdf4' : isPending ? '#fefce8' : '#fff3f3'};padding:12px 16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-          <div>
-            <div style="font-weight:700;font-size:.95rem;color:var(--navy)">${grp.label}</div>
-            <div style="font-size:.78rem;color:#6b7280;margin-top:2px">
-              CC/Bank charged: <strong>$${chargeTotal.toFixed(2)}</strong> &nbsp;|&nbsp;
-              GASTOS total: <strong>$${gastosTotal.toFixed(2)}</strong>
-              ${!isMatch ? `&nbsp;|&nbsp; Difference: <strong style="color:${isPending?'#854d0e':'#991b1b'}">$${Math.abs(diff).toFixed(2)}</strong>` : ''}
-            </div>
-          </div>
-          ${statusBadge}
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr">
-          <div style="border-right:1px solid #f3f4f6">
-            <div style="padding:8px 10px;font-size:.72rem;font-weight:700;color:#6b7280;text-transform:uppercase;background:#f8fafc;border-bottom:1px solid #f3f4f6">CC / Bank Charges</div>
-            <table style="width:100%;border-collapse:collapse"><tbody>${chargeRows}</tbody>
-              <tr style="background:#f8fafc;border-top:1px solid #f3f4f6"><td colspan="2" style="padding:7px 10px;font-size:.78rem;font-weight:700">Total Charged</td><td style="padding:7px 10px;text-align:right;font-weight:700;color:#dc2626">$${chargeTotal.toFixed(2)}</td><td></td></tr>
-            </table>
-          </div>
-          <div>
-            <div style="padding:8px 10px;font-size:.72rem;font-weight:700;color:#6b7280;text-transform:uppercase;background:#f8fafc;border-bottom:1px solid #f3f4f6">GASTOS Entries</div>
-            <table style="width:100%;border-collapse:collapse"><tbody>${gastosLineRows}</tbody>
-              <tr style="background:#f8fafc;border-top:1px solid #f3f4f6"><td colspan="2" style="padding:7px 10px;font-size:.78rem;font-weight:700">Total in GASTOS</td><td style="padding:7px 10px;text-align:right;font-weight:700">$${gastosTotal.toFixed(2)}</td><td></td></tr>
-            </table>
-          </div>
-        </div>
-      </div>`;
-  }).join('');
-
-  // ── 2. Standard 1:1 matching for everything outside vendor groups ─────────
-  const remainingExternal = [...RECON_DATA.allCC, ...RECON_DATA.bank]
-    .filter(x => !groupUsedExternal.has(x.id));
-  const remainingGastos = RECON_DATA.gastos
-    .filter((_, i) => !groupUsedGastos.has(i));
-
+  // ── 2. 1:1 matching ───────────────────────────────────────────────────────
+  const remainingExternal = [...RECON_DATA.allCC, ...RECON_DATA.bank].filter(x => !groupUsedExternal.has(x.id));
+  const remainingGastos   = RECON_DATA.gastos.filter((_, i) => !groupUsedGastos.has(i));
   const usedG = new Set();
   const matches = [];
   const unmatchedExternal = [];
+
   for (const ext of remainingExternal) {
     let bestIdx = -1, bestScore = -1;
     for (let i = 0; i < remainingGastos.length; i++) {
       if (usedG.has(i)) continue;
       const g = remainingGastos[i];
-      if (Math.abs(g.amount - ext.amount) > 0.01) continue;
+      if (Math.abs(g.amount - ext.amount) > 0.10) continue;
       const dd = dateDiffDays(g.date, ext.date);
-      if (dd > 5) continue;
-      const score = (5 - dd) + (tokenOverlap(ext.description, g.description) ? 2 : 0);
+      if (dd > 14) continue;
+      const score = (14 - dd) + (tokenOverlap(ext.description, g.description) ? 4 : 0);
       if (score > bestScore) { bestScore = score; bestIdx = i; }
     }
     if (bestIdx >= 0) { usedG.add(bestIdx); matches.push({ external: ext, gastos: remainingGastos[bestIdx] }); }
@@ -431,41 +466,168 @@ function renderReconReport() {
   }
   const unmatchedGastos = remainingGastos.filter((_, i) => !usedG.has(i));
 
-  // Store for stats
-  RECON_DATA.matches = matches;
+  RECON_DATA.matches           = matches;
   RECON_DATA.unmatchedExternal = unmatchedExternal;
-  RECON_DATA.unmatchedGastos = unmatchedGastos;
+  RECON_DATA.unmatchedGastos   = unmatchedGastos;
 
-  const mRows = matches.map(m => `
-    <tr><td>${fmtDate(m.external.date)}</td><td>${(m.external.source||'').toUpperCase()}</td><td>${m.external.description}</td><td>${m.gastos.description}</td><td>$${m.external.amount.toFixed(2)}</td></tr>
-  `).join('') || '<tr><td colspan="5">No matches found.</td></tr>';
+  // Separate unmatched by month
+  const now = new Date();
+  const curMonth = now.getMonth();
+  const curYear  = now.getFullYear();
+  const juneNeeds  = unmatchedExternal.filter(x => { const d = x.date instanceof Date ? x.date : new Date(x.date); return d.getMonth() === curMonth && d.getFullYear() === curYear; });
+  const spillover  = unmatchedExternal.filter(x => { const d = x.date instanceof Date ? x.date : new Date(x.date); return !(d.getMonth() === curMonth && d.getFullYear() === curYear); });
 
-  const uRows = unmatchedExternal.map(x => `
-    <tr><td>${fmtDate(x.date)}</td><td>${(x.source||'').toUpperCase()}</td><td>${x.description}</td><td>$${x.amount.toFixed(2)}</td></tr>
-  `).join('') || '<tr><td colspan="4">All Bank/CC items accounted for.</td></tr>';
+  // Separate unmatchedGastos into ACH (no CC expected) vs truly unmatched
+  const achVendors = ['LOOMIS','MCS','HOLSUM','HOLSUM PR','IDEAL ACCOUNTING','CHICK-FIL-A WAREHOUSE','ANGEL BERRIOS','EMPRESAS'];
+  const achOnly    = unmatchedGastos.filter(g => achVendors.some(v => (g.description||'').toUpperCase().includes(v)));
+  const gUnmatched = unmatchedGastos.filter(g => !achVendors.some(v => (g.description||'').toUpperCase().includes(v)));
 
-  const gRows = unmatchedGastos.map(x => `
-    <tr><td>${fmtDate(x.date)}</td><td>${x.description}</td><td>$${x.amount.toFixed(2)}</td></tr>
-  `).join('') || '<tr><td colspan="3">All GASTOS entries accounted for.</td></tr>';
+  // ── 3. Summary stat cards ─────────────────────────────────────────────────
+  const gastosTotal  = RECON_DATA.gastos.reduce((s,g) => s + g.amount, 0);
+  const ccTotal      = [...RECON_DATA.allCC, ...RECON_DATA.bank].reduce((s,x) => s + x.amount, 0);
+  const needsEntry   = juneNeeds.length;
+  const matchedCount = matches.length + groupResults.filter(r => r.isMatch).length;
 
+  const statCard = (icon, label, value, sub, danger) =>
+    `<div style="background:var(--color-background-secondary,#f9fafb);border-radius:8px;padding:1rem;${danger?'border:1px solid var(--color-border-danger,#fecaca)':''}">
+      <div style="font-size:12px;color:var(--color-text-secondary,#6b7280);margin-bottom:4px;display:flex;align-items:center;gap:5px">
+        <i class="ti ti-${icon}" aria-hidden="true" ${danger?'style="color:var(--color-text-danger,#dc2626)"':''}></i>${label}
+      </div>
+      <div style="font-size:22px;font-weight:500;color:${danger?'var(--color-text-danger,#dc2626)':'var(--color-text-primary,#111)'}">${value}</div>
+      <div style="font-size:12px;color:var(--color-text-tertiary,#9ca3af);margin-top:3px">${sub}</div>
+    </div>`;
+
+  // ── 4. Vendor group HTML ──────────────────────────────────────────────────
+  const groupTableRows = groupResults.map(({grp, charges, gRows, ccTotal: ct, gTotal: gt, diff, isMatch}) => {
+    const isPending = diff > 0.05;
+    const statusTag = isMatch
+      ? tag('✓ Match', 'ok')
+      : isPending
+        ? tag('CC pending', 'pend')
+        : tag(`Missing ${fmt$(Math.abs(diff))}`, 'flag');
+    return `<tr>
+      <td style="padding:8px 10px;font-weight:500;color:var(--color-text-primary)">${grp.label}</td>
+      <td style="padding:8px 10px;color:var(--color-text-secondary);text-align:center">${charges.length}</td>
+      <td style="padding:8px 10px;color:var(--color-text-secondary);text-align:center">${gRows.length}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:500">${fmt$(ct)}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:500">${fmt$(gt)}</td>
+      <td style="padding:8px 10px">${statusTag}</td>
+    </tr>`;
+  }).join('');
+
+  // ── 5. Not in GASTOS rows ─────────────────────────────────────────────────
+  const needsRows = juneNeeds.map(x =>
+    `<tr>
+      <td style="padding:6px 10px">${fmtD(x.date)}</td>
+      <td style="padding:6px 10px">${srcBadge(x.source)}</td>
+      <td style="padding:6px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${x.description}</td>
+      <td style="padding:6px 10px;text-align:right;font-weight:600;color:var(--color-text-danger,#dc2626)">${fmt$(x.amount)}</td>
+    </tr>`
+  ).join('') || `<tr><td colspan="4" style="padding:10px;color:var(--color-text-success,#166534);text-align:center">✓ All current-month charges are in GASTOS</td></tr>`;
+
+  // ── 6. ACH payments rows ──────────────────────────────────────────────────
+  // Match ACH gastos entries against bank debits by amount
+  const achRows = achOnly.map(g => {
+    const bankMatch = RECON_DATA.bank.find(b => Math.abs(b.amount - g.amount) < 0.05);
+    let statusTag;
+    if (bankMatch)                                      statusTag = tag('✓ Cleared', 'ok');
+    else if ((g.description||'').toUpperCase().includes('CHICK-FIL-A WAREHOUSE')) statusTag = tag('With invoice', 'pend');
+    else if ((g.description||'').toUpperCase().includes('MCS') ||
+             (g.description||'').toUpperCase().includes('LOOMIS'))                statusTag = tag('Not paid yet', 'pend');
+    else                                                statusTag = tag('Verify', 'warn');
+    return `<tr>
+      <td style="padding:6px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${g.description}</td>
+      <td style="padding:6px 10px;text-align:right;font-weight:500">${fmt$(g.amount)}</td>
+      <td style="padding:6px 10px">${statusTag}</td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="3" style="padding:10px;color:var(--color-text-secondary,#6b7280)">No ACH entries found.</td></tr>`;
+
+  // ── 7. Matched 1:1 rows ───────────────────────────────────────────────────
+  const matchedRows = matches.map(m =>
+    `<tr>
+      <td style="padding:6px 10px">${fmtD(m.external.date)}</td>
+      <td style="padding:6px 10px">${srcBadge(m.external.source)}</td>
+      <td style="padding:6px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${m.external.description}</td>
+      <td style="padding:6px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-text-secondary)">${m.gastos.description}</td>
+      <td style="padding:6px 10px;text-align:right;font-weight:500">${fmt$(m.external.amount)}</td>
+    </tr>`
+  ).join('') || `<tr><td colspan="5" style="padding:10px;color:var(--color-text-secondary)">No 1:1 matches found.</td></tr>`;
+
+  // ── 8. Spillover rows ─────────────────────────────────────────────────────
+  const spillRows = spillover.length
+    ? spillover.map(x =>
+        `<tr style="opacity:.7">
+          <td style="padding:5px 10px">${fmtD(x.date)}</td>
+          <td style="padding:5px 10px">${srcBadge(x.source)}</td>
+          <td style="padding:5px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${x.description}</td>
+          <td style="padding:5px 10px;text-align:right">${fmt$(x.amount)}</td>
+        </tr>`
+      ).join('')
+    : `<tr><td colspan="4" style="padding:10px;color:var(--color-text-success,#166534);text-align:center">✓ No prior-month spillover</td></tr>`;
+
+  // ── 9. Assemble HTML ──────────────────────────────────────────────────────
   wrap.innerHTML = `
-    <div style="margin-top:10px">
-      <div style="font-weight:700;font-size:1rem;color:var(--navy);margin-bottom:10px">🔗 Vendor Group Reconciliation</div>
-      ${groupHtml}
+
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem;flex-wrap:wrap;gap:8px">
+      <div>
+        <div style="font-size:16px;font-weight:500;color:var(--color-text-primary)">Los Filtros — June 2026</div>
+        <div style="font-size:12px;color:var(--color-text-secondary);margin-top:2px">Chase + Amex + Amazon + Gastos · Run ${new Date(RECON_DATA.lastRunAt).toLocaleTimeString()}</div>
+      </div>
+      <span style="display:inline-block;font-size:12px;font-weight:600;padding:5px 12px;border-radius:8px;${needsEntry > 0 ? 'background:var(--color-background-danger,#fee2e2);color:var(--color-text-danger,#991b1b)' : 'background:var(--color-background-success,#dcfce7);color:var(--color-text-success,#166534)'}">${needsEntry > 0 ? needsEntry + ' items need entry' : '✓ All charges accounted for'}</span>
     </div>
-    <div class="tbl-wrap" style="margin-top:18px">
-      <div class="tbl-bar"><strong>Other Matched (1:1) (${matches.length})</strong></div>
-      <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Source</th><th>Bank/CC Description</th><th>GASTOS Description</th><th>Amount</th></tr></thead><tbody>${mRows}</tbody></table></div>
+
+    <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:1.5rem">
+      ${statCard('file-invoice','Gastos total', fmt$(gastosTotal), `${RECON_DATA.gastos.length} active entries`, false)}
+      ${statCard('credit-card','CC + Amazon', fmt$(ccTotal), `${RECON_DATA.allCC.length} charges`, false)}
+      ${statCard('alert-triangle','Needs entry', needsEntry.toString(), 'current month only', needsEntry > 0)}
+      ${statCard('circle-check','Matched', matchedCount.toString(), `+ ${spillover.length} prior month excluded`, false)}
     </div>
-    <div class="tbl-wrap" style="margin-top:14px">
-      <div class="tbl-bar"><strong>Missing In GASTOS (from Bank/CC) (${unmatchedExternal.length})</strong></div>
-      <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Source</th><th>Description</th><th>Amount</th></tr></thead><tbody>${uRows}</tbody></table></div>
+
+    ${secHeader('layout-grid', 'vendor group reconciliation')}
+    ${card(`<table style="width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed">
+      ${tHead([['170px','Group'],['55px','CC','center'],['55px','Gastos','center'],['100px','CC net','right'],['100px','Gastos','right'],['','Status']])}
+      <tbody>${groupTableRows}</tbody>
+    </table>`)}
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+
+      <div>
+        ${secHeader('alert-circle', `not in gastos — enter now (${needsEntry})`)}
+        ${card(`<table style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed">
+          ${tHead([['48px','Date'],['60px','Source'],['','Description'],['80px','Amount','right']])}
+          <tbody>${needsRows}</tbody>
+        </table>`)}
+
+        ${secHeader('building-bank', 'ach payments')}
+        ${card(`<table style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed">
+          ${tHead([['','Vendor'],['85px','Gastos','right'],['100px','Status']])}
+          <tbody>${achRows}</tbody>
+        </table>`)}
+      </div>
+
+      <div>
+        ${secHeader('circle-check', `matched 1:1 (${matches.length})`)}
+        ${card(`<table style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed">
+          ${tHead([['48px','Date'],['60px','Source'],['','CC description'],['','Gastos vendor'],['80px','Amount','right']])}
+          <tbody>${matchedRows}</tbody>
+        </table>`)}
+
+        ${spillover.length ? `
+        ${secHeader('clock', `prior month spillover — already in may gastos (${spillover.length})`)}
+        ${card(`<table style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed">
+          ${tHead([['48px','Date'],['60px','Source'],['','Description'],['80px','Amount','right']])}
+          <tbody>${spillRows}</tbody>
+        </table>`)}` : ''}
+      </div>
+
     </div>
-    <div class="tbl-wrap" style="margin-top:14px">
-      <div class="tbl-bar"><strong>Only In GASTOS — not on any statement (${unmatchedGastos.length})</strong></div>
-      <div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Description</th><th>Amount</th></tr></thead><tbody>${gRows}</tbody></table></div>
+
+    <div style="margin-top:4px;padding:10px 12px;background:var(--color-background-secondary,#f9fafb);border-radius:8px;font-size:12px;color:var(--color-text-secondary,#6b7280);display:flex;align-items:center;gap:8px">
+      <i class="ti ti-info-circle" aria-hidden="true"></i>
+      Voided Gastos entries excluded automatically · ACH payments matched against bank debits by amount
     </div>
   `;
+
   updateReconHeaderStats();
 }
 
@@ -513,6 +675,24 @@ async function handleReconUpload(kind, files) {
       alert('AMEX upload currently supports CSV only. Please export to CSV and upload again.');
       continue;
     }
+
+    // Amazon: accept image screenshots — parse via Claude Vision
+    if (kind === 'amazon' && ['jpg','jpeg','png','webp'].includes(ext)) {
+      try {
+        showToast('📸 Reading Amazon screenshot with AI...');
+        const txns = await parseAmazonScreenshot(file);
+        if (!txns.length) {
+          alert(`No transactions found in the screenshot. Make sure amounts are visible.`);
+        } else {
+          showToast(`✅ Amazon screenshot — ${txns.length} transactions extracted.`);
+          uploaded.push(...txns);
+        }
+      } catch (err) {
+        alert(`Error reading screenshot: ${err.message}`);
+      }
+      continue;
+    }
+
     if (ext !== 'csv') {
       alert(`"${file.name}" is not CSV. Please upload CSV files for reconciliation.`);
       continue;
@@ -787,6 +967,57 @@ function updateDashboard() {
 }
 
 // ══════════════════════════════════════════
+// AMAZON SCREENSHOT PARSER — Claude Vision
+// ══════════════════════════════════════════
+async function parseAmazonScreenshot(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const base64 = reader.result.split(',')[1];
+        const mediaType = file.type || 'image/jpeg';
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-6',
+            max_tokens: 1000,
+            messages: [{
+              role: 'user',
+              content: [
+                {
+                  type: 'image',
+                  source: { type: 'base64', media_type: mediaType, data: base64 }
+                },
+                {
+                  type: 'text',
+                  text: 'This is a screenshot of Amazon Business credit card transactions. Extract all POSTED transactions (ignore PENDING). Return ONLY a JSON array, no markdown, no explanation. Each item: {"date":"MM/DD/YYYY","amount":number,"description":"Amazon Business"}. Example: [{"date":"06/18/2026","amount":49.75,"description":"Amazon Business"}]'
+                }
+              ]
+            }]
+          })
+        });
+        const data = await response.json();
+        const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+        const clean = text.replace(/```json|```/g, '').trim();
+        const rows = JSON.parse(clean);
+        const txns = rows.map((r, i) => ({
+          id: `amazon-img-${i}-${r.amount}`,
+          source: 'amazon',
+          date: parseDateLoose(r.date),
+          amount: Math.abs(parseFloat(r.amount)),
+          description: r.description || 'Amazon Business'
+        })).filter(t => t.date && t.amount > 0);
+        resolve(txns);
+      } catch (err) {
+        reject(err);
+      }
+    };
+    reader.onerror = () => reject(new Error('Could not read image file'));
+    reader.readAsDataURL(file);
+  });
+}
+
 // PDF PARSER — Chase Ink Premier Statement
 // ══════════════════════════════════════════
 // The Chase statement PDF uses a doubled-character font for section headers
