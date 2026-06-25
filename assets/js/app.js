@@ -291,8 +291,12 @@ function csvToTxns(text, sourceName) {
     let amount = null;
     let rawAmount = null;
     if (amountIdx >= 0) rawAmount = row[amountIdx];
-    if (rawAmount == null && debitIdx >= 0) rawAmount = row[debitIdx];
-    if (rawAmount == null && creditIdx >= 0) rawAmount = row[creditIdx];
+    // Only fall back to debit/credit cols for non-Gastos sources
+    // Gastos uses PAYMENT_ID which falsely matches 'payment' — never use fallback for Gastos
+    if (!isGastos) {
+      if (rawAmount == null && debitIdx >= 0) rawAmount = row[debitIdx];
+      if (rawAmount == null && creditIdx >= 0) rawAmount = row[creditIdx];
+    }
 
     // For Amex: positive = charge, negative = payment — skip negatives
     if (sourceName === 'amex') {
@@ -331,18 +335,32 @@ function updateReconHeaderStats() {
   if (!page) return;
   const cards = page.querySelectorAll('.stat-grid .stat-card');
   if (cards.length < 5) return;
-  const ccMatched = RECON_DATA.matches.filter(m => m.external.source !== 'bank').length;
-  const ccNoReceipt = RECON_DATA.unmatchedExternal.filter(x => x.source !== 'bank').length;
-  const bankNoReceipt = RECON_DATA.unmatchedExternal.filter(x => x.source === 'bank').length;
-  const extTotal = RECON_DATA.allCC.length + RECON_DATA.bank.length;
-  const progress = extTotal ? Math.round((RECON_DATA.matches.length / extTotal) * 100) : 0;
 
-  if (cards[0]) cards[0].querySelector('.sval').textContent = `$${RECON_DATA.gastos.reduce((a, x) => a + x.amount, 0).toFixed(2)}`;
-  const txNode = cards[0] ? cards[0].querySelector('div[style*="font-size:.75rem"]') : null;
-  if (txNode) txNode.textContent = `${RECON_DATA.gastos.length} transactions`;
-  if (cards[1]) cards[1].querySelector('.sval').textContent = ccMatched.toString();
-  if (cards[3]) cards[3].querySelector('.sval').textContent = (ccNoReceipt).toString();
-  if (cards[4]) cards[4].querySelector('.sval').textContent = ccNoReceipt.toString();
+  const gastosTotal = RECON_DATA.gastos.reduce((a, x) => a + x.amount, 0);
+  const matched     = RECON_DATA.matches.length;
+  const groups      = VENDOR_GROUPS.length;
+  const needsEntry  = RECON_DATA.unmatchedExternal.filter(x => {
+    const d = x.date instanceof Date ? x.date : new Date(x.date);
+    const now = new Date();
+    return x.source !== 'bank' && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+  }).length;
+  const achCount = RECON_DATA.unmatchedGastos ? RECON_DATA.unmatchedGastos.filter(g => {
+    const ACH = ['LOOMIS','MCS','HOLSUM','IDEAL ACCOUNTING','CHICK-FIL-A WAREHOUSE','ANGEL BERRIOS','EMPRESAS'];
+    return ACH.some(v => (g.description||'').toUpperCase().includes(v));
+  }).length : 0;
+
+  const extTotal = RECON_DATA.allCC.length + RECON_DATA.bank.length;
+  const progress = extTotal ? Math.round((matched / extTotal) * 100) : 0;
+
+  if (cards[0]) {
+    cards[0].querySelector('.sval').textContent = `$${gastosTotal.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+    const txNode = cards[0].querySelector('div[style*="font-size:.75rem"]');
+    if (txNode) txNode.textContent = `${RECON_DATA.gastos.length} entries`;
+  }
+  if (cards[1]) cards[1].querySelector('.sval').textContent = matched.toString();
+  if (cards[2]) cards[2].querySelector('.sval').textContent = groups.toString();
+  if (cards[3]) cards[3].querySelector('.sval').textContent = needsEntry.toString();
+  if (cards[4]) cards[4].querySelector('.sval').textContent = achCount.toString();
 
   const fill = page.querySelector('.recon-progress-fill');
   if (fill) {
@@ -377,6 +395,10 @@ const VENDOR_GROUPS = [
 
 // CC charges that are prior-month payments — always treat as spillover regardless of date
 const PRIOR_MONTH_KEYWORDS = ['CC1 BEER'];
+// Sysco charges in first 7 days = prior month payment (handled by skipIfDayOfMonth in group)
+// But they also fall through to 1:1 — mark them as spillover there too
+const PRIOR_MONTH_EARLY_VENDORS = ['SYSCO'];
+const PRIOR_MONTH_EARLY_MAX_DAY = 7;
 
 function descMatchesKeywords(desc, keywords) {
   const d = (desc || '').toUpperCase();
@@ -460,7 +482,8 @@ function renderReconReport() {
     const gTotal  = gRows.reduce((s,g) => s + g.amount, 0);
     const diff    = gTotal - ccTotal;
     const isMatch = Math.abs(diff) < 0.05;
-    groupResults.push({ grp, charges, gRows, ccTotal, gTotal, diff, isMatch });
+    const noCC = charges.length === 0;
+    groupResults.push({ grp, charges, gRows, ccTotal, gTotal, diff, isMatch, noCC });
   });
 
   // ── 2. 1:1 matching ───────────────────────────────────────────────────────
@@ -470,15 +493,13 @@ function renderReconReport() {
   });
 
   // Holsum: sum all Gastos entries and match against single bank ACH batch
-  const holsumGastos = RECON_DATA.gastos.filter((g,i) =>
-    !groupUsedGastos.has(i) && (g.description||'').toUpperCase().includes('HOLSUM'));
-  const holsumTotal = holsumGastos.reduce((s,g) => s + g.amount, 0);
+  const holsumGastosWithIdx = RECON_DATA.gastos
+    .map((g,i) => ({g,i}))
+    .filter(({g,i}) => !groupUsedGastos.has(i) && (g.description||'').toUpperCase().includes('HOLSUM'));
+  const holsumTotal = holsumGastosWithIdx.reduce((s,{g}) => s + g.amount, 0);
   const holsumBank  = RECON_DATA.bank.find(b => Math.abs(b.amount - holsumTotal) < 0.05);
-  const holsumGIds  = new Set(holsumGastos.map((_,i) => i));
   if (holsumBank) groupUsedExternal.add(holsumBank.id);
-  holsumGastos.forEach((_,i) => groupUsedGastos.add(
-    RECON_DATA.gastos.findIndex((g,ri) => !groupUsedGastos.has(ri) && g.description === holsumGastos[i].description && g.amount === holsumGastos[i].amount)
-  ));
+  holsumGastosWithIdx.forEach(({i}) => groupUsedGastos.add(i));
 
   const remainingGastos = RECON_DATA.gastos.filter((_, i) => !groupUsedGastos.has(i));
   const usedG = new Set();
@@ -487,7 +508,16 @@ function renderReconReport() {
 
   // Also exclude prior-month keyword charges from 1:1 matching — they go to spillover
   for (const ext of remainingExternal) {
-    if (priorMonthKws.some(k => (ext.description||'').toUpperCase().includes(k.toUpperCase()))) {
+    const extDesc = (ext.description||'').toUpperCase();
+    const extDate = ext.date instanceof Date ? ext.date : new Date(ext.date);
+    // Always-spillover keywords
+    if (priorMonthKws.some(k => extDesc.includes(k.toUpperCase()))) {
+      unmatchedExternal.push(ext); continue;
+    }
+    // Early-month vendor payments (e.g. Sysco on 06/01-06/07 = paying May invoices)
+    const earlyVendors = typeof PRIOR_MONTH_EARLY_VENDORS !== 'undefined' ? PRIOR_MONTH_EARLY_VENDORS : [];
+    const maxDay = typeof PRIOR_MONTH_EARLY_MAX_DAY !== 'undefined' ? PRIOR_MONTH_EARLY_MAX_DAY : 7;
+    if (earlyVendors.some(v => extDesc.includes(v.toUpperCase())) && extDate.getDate() <= maxDay) {
       unmatchedExternal.push(ext); continue;
     }
     let bestIdx = -1, bestScore = -1;
@@ -539,11 +569,14 @@ function renderReconReport() {
   // ── 4. Vendor group HTML ──────────────────────────────────────────────────
   const groupTableRows = groupResults.map(({grp, charges, gRows, ccTotal: ct, gTotal: gt, diff, isMatch}) => {
     const isPending = diff > 0.05;
+    const isAmazon = (grp.label||'').toLowerCase().includes('amazon');
     const statusTag = isMatch
       ? tag('✓ Match', 'ok')
-      : isPending
-        ? tag('CC pending', 'pend')
-        : tag(`Missing ${fmt$(Math.abs(diff))}`, 'flag');
+      : (noCC && isAmazon)
+        ? tag('Upload screenshot', 'note')
+        : isPending
+          ? tag('CC pending', 'pend')
+          : tag(`Missing ${fmt$(Math.abs(diff))}`, 'flag');
     return `<tr>
       <td style="padding:8px 10px;font-weight:500;color:var(--color-text-primary)">${grp.label}</td>
       <td style="padding:8px 10px;color:var(--color-text-secondary);text-align:center">${charges.length}</td>
@@ -630,8 +663,8 @@ function renderReconReport() {
 
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem;flex-wrap:wrap;gap:8px">
       <div>
-        <div style="font-size:16px;font-weight:500;color:var(--color-text-primary)">Los Filtros — June 2026</div>
-        <div style="font-size:12px;color:var(--color-text-secondary);margin-top:2px">Chase + Amex + Amazon + Gastos · Run ${new Date(RECON_DATA.lastRunAt).toLocaleTimeString()}</div>
+        <div style="font-size:16px;font-weight:500;color:var(--color-text-primary)">Los Filtros — ${new Date(RECON_DATA.lastRunAt).toLocaleString('en-US',{month:'long',year:'numeric'})}</div>
+        <div style="font-size:12px;color:var(--color-text-secondary);margin-top:2px">Chase + Amex + Amazon + Banco Popular + Gastos · ${new Date(RECON_DATA.lastRunAt).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}</div>
       </div>
       <span style="display:inline-block;font-size:12px;font-weight:600;padding:5px 12px;border-radius:8px;${needsEntry > 0 ? 'background:var(--color-background-danger,#fee2e2);color:var(--color-text-danger,#991b1b)' : 'background:var(--color-background-success,#dcfce7);color:var(--color-text-success,#166534)'}">${needsEntry > 0 ? needsEntry + ' items need entry' : '✓ All charges accounted for'}</span>
     </div>
@@ -673,7 +706,7 @@ function renderReconReport() {
         </table>`)}
 
         ${spillover.length ? `
-        ${secHeader('clock', `prior month spillover — already in may gastos (${spillover.length})`)}
+        ${secHeader('clock', `prior month charges — already in prior gastos (${spillover.length})`)}
         ${card(`<table style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed">
           ${tHead([['48px','Date'],['60px','Source'],['','Description'],['80px','Amount','right']])}
           <tbody>${spillRows}</tbody>
