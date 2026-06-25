@@ -261,6 +261,18 @@ function csvToTxns(text, sourceName) {
     if (isGastos && voidIdx >= 0 && String(row[voidIdx] || '').trim()) continue;
 
     // If this is a BPPR bank statement, skip credits and cash requests
+    // Bank: only keep debits within current month OR up to 14 days before month start
+    if (sourceName === 'bank') {
+      const now = new Date();
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const twoWeeksPrior = new Date(monthStart.getTime() - 14 * 24 * 60 * 60 * 1000);
+      if (date < twoWeeksPrior) continue;
+      // Skip CFA wires, payroll, CC payments, cash, IVU, draws
+      const skipKw = ['CHICK FIL A PR','CHASE CREDIT CRD','AMERICAN EXPRESS','CURRENCY CASH',
+        'TELEPAGO','BPPR MERCHANT','COMM SVC','STATE IVU','MUNICIPAL IVU','AJUSTE','CFA CORP WEB'];
+      const dUp = (rawDesc || '').toUpperCase();
+      if (skipKw.some(k => dUp.includes(k))) continue;
+    }
     if (sourceName === 'bank' && typeIdx >= 0) {
       const txType = String(row[typeIdx] || '').trim();
       if (txType !== 'DB') continue; // skip credits/deposits
@@ -345,28 +357,26 @@ function updateReconHeaderStats() {
 // and their sum is compared against the sum of all matching GASTOS rows.
 const VENDOR_GROUPS = [
   {
-    label: 'Freshpoint / Sysco (Food)',
+    label:          'Freshpoint / Sysco',
     chargeKeywords: ['SYSCO', 'FRESHPOINT', 'SYGMA'],
     gastosVendors:  ['FRESHPOINT PUERTO RICO'],
+    // 06/01-06/07 Sysco charges are prior-month payments — skip them
+    skipIfDayOfMonth: { max: 7 },
   },
   {
-    label: 'Beverages (Coca-Cola / PR Coffee)',
-    chargeKeywords: ['CC1 BEER', 'COCA COLA', 'COCA-COLA', 'PR COFFEE', 'COKE'],
+    label:          'Coca-Cola / PR Coffee',
+    chargeKeywords: ['COCA COLA', 'COCA-COLA', 'PR COFFEE', 'COKE'],
     gastosVendors:  ['COCA-COLA PR', 'PR COFFEE'],
   },
   {
     label:          'Amazon Business',
-    ccKeywords:     ['AMAZON'],
-    sources:        ['amazon'],
+    chargeKeywords: ['AMAZON'],
     gastosVendors:  ['AMAZON BUSINESS', 'AMAZON'],
   },
-  {
-    label:          'La Casa de los Tornillos / Empresas de Soldaduras',
-    ccKeywords:     ['TORNILLOS', 'TORNI', 'SOLDADURAS', 'CASA DE LOS'],
-    sources:        ['chase', 'amex'],
-    gastosVendors:  ['EMPRESAS DE SOLDADURAS'],
-  },
 ];
+
+// CC charges that are prior-month payments — always treat as spillover regardless of date
+const PRIOR_MONTH_KEYWORDS = ['CC1 BEER'];
 
 function descMatchesKeywords(desc, keywords) {
   const d = (desc || '').toUpperCase();
@@ -424,10 +434,20 @@ function renderReconReport() {
   const groupUsedGastos   = new Set();
   const groupResults = [];
 
+  // Mark prior-month keywords as spillover before group matching
+  const priorMonthKws = typeof PRIOR_MONTH_KEYWORDS !== 'undefined' ? PRIOR_MONTH_KEYWORDS : [];
+
   VENDOR_GROUPS.forEach(grp => {
     const keywords = grp.chargeKeywords || grp.ccKeywords || [];
     const charges = [...RECON_DATA.allCC, ...RECON_DATA.bank].filter(x => {
       if (!descMatchesKeywords(x.description, keywords)) return false;
+      // Skip if marked as prior-month keyword
+      if (priorMonthKws.some(k => (x.description||'').toUpperCase().includes(k.toUpperCase()))) return false;
+      // Skip if group has skipIfDayOfMonth and charge falls in that range
+      if (grp.skipIfDayOfMonth) {
+        const d = x.date instanceof Date ? x.date : new Date(x.date);
+        if (grp.skipIfDayOfMonth.max && d.getDate() <= grp.skipIfDayOfMonth.max) return false;
+      }
       groupUsedExternal.add(x.id); return true;
     });
     const gRows = RECON_DATA.gastos.filter((g, i) => {
@@ -444,13 +464,32 @@ function renderReconReport() {
   });
 
   // ── 2. 1:1 matching ───────────────────────────────────────────────────────
-  const remainingExternal = [...RECON_DATA.allCC, ...RECON_DATA.bank].filter(x => !groupUsedExternal.has(x.id));
-  const remainingGastos   = RECON_DATA.gastos.filter((_, i) => !groupUsedGastos.has(i));
+  const remainingExternal = [...RECON_DATA.allCC, ...RECON_DATA.bank].filter(x => {
+    if (!groupUsedExternal.has(x.id)) return true;
+    return false;
+  });
+
+  // Holsum: sum all Gastos entries and match against single bank ACH batch
+  const holsumGastos = RECON_DATA.gastos.filter((g,i) =>
+    !groupUsedGastos.has(i) && (g.description||'').toUpperCase().includes('HOLSUM'));
+  const holsumTotal = holsumGastos.reduce((s,g) => s + g.amount, 0);
+  const holsumBank  = RECON_DATA.bank.find(b => Math.abs(b.amount - holsumTotal) < 0.05);
+  const holsumGIds  = new Set(holsumGastos.map((_,i) => i));
+  if (holsumBank) groupUsedExternal.add(holsumBank.id);
+  holsumGastos.forEach((_,i) => groupUsedGastos.add(
+    RECON_DATA.gastos.findIndex((g,ri) => !groupUsedGastos.has(ri) && g.description === holsumGastos[i].description && g.amount === holsumGastos[i].amount)
+  ));
+
+  const remainingGastos = RECON_DATA.gastos.filter((_, i) => !groupUsedGastos.has(i));
   const usedG = new Set();
   const matches = [];
   const unmatchedExternal = [];
 
+  // Also exclude prior-month keyword charges from 1:1 matching — they go to spillover
   for (const ext of remainingExternal) {
+    if (priorMonthKws.some(k => (ext.description||'').toUpperCase().includes(k.toUpperCase()))) {
+      unmatchedExternal.push(ext); continue;
+    }
     let bestIdx = -1, bestScore = -1;
     for (let i = 0; i < remainingGastos.length; i++) {
       if (usedG.has(i)) continue;
@@ -526,21 +565,42 @@ function renderReconReport() {
   ).join('') || `<tr><td colspan="4" style="padding:10px;color:var(--color-text-success,#166534);text-align:center">✓ All current-month charges are in GASTOS</td></tr>`;
 
   // ── 6. ACH payments rows ──────────────────────────────────────────────────
-  // Match ACH gastos entries against bank debits by amount
-  const achRows = achOnly.map(g => {
+  // Group Holsum into single row, match others individually against bank
+  const holsumAch = achOnly.filter(g => (g.description||'').toUpperCase().includes('HOLSUM'));
+  const otherAch  = achOnly.filter(g => !(g.description||'').toUpperCase().includes('HOLSUM'));
+  const holsumAchTotal = holsumAch.reduce((s,g) => s + g.amount, 0);
+  const holsumBankMatch = RECON_DATA.bank.find(b => Math.abs(b.amount - holsumAchTotal) < 0.05);
+
+  const achItems = [];
+  if (holsumAch.length) {
+    achItems.push({
+      label: `Holsum PR (×${holsumAch.length} invoices)`,
+      amount: holsumAchTotal,
+      status: holsumBankMatch ? tag('✓ Cleared', 'ok') : tag('Not paid yet', 'pend'),
+    });
+  }
+  for (const g of otherAch) {
     const bankMatch = RECON_DATA.bank.find(b => Math.abs(b.amount - g.amount) < 0.05);
+    const desc = (g.description||'').toUpperCase();
     let statusTag;
-    if (bankMatch)                                      statusTag = tag('✓ Cleared', 'ok');
-    else if ((g.description||'').toUpperCase().includes('CHICK-FIL-A WAREHOUSE')) statusTag = tag('With invoice', 'pend');
-    else if ((g.description||'').toUpperCase().includes('MCS') ||
-             (g.description||'').toUpperCase().includes('LOOMIS'))                statusTag = tag('Not paid yet', 'pend');
-    else                                                statusTag = tag('Verify', 'warn');
-    return `<tr>
-      <td style="padding:6px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${g.description}</td>
-      <td style="padding:6px 10px;text-align:right;font-weight:500">${fmt$(g.amount)}</td>
-      <td style="padding:6px 10px">${statusTag}</td>
-    </tr>`;
-  }).join('') || `<tr><td colspan="3" style="padding:10px;color:var(--color-text-secondary,#6b7280)">No ACH entries found.</td></tr>`;
+    if (bankMatch)                              statusTag = tag('✓ Cleared', 'ok');
+    else if (desc.includes('CHICK-FIL-A'))      statusTag = tag('With invoice', 'pend');
+    else if (desc.includes('MCS') || desc.includes('LOOMIS')) statusTag = tag('Not paid yet', 'pend');
+    else if (desc.includes('IDEAL'))            statusTag = tag('$1,275 draw', 'note');
+    else                                        statusTag = tag('Verify', 'warn');
+    achItems.push({ label: g.description, amount: g.amount, status: statusTag });
+  }
+  // Add Angel Berrios if matched via bank
+  const angelMatch = RECON_DATA.matches ? RECON_DATA.matches.find(m => (m.gastos.description||'').toUpperCase().includes('ANGEL BERRIOS')) : null;
+  if (angelMatch) {
+    achItems.unshift({ label: 'Angel Berrios Garcia OSO', amount: angelMatch.external.amount, status: tag('✓ Cleared', 'ok') });
+  }
+
+  const achRows = achItems.map(item => `<tr>
+    <td style="padding:6px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.label}</td>
+    <td style="padding:6px 10px;text-align:right;font-weight:500">${fmt$(item.amount)}</td>
+    <td style="padding:6px 10px">${item.status}</td>
+  </tr>`).join('') || `<tr><td colspan="3" style="padding:10px;color:var(--color-text-secondary)">No ACH entries found.</td></tr>`;
 
   // ── 7. Matched 1:1 rows ───────────────────────────────────────────────────
   const matchedRows = matches.map(m =>
@@ -688,7 +748,8 @@ async function handleReconUpload(kind, files) {
           uploaded.push(...txns);
         }
       } catch (err) {
-        alert(`Error reading screenshot: ${err.message}`);
+        showToast(`❌ Amazon screenshot failed: ${err.message}. Try uploading a CSV instead.`);
+        console.error('Amazon Vision error:', err);
       }
       continue;
     }
@@ -698,7 +759,8 @@ async function handleReconUpload(kind, files) {
       continue;
     }
     const text = await readFileText(file);
-    uploaded.push(...csvToTxns(text, kind === 'gastos' ? 'gastos' : kind === 'bank' ? 'bank' : 'cc'));
+    const srcName = kind === 'gastos' ? 'gastos' : kind === 'bank' ? 'bank' : kind;
+    uploaded.push(...csvToTxns(text, srcName));
   }
 
   if (kind === 'gastos') RECON_DATA.gastos = uploaded;
