@@ -307,7 +307,9 @@ function csvToTxns(text, sourceName) {
       const twoWeeksPrior = new Date(monthStart.getTime() - 14 * 24 * 60 * 60 * 1000);
       if (date < twoWeeksPrior) continue;
       const skipKw = ['CHICK FIL A PR','CHASE CREDIT CRD','AMERICAN EXPRESS','CURRENCY CASH',
-        'TELEPAGO','BPPR MERCHANT','COMM SVC','STATE IVU','MUNICIPAL IVU','AJUSTE','CFA CORP WEB'];
+        'TELEPAGO','BPPR MERCHANT','COMM SVC','STATE IVU','MUNICIPAL IVU','AJUSTE','CFA CORP WEB',
+        'VIRTUAL S DEPOSIT','BPPR MRCH. DEP','EFT DEPOSIT BPPR','EFT DEPOSIT UBER',
+        'UBER USA','DEPOSITO'];
       const dUp = (rawDesc || '').toUpperCase();
       if (skipKw.some(k => dUp.includes(k))) continue;
     }
@@ -5566,7 +5568,10 @@ function handleBPStatement(file) {
 
     const SKIP_KW = ['CHICK FIL A PR','CHASE CREDIT CRD','AMERICAN EXPRESS','CURRENCY CASH',
       'TELEPAGO','BPPR MERCHANT','COMM SVC','STATE IVU','MUNICIPAL IVU','AJUSTE','CFA CORP WEB',
-      'CURRENCY CASH REQ'];
+      'CURRENCY CASH REQ',
+      // Deposits / credits — not relevant to expense reconciliation
+      'VIRTUAL S DEPOSIT','BPPR MRCH. DEP','EFT DEPOSIT BPPR','EFT DEPOSIT Uber',
+      'UBER USA','DEPOSITO'];
 
     const debits = [];
     for (let i = 1; i < lines.length; i++) {
