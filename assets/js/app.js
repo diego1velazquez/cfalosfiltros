@@ -261,18 +261,6 @@ function csvToTxns(text, sourceName) {
     if (isGastos && voidIdx >= 0 && String(row[voidIdx] || '').trim()) continue;
 
     // If this is a BPPR bank statement, skip credits and cash requests
-    // Bank: only keep debits within current month OR up to 14 days before month start
-    if (sourceName === 'bank') {
-      const now = new Date();
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      const twoWeeksPrior = new Date(monthStart.getTime() - 14 * 24 * 60 * 60 * 1000);
-      if (date < twoWeeksPrior) continue;
-      // Skip CFA wires, payroll, CC payments, cash, IVU, draws
-      const skipKw = ['CHICK FIL A PR','CHASE CREDIT CRD','AMERICAN EXPRESS','CURRENCY CASH',
-        'TELEPAGO','BPPR MERCHANT','COMM SVC','STATE IVU','MUNICIPAL IVU','AJUSTE','CFA CORP WEB'];
-      const dUp = (rawDesc || '').toUpperCase();
-      if (skipKw.some(k => dUp.includes(k))) continue;
-    }
     if (sourceName === 'bank' && typeIdx >= 0) {
       const txType = String(row[typeIdx] || '').trim();
       if (txType !== 'DB') continue; // skip credits/deposits
@@ -310,6 +298,20 @@ function csvToTxns(text, sourceName) {
 
     const date = parseDateLoose(rawDate);
     if (!date || amount == null || amount <= 0) continue;
+
+    // Bank: only keep rows within current month OR up to 14 days prior
+    // Also skip CFA wires, payroll, CC payments, draws
+    if (sourceName === 'bank') {
+      const now = new Date();
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const twoWeeksPrior = new Date(monthStart.getTime() - 14 * 24 * 60 * 60 * 1000);
+      if (date < twoWeeksPrior) continue;
+      const skipKw = ['CHICK FIL A PR','CHASE CREDIT CRD','AMERICAN EXPRESS','CURRENCY CASH',
+        'TELEPAGO','BPPR MERCHANT','COMM SVC','STATE IVU','MUNICIPAL IVU','AJUSTE','CFA CORP WEB'];
+      const dUp = (rawDesc || '').toUpperCase();
+      if (skipKw.some(k => dUp.includes(k))) continue;
+    }
+
     out.push({
       id: `${sourceName}-${r}-${fmtDate(date)}-${amount.toFixed(2)}`,
       source: sourceName,
@@ -839,9 +841,9 @@ function initReconciliationUI() {
   slots[4].addEventListener('change', async (e) => {
     // Feed bank data into reconciliation engine
     await handleReconUpload('bank', e.target.files);
-    if (notes[3]) notes[3].textContent = `✓ ${RECON_DATA.bank.length} rows cached`;
     // Also feed into BP debit display panel
     if (e.target.files && e.target.files[0]) handleBPStatement(e.target.files[0]);
+    if (notes[3]) notes[3].textContent = `✓ ${e.target.files[0]?.name || 'file'} loaded — ${RECON_DATA.bank.length} debits parsed`;
   });
 
   if (runBtn) runBtn.addEventListener('click', runReconciliation);
