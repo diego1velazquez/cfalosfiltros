@@ -413,6 +413,9 @@ const PRIOR_MONTH_KEYWORDS = ['CC1 BEER'];
 // But they also fall through to 1:1 — mark them as spillover there too
 const PRIOR_MONTH_EARLY_VENDORS = ['SYSCO'];
 const PRIOR_MONTH_EARLY_MAX_DAY = 7;
+// Bank ACH payments in first 7 days of month = paying prior month vendor invoices
+const PRIOR_MONTH_EARLY_BANK_KW = ['EFT PMT PERTENECEN LLC'];
+const PRIOR_MONTH_EARLY_BANK_MAX_DAY = 7;
 
 function descMatchesKeywords(desc, keywords) {
   const d = (desc || '').toUpperCase();
@@ -499,7 +502,9 @@ function renderReconReport() {
     const ccTotal = charges.reduce((s,x) => s + x.amount, 0);
     const gTotal  = gRows.reduce((s,g) => s + g.amount, 0);
     const diff    = gTotal - ccTotal;
-    const isMatch = Math.abs(diff) < 0.05;
+    // Freshpoint: allow up to $200 diff to account for Sysco supplier credits
+    const isFreshpoint = (grp.label||'').toLowerCase().includes('freshpoint');
+    const isMatch = isFreshpoint ? Math.abs(diff) <= 200 : Math.abs(diff) < 0.05;
     const noCC = charges.length === 0;
     groupResults.push({ grp, charges, gRows, ccTotal, gTotal, diff, isMatch, noCC });
   });
@@ -538,6 +543,12 @@ function renderReconReport() {
     if (earlyVendors.some(v => extDesc.includes(v.toUpperCase())) && extDate.getDate() <= maxDay) {
       unmatchedExternal.push(ext); continue;
     }
+    // Early-month bank ACH payments = prior month vendor payments (Holsum, Tres Monjitas, etc.)
+    const earlyBankKw = typeof PRIOR_MONTH_EARLY_BANK_KW !== 'undefined' ? PRIOR_MONTH_EARLY_BANK_KW : [];
+    const earlyBankMaxDay = typeof PRIOR_MONTH_EARLY_BANK_MAX_DAY !== 'undefined' ? PRIOR_MONTH_EARLY_BANK_MAX_DAY : 7;
+    if (ext.source === 'bank' && earlyBankKw.some(k => extDesc.includes(k.toUpperCase())) && extDate.getDate() <= earlyBankMaxDay) {
+      unmatchedExternal.push(ext); continue;
+    }
     let bestIdx = -1, bestScore = -1;
     for (let i = 0; i < remainingGastos.length; i++) {
       if (usedG.has(i)) continue;
@@ -561,7 +572,12 @@ function renderReconReport() {
   const now = new Date();
   const curMonth = now.getMonth();
   const curYear  = now.getFullYear();
-  const juneNeeds  = unmatchedExternal.filter(x => { const d = x.date instanceof Date ? x.date : new Date(x.date); return d.getMonth() === curMonth && d.getFullYear() === curYear; });
+  // Needs entry = only CC/Amazon charges (not bank debits) in current month
+  const juneNeeds  = unmatchedExternal.filter(x => {
+    if (x.source === 'bank') return false;  // bank debits handled in ACH section
+    const d = x.date instanceof Date ? x.date : new Date(x.date);
+    return d.getMonth() === curMonth && d.getFullYear() === curYear;
+  });
   const spillover  = unmatchedExternal.filter(x => { const d = x.date instanceof Date ? x.date : new Date(x.date); return !(d.getMonth() === curMonth && d.getFullYear() === curYear); });
 
   // Separate unmatchedGastos into ACH (no CC expected) vs truly unmatched
@@ -571,7 +587,12 @@ function renderReconReport() {
 
   // ── 3. Summary stat cards ─────────────────────────────────────────────────
   const gastosTotal  = RECON_DATA.gastos.reduce((s,g) => s + g.amount, 0);
-  const ccTotal      = RECON_DATA.allCC.reduce((s,x) => s + x.amount, 0);
+  // CC total: only current month charges (prior month are spillover, not June's)
+  const now2 = new Date();
+  const ccTotal = RECON_DATA.allCC.filter(x => {
+    const d = x.date instanceof Date ? x.date : new Date(x.date);
+    return d.getMonth() === now2.getMonth() && d.getFullYear() === now2.getFullYear();
+  }).reduce((s,x) => s + x.amount, 0);
   const needsEntry   = juneNeeds.length;
   const matchedCount = matches.length + groupResults.filter(r => r.isMatch).length;
 
