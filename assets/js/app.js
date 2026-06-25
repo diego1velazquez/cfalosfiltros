@@ -728,8 +728,9 @@ function renderReconReport() {
 
 function runReconciliation() {
   const external = [...RECON_DATA.bank, ...RECON_DATA.allCC];
+  console.log('[RECON] gastos:', RECON_DATA.gastos.length, 'allCC:', RECON_DATA.allCC.length, 'bank:', RECON_DATA.bank.length, 'amex:', RECON_DATA.amex.length, 'chase:', RECON_DATA.chase.length);
   if (!RECON_DATA.gastos.length) { alert('Upload at least one GASTOS CSV first.'); return; }
-  if (!external.length) { alert('Upload at least one Bank or Credit Card statement first.'); return; }
+  if (!external.length) { alert('No CC or Bank data found. Gastos=' + RECON_DATA.gastos.length + ' Amex=' + RECON_DATA.amex.length + ' Chase=' + RECON_DATA.chase.length + ' Bank=' + RECON_DATA.bank.length); return; }
   RECON_DATA.lastRunAt = new Date().toISOString();
   renderReconReport();
   showToast('✅ Reconciliation complete!');
