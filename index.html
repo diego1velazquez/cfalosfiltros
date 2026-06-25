@@ -355,11 +355,11 @@
             <div class="file-slot">
               <h4>Banco Popular Statement</h4>
               <p>Bank statement CSV — debits (money out) only. Credits/deposits are ignored.</p>
-              <input type="file" accept=".csv" id="bpStatementFile" onchange="handleBPStatement(this.files[0])"/>
+              <input type="file" accept=".csv" id="bpStatementFile"/>
               <div class="cached-note" id="bpCachedNote">✓ No file cached — upload to add</div>
             </div>
           </div>
-          <button class="btn btn-red2" style="margin-top:20px">Run Reconciliation</button>
+          <button class="btn btn-red2" id="runReconBtn" style="margin-top:20px">Run Reconciliation</button>
 
           <!-- BP Debits Panel — shows immediately after upload -->
           <div id="bpDebitPanel" style="display:none;margin-top:24px">

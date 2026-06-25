@@ -817,7 +817,7 @@ function initReconciliationUI() {
   if (slots.length < 5) return;
 
   const notes = page.querySelectorAll('.cached-note');
-  const runBtn = page.querySelector('.ccard-top .btn.btn-red2');
+  const runBtn = document.getElementById('runReconBtn');
   const search = page.querySelector('.recon-search');
 
   slots[0].addEventListener('change', async (e) => {
@@ -837,8 +837,11 @@ function initReconciliationUI() {
     if (notes[2]) notes[2].textContent = `✓ ${RECON_DATA.amazon.length} rows cached`;
   });
   slots[4].addEventListener('change', async (e) => {
+    // Feed bank data into reconciliation engine
     await handleReconUpload('bank', e.target.files);
     if (notes[3]) notes[3].textContent = `✓ ${RECON_DATA.bank.length} rows cached`;
+    // Also feed into BP debit display panel
+    if (e.target.files && e.target.files[0]) handleBPStatement(e.target.files[0]);
   });
 
   if (runBtn) runBtn.addEventListener('click', runReconciliation);
