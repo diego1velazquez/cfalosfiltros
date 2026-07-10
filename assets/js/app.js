@@ -6112,18 +6112,54 @@ async function fcrCallClaudeExtract(rawText) {
   });
   if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
   const data = await res.json();
-  const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
+  const rawResponseText = data.content?.[0]?.text || '';
 
   if (data.stop_reason === 'max_tokens') {
-    console.error('FCR extraction was truncated by max_tokens. Raw text so far:', text);
+    console.error('FCR extraction was truncated by max_tokens. Raw text so far:', rawResponseText);
     throw new Error('The AI response was cut off before finishing (report may be larger than expected). Try again — if it keeps happening, let Claude know so the token limit can be raised further.');
+  }
+
+  return fcrParseJsonLoose(rawResponseText);
+}
+
+// Claude is instructed to return ONLY JSON, but on a large/complex extraction it can
+// occasionally add a stray sentence before/after the JSON block, or produce small
+// syntax slips (trailing commas, smart quotes). This survives all of those instead
+// of failing outright on a single strict JSON.parse().
+function fcrParseJsonLoose(raw) {
+  let text = (raw || '').trim();
+
+  // Strip any markdown code fences (```json ... ``` or plain ``` ... ```)
+  text = text.replace(/```[a-zA-Z]*\n?/g, '').replace(/```/g, '').trim();
+
+  // If there's stray prose before/after, isolate the outermost { ... } block
+  const firstBrace = text.indexOf('{');
+  const lastBrace = text.lastIndexOf('}');
+  if (firstBrace > 0 || (lastBrace >= 0 && lastBrace < text.length - 1)) {
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      text = text.slice(firstBrace, lastBrace + 1);
+    }
   }
 
   try {
     return JSON.parse(text);
-  } catch (e) {
-    console.error('FCR extraction returned invalid JSON:', text);
-    throw new Error('Could not parse the AI\'s response as JSON. Check the browser console for the raw output, or try uploading again.');
+  } catch (e1) {
+    // Light repair pass: trailing commas + curly/smart quotes are the two most common
+    // things a model slips in that break strict JSON without changing the actual data.
+    let repaired = text
+      .replace(/,(\s*[}\]])/g, '$1')
+      .replace(/[\u201C\u201D]/g, '"')
+      .replace(/[\u2018\u2019]/g, "'");
+    try {
+      const parsed = JSON.parse(repaired);
+      console.warn('FCR extraction JSON needed light repair (trailing commas / smart quotes) — parsed successfully after cleanup.');
+      return parsed;
+    } catch (e2) {
+      console.error('FCR extraction: could not parse JSON even after repair attempt.');
+      console.error('Original response:', raw);
+      console.error('Parse error:', e2.message);
+      throw new Error(`Could not parse the AI's response as JSON (${e2.message}). Full raw output was logged to the browser console (F12 → Console tab) — copy it and share it so this can be fixed. Try uploading again in the meantime.`);
+    }
   }
 }
 
