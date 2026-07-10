@@ -98,6 +98,7 @@ function goTab(t) {
   if (t === 'eom')       eomInit();
   if (t === 'meals')     { renderMealPenalties(); populateEmployeeDropdowns(); }
   if (t === 'recon')     { initReconciliationUI(); renderReconReport(); }
+  if (t === 'fcr')       fcrInit();
   if (t === 'catering')  cateringInit();
   if (t === 'writeups')  { wuRefreshEmpList(); wuLoadPendingQueue(); }
 }
@@ -5943,4 +5944,709 @@ function cateringExportCSV() {
   const a    = document.createElement('a');
   a.href = url; a.download = `catering_${new Date().toISOString().slice(0,10)}.csv`;
   a.click(); URL.revokeObjectURL(url);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// FCR TRENDS MODULE
+// Upload monthly FCR PDFs → AI-parse → editable review → save →
+// automatic month-over-month/YTD comparison, contractual verification
+// checks, and operational variance flagging.
+// ══════════════════════════════════════════════════════════════════
+
+const FCR_PROXY = `${SUPABASE_URL}/functions/v1/claude-proxy`;
+
+// Fixed contractual rules — a deviation here is a well-formed question for
+// CFA Inc / your CPA, not a judgment call. Tolerances absorb rounding noise.
+const FCR_FLAT_FEE_CHECKS = [
+  { name: 'Equipment Rent', label: 'Equipment Rent' },
+  { name: 'Business Services Fee', label: 'Business Services Fee' },
+  { name: 'Common Area Maintenance', label: 'Common Area Maintenance (CAM)' },
+];
+
+const FCR = { reports: [], lineItemsByReport: {}, pendingParse: null, _variance: [] };
+
+// ── Init ───────────────────────────────────────────────────────────
+async function fcrInit() {
+  const app = document.getElementById('fcrApp');
+  if (!app) return;
+  if (app.dataset.init !== '1') {
+    app.dataset.init = '1';
+    fcrRenderShell(app);
+  }
+  await fcrLoadAll();
+  fcrRenderDashboard();
+}
+
+function fcrRenderShell(app) {
+  app.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+      <div>
+        <h2 style="margin:0;font-size:1.2rem;color:var(--navy)">📈 FCR Trends</h2>
+        <span style="font-size:.78rem;color:var(--text-mid)">Month-over-month &amp; YTD comparison across your Financial Control Reports</span>
+      </div>
+    </div>
+    <div class="ccard ccard-top">
+      <div class="ccard-body">
+        <h2 style="font-size:1.05rem;margin-top:0">Upload FCR</h2>
+        <p class="desc">Upload the monthly FCR PDF from the CFA backoffice. It's parsed automatically — you'll review and can correct anything before it's saved.</p>
+        <div class="file-slot required">
+          <h4>FCR PDF <span>Month-end report</span></h4>
+          <p>"Los Filtros FSU — For The Month Ending [Date]" export</p>
+          <input type="file" accept=".pdf" id="fcrFileInput" onchange="fcrHandleFile(this.files[0])"/>
+        </div>
+        <div id="fcrUploadStatus" style="margin-top:10px;font-size:.85rem"></div>
+      </div>
+    </div>
+    <div id="fcrPreviewWrap" style="display:none;margin-top:20px"></div>
+    <div id="fcrDashboardWrap" style="margin-top:20px"></div>
+  `;
+}
+
+async function fcrLoadAll() {
+  const { data: reports, error } = await getSupa()
+    .from('fcr_reports').select('*')
+    .order('period_year', { ascending: true })
+    .order('period_month', { ascending: true });
+  if (error) { console.error('fcrLoadAll reports:', error); return; }
+  FCR.reports = reports || [];
+  FCR.lineItemsByReport = {};
+  if (FCR.reports.length) {
+    const ids = FCR.reports.map(r => r.id);
+    const { data: items, error: e2 } = await getSupa()
+      .from('fcr_line_items').select('*').in('report_id', ids);
+    if (e2) { console.error('fcrLoadAll items:', e2); return; }
+    for (const it of (items || [])) (FCR.lineItemsByReport[it.report_id] ||= []).push(it);
+  }
+}
+
+// ── Upload → Extract (pdf.js + Claude) → Editable Preview ──────────
+async function fcrHandleFile(file) {
+  if (!file) return;
+  const status = document.getElementById('fcrUploadStatus');
+  status.innerHTML = '<span style="color:var(--navy)">⏳ Reading PDF...</span>';
+  try {
+    const text = await fcrExtractPdfText(file);
+    status.innerHTML = '<span style="color:var(--navy)">⚙️ Parsing line items with AI — this can take 20-30s...</span>';
+    const parsed = await fcrCallClaudeExtract(text);
+    FCR.pendingParse = { file, parsed };
+    status.innerHTML = '<span style="color:#16a34a">✓ Parsed. Review below before saving.</span>';
+    fcrRenderPreview(parsed);
+  } catch (err) {
+    console.error(err);
+    status.innerHTML = `<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px;color:#991b1b;font-size:.83rem">⚠️ ${err.message || 'Failed to parse PDF'}</div>`;
+  }
+}
+
+async function fcrExtractPdfText(file) {
+  if (typeof pdfjsLib === 'undefined') {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+      s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  let allLines = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const byY = {};
+    for (const item of content.items) {
+      const y = Math.round(item.transform[5] / 3) * 3;
+      (byY[y] ||= []).push({ x: item.transform[4], text: item.str });
+    }
+    const ys = Object.keys(byY).map(Number).sort((a, b) => b - a);
+    for (const y of ys) {
+      const lineText = byY[y].sort((a, b) => a.x - b.x).map(i2 => i2.text).join(' ').replace(/\s+/g, ' ').trim();
+      if (lineText) allLines.push(lineText);
+    }
+  }
+  return allLines.join('\n');
+}
+
+const FCR_SYSTEM_PROMPT = `You extract structured summary data from Chick-fil-A "FSU" Financial Control Reports (FCR) for the Los Filtros location in Puerto Rico. The raw text was extracted from a PDF and line-wrapped imperfectly — use judgment to reassemble rows.
+
+STRUCTURE:
+- Each summary line has a name followed by four numbers in order: CM USD, CM %, YTD USD, YTD %, then two more numbers (PY CM USD/%, PY YTD USD/%) which are always 0.00 for this operator — ignore those last two entirely, do not include them in your output.
+- Top-level rows are category names ending in "*" (e.g. "Food Cost*", "Talent Investment*") OR the row "Chick-fil-A Puerto Rico LLC Expenses and Fees" (no asterisk, still top-level) OR "Net Profit" (do NOT include Net Profit as a line item — extract it separately, see below).
+- Every top-level row: section = its own name with the trailing "*" stripped, parent_line = null, is_subtotal = true.
+- Indented rows beneath a top-level row (marked with a leading "-" in the source) are children: section = the top-level ancestor's name (no asterisk), parent_line = the immediate parent row's name, is_subtotal = false (unless it's itself a mid-level rollup with children of its own, like "Other" under Talent Investment, or "Rent" / "Property Tax" / "Utilities" sub-groupings — use your judgment on whether a row is a pass-through label or a real leaf value).
+- CRITICAL — "Chick-fil-A Puerto Rico LLC Expenses and Fees" contains these children (do NOT treat them as separate top-level sections even if visually they look bolded/indented like top-level rows): Equipment Rent, Business Services Fee, Base Franchise Fee - Royalty, Base Franchise Fee - Services, Rent (itself containing Base Rent CFA, Percentage Rent CFA, etc. as children), Property Tax (containing Unit Property Tax Expense - Owned RE, Unit Property Tax Expense - BPP, etc.), Additional Charges & Expenses (containing Common Area Maintenance, etc.). Verify: the sum of Equipment Rent + Business Services Fee + Base Franchise Fee - Royalty + Base Franchise Fee - Services + Rent + Property Tax + Additional Charges & Expenses should equal the "Chick-fil-A Puerto Rico LLC Expenses and Fees" total exactly.
+- DEDUPE RULE: when a mid-level header line is immediately followed by a single child line with the identical name AND identical numbers (a PDF layout artifact — e.g. "Equipment Rent" appearing twice in a row with the same $6,600.00), return only ONE row for it.
+- Do NOT skip zero-value or "No Transactions Exist" line items — include them with cm_amount 0, they matter for trend tracking.
+- SKIP the transaction detail blocks (rows starting with a date like "06/15" followed by Debits/Credits/Journal Entry Description text) — we only want the summary rows with the four numbers, not individual transactions.
+- has_accrual_entries: true if you can see, in the journal-entry description text sitting near/under that summary line, any entry containing "To accrue" or "Promo Reclass" — otherwise false.
+
+ALSO EXTRACT, from the top and bottom of the report:
+- period_month (1-12), period_year — from "For The Month Ending [Month] [DD], [YYYY]"
+- total_sales_cm — the "Total Sales" row's CM USD figure
+- net_profit_cm, net_profit_pct_cm — the "Net Profit" row's CM USD and CM %
+
+Return ONLY valid JSON, no markdown, no backticks, no preamble, in exactly this shape:
+{
+  "period_month": 6,
+  "period_year": 2026,
+  "total_sales_cm": 874919.82,
+  "net_profit_cm": 153585.64,
+  "net_profit_pct_cm": 17.55,
+  "line_items": [
+    { "section":"Food Cost", "parent_line":null, "line_item":"Food Cost", "is_subtotal":true, "has_accrual_entries":false, "cm_amount":263800.04, "cm_pct":30.15, "ytd_amount":803135.97, "ytd_pct":30.37 },
+    { "section":"Food Cost", "parent_line":"Food Cost", "line_item":"Food Cost less Refills", "is_subtotal":false, "has_accrual_entries":true, "cm_amount":260419.65, "cm_pct":29.76, "ytd_amount":792376.46, "ytd_pct":29.96 }
+  ]
+}`;
+
+async function fcrCallClaudeExtract(rawText) {
+  const res = await fetch(FCR_PROXY, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON}` },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 8000,
+      system: FCR_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: `Extract this FCR:\n\n${rawText}` }]
+    })
+  });
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
+  return JSON.parse(text);
+}
+
+// ── Editable Preview ─────────────────────────────────────────────
+function fcrEsc(s) { return String(s == null ? '' : s).replace(/"/g, '&quot;'); }
+function fcrEscJs(s) { return String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, ' '); }
+function fcrFmt(n) { return (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function fcrMonthName(m) {
+  return ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][m] || m;
+}
+function fcrMonthLabel(r) { return `${fcrMonthName(r.period_month)} ${r.period_year}`; }
+
+function fcrRenderPreview(parsed) {
+  const wrap = document.getElementById('fcrPreviewWrap');
+  wrap.style.display = 'block';
+  wrap.innerHTML = `
+    <div class="ccard">
+      <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <strong style="color:var(--navy)">Review Parsed Data — ${fcrMonthName(parsed.period_month)} ${parsed.period_year}</strong>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-sm" onclick="fcrAddRow()">+ Add Row</button>
+          <button class="btn btn-red2 btn-sm" onclick="fcrSaveReport()">Save Report</button>
+        </div>
+      </div>
+      <div class="ccard-body">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px">
+          <div><label style="font-size:.72rem;color:var(--text-light);display:block;margin-bottom:3px">Total Sales (CM)</label>
+            <input class="sinput" id="fcrTotalSales" type="number" step="0.01" value="${parsed.total_sales_cm}" oninput="fcrRecalcCheck()" style="width:100%"/></div>
+          <div><label style="font-size:.72rem;color:var(--text-light);display:block;margin-bottom:3px">Net Profit (CM)</label>
+            <input class="sinput" id="fcrNetProfit" type="number" step="0.01" value="${parsed.net_profit_cm}" oninput="fcrRecalcCheck()" style="width:100%"/></div>
+          <div><label style="font-size:.72rem;color:var(--text-light);display:block;margin-bottom:3px">Net Profit %</label>
+            <input class="sinput" id="fcrNetProfitPct" type="number" step="0.01" value="${parsed.net_profit_pct_cm}" style="width:100%"/></div>
+          <div><label style="font-size:.72rem;color:var(--text-light);display:block;margin-bottom:3px">Month</label>
+            <input class="sinput" id="fcrPeriodMonth" type="number" min="1" max="12" value="${parsed.period_month}" style="width:100%"/></div>
+          <div><label style="font-size:.72rem;color:var(--text-light);display:block;margin-bottom:3px">Year</label>
+            <input class="sinput" id="fcrPeriodYear" type="number" value="${parsed.period_year}" style="width:100%"/></div>
+        </div>
+        <div id="fcrParseCheck" style="margin-bottom:16px"></div>
+        <div style="max-height:520px;overflow:auto;border:1px solid var(--border);border-radius:10px">
+          <table style="width:100%;border-collapse:collapse;font-size:.78rem" id="fcrPreviewTable">
+            <thead style="position:sticky;top:0;background:#f8fafc;z-index:1">
+              <tr>
+                <th style="padding:6px 8px;text-align:left">Section</th>
+                <th style="padding:6px 8px;text-align:left">Parent</th>
+                <th style="padding:6px 8px;text-align:left">Line Item</th>
+                <th style="padding:6px 8px;text-align:center">Sub?</th>
+                <th style="padding:6px 8px;text-align:center">Accr?</th>
+                <th style="padding:6px 8px;text-align:right">CM $</th>
+                <th style="padding:6px 8px;text-align:right">CM %</th>
+                <th style="padding:6px 8px;text-align:right">YTD $</th>
+                <th style="padding:6px 8px;text-align:right">YTD %</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>${parsed.line_items.map((li, idx) => fcrPreviewRow(li, idx)).join('')}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+  fcrRecalcCheck();
+  wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function fcrPreviewRow(li, idx) {
+  const topLevel = !li.parent_line;
+  return `
+    <tr data-idx="${idx}" style="border-bottom:1px solid #f1f5f9;${topLevel ? 'background:#f8fafc;font-weight:700' : ''}">
+      <td style="padding:4px"><input class="sinput" value="${fcrEsc(li.section)}" oninput="fcrUpdateRow(${idx},'section',this.value)" style="width:120px"/></td>
+      <td style="padding:4px"><input class="sinput" value="${fcrEsc(li.parent_line)}" oninput="fcrUpdateRow(${idx},'parent_line',this.value)" style="width:120px"/></td>
+      <td style="padding:4px"><input class="sinput" value="${fcrEsc(li.line_item)}" oninput="fcrUpdateRow(${idx},'line_item',this.value)" style="width:150px"/></td>
+      <td style="padding:4px;text-align:center"><input type="checkbox" ${li.is_subtotal ? 'checked' : ''} onchange="fcrUpdateRow(${idx},'is_subtotal',this.checked)"/></td>
+      <td style="padding:4px;text-align:center"><input type="checkbox" ${li.has_accrual_entries ? 'checked' : ''} onchange="fcrUpdateRow(${idx},'has_accrual_entries',this.checked)"/></td>
+      <td style="padding:4px"><input class="sinput" type="number" step="0.01" value="${li.cm_amount}" oninput="fcrUpdateRow(${idx},'cm_amount',parseFloat(this.value)||0)" style="width:85px;text-align:right"/></td>
+      <td style="padding:4px"><input class="sinput" type="number" step="0.01" value="${li.cm_pct}" oninput="fcrUpdateRow(${idx},'cm_pct',parseFloat(this.value)||0)" style="width:65px;text-align:right"/></td>
+      <td style="padding:4px"><input class="sinput" type="number" step="0.01" value="${li.ytd_amount}" oninput="fcrUpdateRow(${idx},'ytd_amount',parseFloat(this.value)||0)" style="width:85px;text-align:right"/></td>
+      <td style="padding:4px"><input class="sinput" type="number" step="0.01" value="${li.ytd_pct}" oninput="fcrUpdateRow(${idx},'ytd_pct',parseFloat(this.value)||0)" style="width:65px;text-align:right"/></td>
+      <td style="padding:4px"><button class="btn btn-sm" onclick="fcrRemoveRow(${idx})" style="padding:2px 8px;color:var(--red)">✕</button></td>
+    </tr>`;
+}
+
+function fcrUpdateRow(idx, field, value) {
+  if (!FCR.pendingParse) return;
+  FCR.pendingParse.parsed.line_items[idx][field] = value;
+  fcrRecalcCheck();
+}
+function fcrRemoveRow(idx) {
+  if (!FCR.pendingParse) return;
+  FCR.pendingParse.parsed.line_items.splice(idx, 1);
+  fcrRenderPreview(FCR.pendingParse.parsed);
+}
+function fcrAddRow() {
+  if (!FCR.pendingParse) return;
+  FCR.pendingParse.parsed.line_items.push({ section: '', parent_line: '', line_item: 'New Line', is_subtotal: false, has_accrual_entries: false, cm_amount: 0, cm_pct: 0, ytd_amount: 0, ytd_pct: 0 });
+  fcrRenderPreview(FCR.pendingParse.parsed);
+}
+
+// Parse-integrity check: Total Sales − sum(top-level sections) should equal stated Net Profit.
+function fcrRecalcCheck() {
+  if (!FCR.pendingParse) return;
+  const parsed = FCR.pendingParse.parsed;
+  const tsInput = document.getElementById('fcrTotalSales');
+  const npInput = document.getElementById('fcrNetProfit');
+  if (tsInput) parsed.total_sales_cm = parseFloat(tsInput.value) || parsed.total_sales_cm;
+  if (npInput) parsed.net_profit_cm = parseFloat(npInput.value) || parsed.net_profit_cm;
+  const topLevel = parsed.line_items.filter(li => !li.parent_line);
+  const sum = topLevel.reduce((s, li) => s + (Number(li.cm_amount) || 0), 0);
+  const implied = parsed.total_sales_cm - sum;
+  const delta = implied - parsed.net_profit_cm;
+  const passed = Math.abs(delta) < 1.00;
+  const el = document.getElementById('fcrParseCheck');
+  if (el) {
+    el.innerHTML = passed
+      ? `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 14px;font-size:.83rem;color:#166534">✓ Parse check passed — Total Sales minus top-level sections ($${fcrFmt(implied)}) matches stated Net Profit within $1.00.</div>`
+      : `<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 14px;font-size:.83rem;color:#991b1b">⚠️ Parse check failed — Total Sales minus top-level sections implies Net Profit of $${fcrFmt(implied)}, but stated Net Profit is $${fcrFmt(parsed.net_profit_cm)} (off by $${fcrFmt(delta)}). A row is likely missing, duplicated, or misread below — review before saving.</div>`;
+  }
+  FCR.pendingParse.checkPassed = passed;
+  FCR.pendingParse.checkDelta = delta;
+}
+
+// ── Save ─────────────────────────────────────────────────────────
+async function fcrSaveReport() {
+  if (!FCR.pendingParse) return;
+  const parsed = FCR.pendingParse.parsed;
+  const file = FCR.pendingParse.file;
+  const period_month = parseInt(document.getElementById('fcrPeriodMonth').value, 10);
+  const period_year = parseInt(document.getElementById('fcrPeriodYear').value, 10);
+  const statusHost = document.getElementById('fcrUploadStatus');
+  statusHost.innerHTML = '<span style="color:var(--navy)">⏳ Saving...</span>';
+
+  try {
+    const { data: { user } } = await getSupa().auth.getUser();
+
+    let storagePath = null;
+    const path = `${period_year}-${String(period_month).padStart(2, '0')}-${Date.now()}.pdf`;
+    const { error: upErr } = await getSupa().storage.from('fcr-pdfs').upload(path, file, { upsert: true });
+    if (!upErr) storagePath = path; else console.warn('FCR PDF storage upload failed (continuing without it):', upErr.message);
+
+    // Mark the operator-takeover month as a transition period, excluded from trailing-average baselines.
+    const is_transition = (period_year === 2026 && period_month === 4);
+
+    const { data: reportRow, error: repErr } = await getSupa()
+      .from('fcr_reports')
+      .upsert({
+        period_month, period_year,
+        source_filename: file.name,
+        storage_path: storagePath,
+        total_sales: parsed.total_sales_cm,
+        net_profit: parsed.net_profit_cm,
+        net_profit_pct: parsed.net_profit_pct_cm,
+        is_transition_period: is_transition,
+        parse_check_passed: FCR.pendingParse.checkPassed,
+        parse_check_delta: FCR.pendingParse.checkDelta,
+        uploaded_by: user?.id || null
+      }, { onConflict: 'period_month,period_year' })
+      .select().single();
+    if (repErr) throw repErr;
+
+    await getSupa().from('fcr_line_items').delete().eq('report_id', reportRow.id);
+
+    const rows = parsed.line_items.map(li => ({
+      report_id: reportRow.id,
+      section: li.section || null,
+      parent_line: li.parent_line || null,
+      line_item: li.line_item,
+      is_subtotal: !!li.is_subtotal,
+      has_accrual_entries: !!li.has_accrual_entries,
+      cm_amount: Number(li.cm_amount) || 0,
+      cm_pct: Number(li.cm_pct) || 0,
+      ytd_amount: Number(li.ytd_amount) || 0,
+      ytd_pct: Number(li.ytd_pct) || 0
+    }));
+    const { error: liErr } = await getSupa().from('fcr_line_items').insert(rows);
+    if (liErr) throw liErr;
+
+    statusHost.innerHTML = '<span style="color:#16a34a">✓ Saved.</span>';
+    FCR.pendingParse = null;
+    document.getElementById('fcrPreviewWrap').style.display = 'none';
+    document.getElementById('fcrFileInput').value = '';
+    await fcrLoadAll();
+    fcrRenderDashboard();
+  } catch (err) {
+    console.error(err);
+    statusHost.innerHTML = `<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px;color:#991b1b;font-size:.83rem">⚠️ Save failed: ${err.message}</div>`;
+  }
+}
+
+// ── Helpers over saved reports ──────────────────────────────────
+function fcrSortedReports() {
+  return FCR.reports.slice().sort((a, b) => (a.period_year - b.period_year) || (a.period_month - b.period_month));
+}
+function fcrGetItems(reportId) { return FCR.lineItemsByReport[reportId] || []; }
+function fcrLineKey(li) { return `${li.section || ''}|${li.parent_line || ''}|${li.line_item}`; }
+
+function fcrPriorReport(current) {
+  const sorted = fcrSortedReports();
+  const idx = sorted.findIndex(r => r.id === current.id);
+  return idx > 0 ? sorted[idx - 1] : null;
+}
+function fcrBaselineReports(current) {
+  const sorted = fcrSortedReports();
+  const idx = sorted.findIndex(r => r.id === current.id);
+  const out = [];
+  for (let i = idx - 1; i >= 0 && out.length < 3; i--) {
+    if (!sorted[i].is_transition_period) out.push(sorted[i]);
+  }
+  return out;
+}
+
+// ── Layer 1: Verification (questions for CFA / your CPA) ───────────
+function fcrComputeVerification(current) {
+  const items = fcrGetItems(current.id);
+  const prior = fcrPriorReport(current);
+  const priorItems = prior ? fcrGetItems(prior.id) : [];
+  const findByName = (arr, name) => arr.find(i => i.line_item === name);
+  const questions = [];
+  const passes = [];
+
+  // Royalty must be exactly 4.00% of Total Sales
+  {
+    const li = findByName(items, 'Base Franchise Fee - Royalty');
+    if (li && current.total_sales) {
+      const actualPct = (li.cm_amount / current.total_sales) * 100;
+      const off = Math.abs(actualPct - 4.00);
+      if (off > 0.02) {
+        questions.push({
+          title: 'Royalty percentage off target',
+          detail: `${fcrMonthLabel(current)}: Base Franchise Fee - Royalty is $${fcrFmt(li.cm_amount)} (${actualPct.toFixed(3)}% of $${fcrFmt(current.total_sales)} sales) — should be exactly 4.00%.`,
+          draft: `Hi — for ${fcrMonthLabel(current)}, our Base Franchise Fee - Royalty came in at ${actualPct.toFixed(3)}% of Total Sales ($${fcrFmt(li.cm_amount)}) instead of the standard 4.00% ($${fcrFmt(current.total_sales * 0.04)}). Could you confirm this is correct or if there's a correction coming?`
+        });
+      } else passes.push('Base Franchise Fee - Royalty = 4.00% of sales');
+    }
+  }
+
+  // Rent (Base Rent CFA + Percentage Rent CFA) must be exactly 6.00% of Total Sales
+  {
+    const base = findByName(items, 'Base Rent CFA');
+    const pct = findByName(items, 'Percentage Rent CFA');
+    if ((base || pct) && current.total_sales) {
+      const total = (base?.cm_amount || 0) + (pct?.cm_amount || 0);
+      const actualPct = (total / current.total_sales) * 100;
+      const off = Math.abs(actualPct - 6.00);
+      if (off > 0.02) {
+        questions.push({
+          title: 'Rent percentage off target',
+          detail: `${fcrMonthLabel(current)}: Base Rent CFA + Percentage Rent CFA totals $${fcrFmt(total)} (${actualPct.toFixed(3)}% of sales) — should be exactly 6.00%.`,
+          draft: `Hi — for ${fcrMonthLabel(current)}, our combined Base Rent CFA + Percentage Rent CFA came in at ${actualPct.toFixed(3)}% of Total Sales ($${fcrFmt(total)}) instead of 6.00% ($${fcrFmt(current.total_sales * 0.06)}). Could you confirm this is correct?`
+        });
+      } else passes.push('Rent (Base + Percentage) = 6.00% of sales');
+    }
+  }
+
+  // Flat-dollar lines — flag ANY change vs prior month
+  if (prior) {
+    for (const chk of FCR_FLAT_FEE_CHECKS) {
+      const cur = findByName(items, chk.name);
+      const pri = findByName(priorItems, chk.name);
+      if (cur && pri) {
+        const diff = Math.abs(cur.cm_amount - pri.cm_amount);
+        if (diff > 0.01) {
+          questions.push({
+            title: `${chk.label} changed`,
+            detail: `${chk.label} changed from $${fcrFmt(pri.cm_amount)} (${fcrMonthLabel(prior)}) to $${fcrFmt(cur.cm_amount)} (${fcrMonthLabel(current)}).`,
+            draft: `Hi — I noticed ${chk.label} changed from $${fcrFmt(pri.cm_amount)} to $${fcrFmt(cur.cm_amount)} between ${fcrMonthLabel(prior)} and ${fcrMonthLabel(current)}. Was this an intended update to our agreement?`
+          });
+        } else passes.push(`${chk.label} unchanged ($${fcrFmt(cur.cm_amount)})`);
+      }
+    }
+  }
+
+  // YTD arithmetic: prior YTD + this month's CM should equal this month's YTD, for every matching line.
+  if (prior) {
+    const priorByKey = {};
+    for (const pi of priorItems) priorByKey[fcrLineKey(pi)] = pi;
+    for (const li of items) {
+      const p = priorByKey[fcrLineKey(li)];
+      if (!p) continue;
+      const expectedYtd = p.ytd_amount + li.cm_amount;
+      const diff = Math.abs(expectedYtd - li.ytd_amount);
+      if (diff > 0.05) {
+        questions.push({
+          title: `YTD doesn't reconcile — ${li.line_item}`,
+          detail: `${fcrMonthLabel(prior)} YTD ($${fcrFmt(p.ytd_amount)}) + ${fcrMonthLabel(current)} CM ($${fcrFmt(li.cm_amount)}) = $${fcrFmt(expectedYtd)}, but stated YTD is $${fcrFmt(li.ytd_amount)} (off by $${fcrFmt(diff)}).`,
+          draft: `Hi — the YTD math for "${li.line_item}" doesn't reconcile in the ${fcrMonthLabel(current)} FCR: prior YTD plus this month's CM should be $${fcrFmt(expectedYtd)}, but the report shows $${fcrFmt(li.ytd_amount)}. Was there a restatement or correction I should know about?`
+        });
+      }
+    }
+  }
+
+  return { questions, passes };
+}
+
+// ── Layer 2: Operational variance (dollar-ranked, tiered, learns from your notes) ──
+async function fcrLoadKnownPatterns() {
+  const { data, error } = await getSupa().from('fcr_known_patterns').select('*');
+  if (error) { console.error(error); return []; }
+  return data || [];
+}
+
+function fcrComputeVariance(current, baselineReports, knownPatterns) {
+  const items = fcrGetItems(current.id);
+  const suppressSet = new Set(knownPatterns.filter(p => p.auto_suppress).map(p => p.line_item));
+  const noteMap = {};
+  for (const p of knownPatterns) (noteMap[p.line_item] ||= []).push(p.note);
+
+  const avgMap = {};
+  for (const br of baselineReports) {
+    for (const bi of fcrGetItems(br.id)) {
+      const k = fcrLineKey(bi);
+      if (!avgMap[k]) avgMap[k] = { sumAmt: 0, n: 0 };
+      avgMap[k].sumAmt += bi.cm_amount;
+      avgMap[k].n += 1;
+    }
+  }
+
+  const flagged = [];
+  for (const li of items) {
+    if (li.is_subtotal) continue; // sections roll up from their children; flag the leaf, not the total
+    const base = avgMap[fcrLineKey(li)];
+    if (!base || base.n === 0) continue;
+    const avgAmt = base.sumAmt / base.n;
+    const dollarDelta = li.cm_amount - avgAmt;
+    const pctDelta = avgAmt !== 0 ? (dollarDelta / Math.abs(avgAmt)) * 100 : (li.cm_amount !== 0 ? 100 : 0);
+    const relTrip = Math.abs(pctDelta) > 12;
+    const absTrip = Math.abs(dollarDelta) > 500;
+    if (!relTrip && !absTrip) continue;
+    if (suppressSet.has(li.line_item)) continue;
+    flagged.push({
+      line_item: li.line_item, section: li.section, parent_line: li.parent_line,
+      cm_amount: li.cm_amount, avgAmt, dollarDelta, pctDelta,
+      tier: (relTrip && absTrip) ? 1 : 2,
+      hasAccrual: li.has_accrual_entries,
+      notes: noteMap[li.line_item] || []
+    });
+  }
+  flagged.sort((a, b) => Math.abs(b.dollarDelta) - Math.abs(a.dollarDelta));
+  return flagged;
+}
+
+function fcrDismissPrompt(lineItem) {
+  const note = prompt(`Note for "${lineItem}" (e.g. "reimbursable, ignore"):`);
+  if (note === null || !note.trim()) return;
+  const suppress = confirm('Auto-hide this from future flagged lists too?\n\nOK = hide going forward\nCancel = keep flagging it, but show your note each time');
+  fcrSaveKnownPattern(lineItem, note.trim(), suppress);
+}
+
+async function fcrSaveKnownPattern(lineItem, note, autoSuppress) {
+  const { data: { user } } = await getSupa().auth.getUser();
+  const { error } = await getSupa().from('fcr_known_patterns').insert({
+    line_item: lineItem, note, auto_suppress: autoSuppress, created_by: user?.id || null
+  });
+  if (error) { alert('Failed to save note: ' + error.message); return; }
+  fcrRenderDashboard();
+}
+
+function fcrCopyText(btn, text) {
+  navigator.clipboard.writeText(text).then(() => {
+    const orig = btn.textContent; btn.textContent = '✓ Copied'; setTimeout(() => btn.textContent = orig, 1500);
+  });
+}
+
+// ── Dashboard rendering ─────────────────────────────────────────
+function fcrRenderDashboard() {
+  const wrap = document.getElementById('fcrDashboardWrap');
+  if (!wrap) return;
+  if (!FCR.reports.length) {
+    wrap.innerHTML = `<div class="empty"><div class="ei">📈</div><p>Upload your first FCR above to get started. Once you have 2+ months, comparisons and flags appear here automatically.</p></div>`;
+    return;
+  }
+  const sorted = fcrSortedReports();
+  const current = sorted[sorted.length - 1];
+  const prior = fcrPriorReport(current);
+  const baseline = fcrBaselineReports(current);
+
+  fcrLoadKnownPatterns().then(patterns => {
+    const verification = fcrComputeVerification(current);
+    const variance = fcrComputeVariance(current, baseline, patterns);
+    FCR._variance = variance;
+    wrap.innerHTML =
+      fcrSnapshotHTML(current, prior) +
+      fcrVerificationHTML(verification, current) +
+      fcrVarianceHTML(variance, current, prior) +
+      fcrTrendTableHTML(sorted);
+  });
+}
+
+function fcrArrow(delta, goodIsUp) {
+  if (delta === null || delta === undefined || Math.abs(delta) < 0.005) return '<span style="color:var(--text-light)">—</span>';
+  const up = delta > 0;
+  const good = goodIsUp ? up : !up;
+  const color = good ? '#16a34a' : '#dc2626';
+  return `<span style="color:${color};font-weight:700">${up ? '▲' : '▼'}</span>`;
+}
+
+function fcrSnapshotHTML(current, prior) {
+  const items = fcrGetItems(current.id);
+  const priorItems = prior ? fcrGetItems(prior.id) : [];
+  const findPct = (arr, name) => arr.find(i => i.line_item === name)?.cm_pct;
+
+  const foodPct = findPct(items, 'Food Cost'), foodPctPrior = findPct(priorItems, 'Food Cost');
+  const talentPct = findPct(items, 'Talent Investment'), talentPctPrior = findPct(priorItems, 'Talent Investment');
+  const cfaPct = findPct(items, 'Chick-fil-A Puerto Rico LLC Expenses and Fees'), cfaPctPrior = findPct(priorItems, 'Chick-fil-A Puerto Rico LLC Expenses and Fees');
+
+  const salesDelta = prior ? current.total_sales - prior.total_sales : null;
+  const npDelta = prior ? current.net_profit - prior.net_profit : null;
+  const foodDelta = (foodPct != null && foodPctPrior != null) ? foodPct - foodPctPrior : null;
+  const talentDelta = (talentPct != null && talentPctPrior != null) ? talentPct - talentPctPrior : null;
+  const cfaDelta = (cfaPct != null && cfaPctPrior != null) ? cfaPct - cfaPctPrior : null;
+
+  return `
+  <div class="ccard">
+    <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+      <strong style="color:var(--navy)">${fcrMonthLabel(current)} Snapshot</strong>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${current.parse_check_passed === false ? `<span style="background:#fef2f2;color:#991b1b;border:1px solid #fecaca;border-radius:6px;padding:3px 8px;font-size:.72rem;font-weight:700">⚠️ Parse check failed on save</span>` : ''}
+        ${current.is_transition_period ? `<span style="background:#fefce8;color:#854d0e;border:1px solid #fde047;border-radius:6px;padding:3px 8px;font-size:.72rem;font-weight:700">Transition month — excluded from baselines</span>` : ''}
+      </div>
+    </div>
+    <div class="ccard-body">
+      <div class="stat-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
+        <div class="stat-card">
+          <div class="slabel">Total Sales</div><div class="sval sm">$${fcrFmt(current.total_sales)}</div>
+          <div style="font-size:.75rem;margin-top:4px">${fcrArrow(salesDelta, true)} ${salesDelta != null ? '$' + fcrFmt(Math.abs(salesDelta)) : ''}</div>
+        </div>
+        <div class="stat-card" style="border-left-color:#16a34a">
+          <div class="slabel" style="color:#16a34a">Net Profit</div><div class="sval sm" style="color:#16a34a">$${fcrFmt(current.net_profit)}</div>
+          <div style="font-size:.75rem;margin-top:4px">${fcrArrow(npDelta, true)} ${npDelta != null ? '$' + fcrFmt(Math.abs(npDelta)) : ''} · ${(current.net_profit_pct || 0).toFixed(2)}%</div>
+        </div>
+        <div class="stat-card" style="border-left-color:#d97706">
+          <div class="slabel" style="color:#d97706">Food Cost %</div><div class="sval sm" style="color:#d97706">${foodPct != null ? foodPct.toFixed(2) + '%' : '—'}</div>
+          <div style="font-size:.75rem;margin-top:4px">${fcrArrow(foodDelta, false)} ${foodDelta != null ? Math.abs(foodDelta).toFixed(2) + 'pp' : ''}</div>
+        </div>
+        <div class="stat-card" style="border-left-color:#7c3aed">
+          <div class="slabel" style="color:#7c3aed">Talent Investment %</div><div class="sval sm" style="color:#7c3aed">${talentPct != null ? talentPct.toFixed(2) + '%' : '—'}</div>
+          <div style="font-size:.75rem;margin-top:4px">${fcrArrow(talentDelta, false)} ${talentDelta != null ? Math.abs(talentDelta).toFixed(2) + 'pp' : ''}</div>
+        </div>
+        <div class="stat-card" style="border-left-color:var(--red)">
+          <div class="slabel" style="color:var(--red)">CFA PR Fees %</div><div class="sval sm" style="color:var(--red)">${cfaPct != null ? cfaPct.toFixed(2) + '%' : '—'}</div>
+          <div style="font-size:.75rem;margin-top:4px">${fcrArrow(cfaDelta, false)} ${cfaDelta != null ? Math.abs(cfaDelta).toFixed(2) + 'pp' : ''}</div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function fcrVerificationHTML(verification, current) {
+  const { questions, passes } = verification;
+  return `
+  <div class="ccard" style="margin-top:16px">
+    <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <strong style="color:var(--navy)">✅ Verification — Questions for CFA / CPA</strong>
+      <span style="font-size:.75rem;color:var(--text-light)">${questions.length} to review · ${passes.length} checks passed</span>
+    </div>
+    <div class="ccard-body">
+      ${questions.length === 0
+        ? `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px 14px;font-size:.85rem;color:#166534">✓ All contractual checks passed for ${fcrMonthLabel(current)} — royalty, rent, flat fees, and YTD math all reconcile.</div>`
+        : questions.map(q => `
+          <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:14px;margin-bottom:10px">
+            <div style="font-weight:700;color:#9a3412;font-size:.88rem;margin-bottom:4px">⚠️ ${q.title}</div>
+            <div style="font-size:.82rem;color:var(--text-mid);margin-bottom:8px">${q.detail}</div>
+            <div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:10px;font-size:.8rem;color:var(--text-mid);font-style:italic">"${q.draft}"</div>
+            <button class="btn btn-sm" style="margin-top:8px" onclick="fcrCopyText(this,'${fcrEscJs(q.draft)}')">📋 Copy question</button>
+          </div>`).join('')}
+      ${passes.length ? `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:.8rem;color:var(--text-light)">Show ${passes.length} passed checks</summary><ul style="font-size:.8rem;color:var(--text-mid);margin-top:8px">${passes.map(p => `<li>✓ ${p}</li>`).join('')}</ul></details>` : ''}
+    </div>
+  </div>`;
+}
+
+function fcrVarianceHTML(flagged, current, prior) {
+  if (!prior) {
+    return `<div class="ccard" style="margin-top:16px"><div class="ccard-body"><div class="empty"><div class="ei">📊</div><p>Operational trend flags need at least one prior month to compare against. Upload another month to activate this section.</p></div></div></div>`;
+  }
+  const row = f => `
+    <div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px;background:${f.tier === 1 ? '#fef2f2' : '#fffbeb'}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:700;font-size:.85rem;color:${f.tier === 1 ? '#991b1b' : '#92400e'}">${f.line_item}${f.hasAccrual ? ' <span style="font-weight:400;font-size:.72rem;color:var(--text-light)">(has accrual entries — check timing before assuming it\'s real)</span>' : ''}</div>
+          <div style="font-size:.78rem;color:var(--text-mid)">${f.parent_line || f.section} · $${fcrFmt(f.cm_amount)} this month vs $${fcrFmt(f.avgAmt)} trailing avg</div>
+          ${f.notes.length ? `<div style="font-size:.76rem;color:#16a34a;margin-top:4px">📌 ${f.notes.map(n => fcrEsc(n)).join(' · ')}</div>` : ''}
+        </div>
+        <div style="text-align:right">
+          <div style="font-weight:800;font-size:.95rem;color:${f.dollarDelta > 0 ? '#dc2626' : '#16a34a'}">${f.dollarDelta > 0 ? '+' : '-'}$${fcrFmt(Math.abs(f.dollarDelta))}</div>
+          <div style="font-size:.75rem;color:var(--text-light)">${f.pctDelta > 0 ? '+' : ''}${f.pctDelta.toFixed(1)}%</div>
+        </div>
+      </div>
+      <div style="margin-top:8px"><button class="btn btn-sm" onclick="fcrDismissPrompt('${fcrEscJs(f.line_item)}')">Note &amp; dismiss</button></div>
+    </div>`;
+
+  const tier1 = flagged.filter(f => f.tier === 1);
+  const tier2 = flagged.filter(f => f.tier === 2);
+
+  return `
+  <div class="ccard" style="margin-top:16px">
+    <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <strong style="color:var(--navy)">🔍 Operational Watch — worth asking your team</strong>
+      <span style="font-size:.75rem;color:var(--text-light)">${flagged.length} flagged, ranked by $ impact</span>
+    </div>
+    <div class="ccard-body">
+      ${flagged.length === 0 ? `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px 14px;font-size:.85rem;color:#166534">✓ Nothing moved outside the normal range this month.</div>` : ''}
+      ${tier1.map(row).join('')}
+      ${tier2.map(row).join('')}
+    </div>
+  </div>`;
+}
+
+function fcrTrendTableHTML(sorted) {
+  const keyLineItems = [
+    'Food Cost', 'Paper Cost', 'Talent Investment', 'Utilities',
+    'Miscellaneous Income/Expense', 'Marketing', 'Repairs and Maintenance',
+    'Business Insurance', 'Financial Fees', 'Other Taxes',
+    'Chick-fil-A Puerto Rico LLC Expenses and Fees'
+  ];
+  const cols = sorted.map(r => `<th style="padding:8px;text-align:right;white-space:nowrap">${fcrMonthName(r.period_month).slice(0, 3)} '${String(r.period_year).slice(2)}${r.is_transition_period ? ' †' : ''}</th>`).join('');
+  const rows = keyLineItems.map(name => {
+    const cells = sorted.map(r => {
+      const li = fcrGetItems(r.id).find(i => i.line_item === name);
+      return `<td style="padding:8px;text-align:right">${li ? li.cm_pct.toFixed(2) + '%' : '—'}</td>`;
+    }).join('');
+    return `<tr style="border-bottom:1px solid #f1f5f9"><td style="padding:8px;font-weight:600">${name}</td>${cells}</tr>`;
+  }).join('');
+  const salesRow = `<tr style="border-bottom:2px solid var(--border);background:#f8fafc"><td style="padding:8px;font-weight:700">Total Sales</td>${sorted.map(r => `<td style="padding:8px;text-align:right;font-weight:700">$${fcrFmt(r.total_sales)}</td>`).join('')}</tr>`;
+  const npRow = `<tr style="background:#f0fdf4"><td style="padding:8px;font-weight:700;color:#166534">Net Profit %</td>${sorted.map(r => `<td style="padding:8px;text-align:right;font-weight:700;color:#166534">${(r.net_profit_pct || 0).toFixed(2)}%</td>`).join('')}</tr>`;
+
+  return `
+  <div class="ccard" style="margin-top:16px">
+    <div style="padding:14px 20px;border-bottom:1px solid var(--border)">
+      <strong style="color:var(--navy)">📅 Month-over-Month Trend (% of Sales)</strong>
+      ${sorted.some(r => r.is_transition_period) ? `<span style="font-size:.72rem;color:var(--text-light)"> · † = transition month, excluded from variance baselines</span>` : ''}
+    </div>
+    <div class="ccard-body" style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+        <thead><tr style="border-bottom:2px solid var(--border)"><th style="padding:8px;text-align:left">Line Item</th>${cols}</tr></thead>
+        <tbody>${salesRow}${rows}${npRow}</tbody>
+      </table>
+    </div>
+  </div>`;
 }
