@@ -5964,6 +5964,7 @@ const FCR_FLAT_FEE_CHECKS = [
 ];
 
 const FCR = { reports: [], lineItemsByReport: {}, pendingParse: null, _variance: [] };
+console.log('FCR module loaded: v3-chunked-extraction');
 
 // ── Init ───────────────────────────────────────────────────────────
 async function fcrInit() {
@@ -6019,15 +6020,48 @@ async function fcrLoadAll() {
   }
 }
 
-// ── Upload → Extract (pdf.js + Claude) → Editable Preview ──────────
+// ── Upload → Extract (pdf.js + chunked Claude calls) → Editable Preview ──
+// A full FCR has 100+ line items. One giant extraction call was unreliable —
+// either hitting response limits or the model losing accuracy over a very
+// long repetitive list. Instead: pull the header/footer totals with plain
+// regex (fast, deterministic, no AI needed), then extract line items in
+// small per-page-group chunks so each individual AI call is short and safe.
 async function fcrHandleFile(file) {
   if (!file) return;
   const status = document.getElementById('fcrUploadStatus');
   status.innerHTML = '<span style="color:var(--navy)">⏳ Reading PDF...</span>';
   try {
-    const text = await fcrExtractPdfText(file);
-    status.innerHTML = '<span style="color:var(--navy)">⚙️ Parsing line items with AI — this can take 20-30s...</span>';
-    const parsed = await fcrCallClaudeExtract(text);
+    const pages = await fcrExtractPdfPages(file);
+    const fullText = pages.join('\n');
+
+    const headerFooter = fcrRegexExtractHeaderFooter(fullText);
+    if (!headerFooter.total_sales_cm || !headerFooter.net_profit_cm) {
+      throw new Error('Could not locate "Total Sales" and/or "Net Profit" in the PDF text — is this the right report? You can still fill these in manually below if the rest looks right.');
+    }
+
+    const chunks = fcrChunkArray(pages, 3); // ~3 pages per AI call keeps each response small and reliable
+    let allLineItems = [];
+    let priorContext = null;
+
+    for (let i = 0; i < chunks.length; i++) {
+      status.innerHTML = `<span style="color:var(--navy)">⚙️ Parsing line items with AI — section ${i + 1} of ${chunks.length}...</span>`;
+      const chunkText = chunks[i].join('\n');
+      const result = await fcrCallClaudeExtractChunk(chunkText, priorContext);
+      const items = result.line_items || [];
+      allLineItems = allLineItems.concat(items);
+      const lastTop = [...items].reverse().find(li => li.is_subtotal && !li.parent_line);
+      if (lastTop) priorContext = lastTop.line_item;
+    }
+
+    const parsed = {
+      period_month: headerFooter.period_month,
+      period_year: headerFooter.period_year,
+      total_sales_cm: headerFooter.total_sales_cm,
+      net_profit_cm: headerFooter.net_profit_cm,
+      net_profit_pct_cm: headerFooter.net_profit_pct_cm,
+      line_items: allLineItems
+    };
+
     FCR.pendingParse = { file, parsed };
     status.innerHTML = '<span style="color:#16a34a">✓ Parsed. Review below before saving.</span>';
     fcrRenderPreview(parsed);
@@ -6037,7 +6071,34 @@ async function fcrHandleFile(file) {
   }
 }
 
-async function fcrExtractPdfText(file) {
+function fcrChunkArray(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+// Deterministic (no AI) — these two figures anchor the parse-integrity check,
+// so pulling them straight from the text with regex is more reliable than
+// asking the model to find them again inside a long extraction task.
+function fcrRegexExtractHeaderFooter(fullText) {
+  const monthMap = { January: 1, February: 2, March: 3, April: 4, May: 5, June: 6, July: 7, August: 8, September: 9, October: 10, November: 11, December: 12 };
+  let period_month = null, period_year = null;
+  const dateMatch = fullText.match(/For The Month Ending\s+([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})/i);
+  if (dateMatch) { period_month = monthMap[dateMatch[1]] || null; period_year = parseInt(dateMatch[3], 10); }
+
+  let total_sales_cm = null;
+  const salesMatch = fullText.match(/Total Sales\s+([\d,]+\.\d{2})/);
+  if (salesMatch) total_sales_cm = parseFloat(salesMatch[1].replace(/,/g, ''));
+
+  let net_profit_cm = null, net_profit_pct_cm = null;
+  const npMatch = fullText.match(/Net Profit\s+([\d,]+\.\d{2})\s+([\d.]+)/);
+  if (npMatch) { net_profit_cm = parseFloat(npMatch[1].replace(/,/g, '')); net_profit_pct_cm = parseFloat(npMatch[2]); }
+
+  return { period_month, period_year, total_sales_cm, net_profit_cm, net_profit_pct_cm };
+}
+
+// Returns an array of strings, one per PDF page (not joined) so the caller can chunk by page.
+async function fcrExtractPdfPages(file) {
   if (typeof pdfjsLib === 'undefined') {
     await new Promise((res, rej) => {
       const s = document.createElement('script');
@@ -6050,7 +6111,7 @@ async function fcrExtractPdfText(file) {
   }
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-  let allLines = [];
+  const pages = [];
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
@@ -6060,54 +6121,53 @@ async function fcrExtractPdfText(file) {
       (byY[y] ||= []).push({ x: item.transform[4], text: item.str });
     }
     const ys = Object.keys(byY).map(Number).sort((a, b) => b - a);
+    const lines = [];
     for (const y of ys) {
       const lineText = byY[y].sort((a, b) => a.x - b.x).map(i2 => i2.text).join(' ').replace(/\s+/g, ' ').trim();
-      if (lineText) allLines.push(lineText);
+      if (lineText) lines.push(lineText);
     }
+    pages.push(lines.join('\n'));
   }
-  return allLines.join('\n');
+  return pages;
 }
 
-const FCR_SYSTEM_PROMPT = `You extract structured summary data from Chick-fil-A "FSU" Financial Control Reports (FCR) for the Los Filtros location in Puerto Rico. The raw text was extracted from a PDF and line-wrapped imperfectly — use judgment to reassemble rows.
+const FCR_CHUNK_SYSTEM_PROMPT = `You extract structured summary line items from a SMALL EXCERPT (a few pages) of a Chick-fil-A "FSU" Financial Control Report (FCR) for the Los Filtros location, Puerto Rico. This is one piece of a larger document — only extract what's visible in THIS excerpt.
 
 STRUCTURE:
 - Each summary line has a name followed by four numbers in order: CM USD, CM %, YTD USD, YTD %, then two more numbers (PY CM USD/%, PY YTD USD/%) which are always 0.00 for this operator — ignore those last two entirely, do not include them in your output.
-- Top-level rows are category names ending in "*" (e.g. "Food Cost*", "Talent Investment*") OR the row "Chick-fil-A Puerto Rico LLC Expenses and Fees" (no asterisk, still top-level) OR "Net Profit" (do NOT include Net Profit as a line item — extract it separately, see below).
+- Top-level rows are category names ending in "*" (e.g. "Food Cost*", "Talent Investment*") OR the row "Chick-fil-A Puerto Rico LLC Expenses and Fees" (no asterisk, still top-level, and its name may be split across 2-3 lines in the source — reassemble it). Do NOT extract the final "Net Profit" row if it appears in this excerpt — that's handled separately elsewhere.
 - Every top-level row: section = its own name with the trailing "*" stripped, parent_line = null, is_subtotal = true.
-- Indented rows beneath a top-level row (marked with a leading "-" in the source) are children: section = the top-level ancestor's name (no asterisk), parent_line = the immediate parent row's name, is_subtotal = false (unless it's itself a mid-level rollup with children of its own, like "Other" under Talent Investment, or "Rent" / "Property Tax" / "Utilities" sub-groupings — use your judgment on whether a row is a pass-through label or a real leaf value).
-- CRITICAL — "Chick-fil-A Puerto Rico LLC Expenses and Fees" contains these children (do NOT treat them as separate top-level sections even if visually they look bolded/indented like top-level rows): Equipment Rent, Business Services Fee, Base Franchise Fee - Royalty, Base Franchise Fee - Services, Rent (itself containing Base Rent CFA, Percentage Rent CFA, etc. as children), Property Tax (containing Unit Property Tax Expense - Owned RE, Unit Property Tax Expense - BPP, etc.), Additional Charges & Expenses (containing Common Area Maintenance, etc.). Verify: the sum of Equipment Rent + Business Services Fee + Base Franchise Fee - Royalty + Base Franchise Fee - Services + Rent + Property Tax + Additional Charges & Expenses should equal the "Chick-fil-A Puerto Rico LLC Expenses and Fees" total exactly.
-- DEDUPE RULE: when a mid-level header line is immediately followed by a single child line with the identical name AND identical numbers (a PDF layout artifact — e.g. "Equipment Rent" appearing twice in a row with the same $6,600.00), return only ONE row for it.
-- Do NOT skip zero-value or "No Transactions Exist" line items — include them with cm_amount 0, they matter for trend tracking.
-- SKIP the transaction detail blocks (rows starting with a date like "06/15" followed by Debits/Credits/Journal Entry Description text) — we only want the summary rows with the four numbers, not individual transactions.
-- has_accrual_entries: true if you can see, in the journal-entry description text sitting near/under that summary line, any entry containing "To accrue" or "Promo Reclass" — otherwise false.
+- Indented child rows: section = the top-level ancestor's name (no asterisk), parent_line = the immediate parent row's name, is_subtotal = false (unless it's itself a mid-level rollup with its own children, like "Other" under Talent Investment, or "Rent"/"Property Tax" sub-groupings under CFA fees).
+- CRITICAL — "Chick-fil-A Puerto Rico LLC Expenses and Fees" contains these as CHILDREN, not separate top-level sections: Equipment Rent, Business Services Fee, Base Franchise Fee - Royalty, Base Franchise Fee - Services, Rent (containing Base Rent CFA, Percentage Rent CFA, etc.), Property Tax (containing Unit Property Tax Expense - Owned RE, - BPP, etc.), Additional Charges & Expenses (containing Common Area Maintenance, etc.).
+- DEDUPE RULE: if a header line is immediately followed by a single child line with the identical name AND identical numbers (a layout artifact), return only ONE row.
+- Do NOT skip zero-value or "No Transactions Exist" line items — include them with cm_amount 0.
+- SKIP transaction detail blocks (rows starting with a date like "06/15" followed by Debits/Credits/Journal Entry Description) — only extract summary rows with the four numbers.
+- has_accrual_entries: true if journal-entry text near that line contains "To accrue" or "Promo Reclass" — otherwise false.
+- If this excerpt starts mid-section (no fresh "*" header visible yet), use the "current section context" note below to assign section/parent_line correctly for rows at the very top of the excerpt.
+- If this excerpt is pure transaction detail with no summary rows at all, return an empty line_items array — that's a valid, expected result, not an error.
 
-ALSO EXTRACT, from the top and bottom of the report:
-- period_month (1-12), period_year — from "For The Month Ending [Month] [DD], [YYYY]"
-- total_sales_cm — the "Total Sales" row's CM USD figure
-- net_profit_cm, net_profit_pct_cm — the "Net Profit" row's CM USD and CM %
+{{CONTEXT_NOTE}}
 
 Return ONLY valid JSON, no markdown, no backticks, no preamble, in exactly this shape:
-{
-  "period_month": 6,
-  "period_year": 2026,
-  "total_sales_cm": 874919.82,
-  "net_profit_cm": 153585.64,
-  "net_profit_pct_cm": 17.55,
-  "line_items": [
-    { "section":"Food Cost", "parent_line":null, "line_item":"Food Cost", "is_subtotal":true, "has_accrual_entries":false, "cm_amount":263800.04, "cm_pct":30.15, "ytd_amount":803135.97, "ytd_pct":30.37 },
-    { "section":"Food Cost", "parent_line":"Food Cost", "line_item":"Food Cost less Refills", "is_subtotal":false, "has_accrual_entries":true, "cm_amount":260419.65, "cm_pct":29.76, "ytd_amount":792376.46, "ytd_pct":29.96 }
-  ]
-}`;
+{ "line_items": [
+  { "section":"Food Cost", "parent_line":null, "line_item":"Food Cost", "is_subtotal":true, "has_accrual_entries":false, "cm_amount":263800.04, "cm_pct":30.15, "ytd_amount":803135.97, "ytd_pct":30.37 },
+  { "section":"Food Cost", "parent_line":"Food Cost", "line_item":"Food Cost less Refills", "is_subtotal":false, "has_accrual_entries":true, "cm_amount":260419.65, "cm_pct":29.76, "ytd_amount":792376.46, "ytd_pct":29.96 }
+] }`;
 
-async function fcrCallClaudeExtract(rawText) {
+async function fcrCallClaudeExtractChunk(chunkText, priorContext) {
+  const contextNote = priorContext
+    ? `CURRENT SECTION CONTEXT: the excerpt immediately before this one ended inside "${priorContext}". If this excerpt begins with child rows before any new "*" header appears, they belong under "${priorContext}".`
+    : `CURRENT SECTION CONTEXT: this is the start of the report.`;
+  const system = FCR_CHUNK_SYSTEM_PROMPT.replace('{{CONTEXT_NOTE}}', contextNote);
+
   const res = await fetch(FCR_PROXY, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON}` },
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 16000, // a full FCR can have 100+ line items — 8000 was cutting the JSON off mid-object
-      system: FCR_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: `Extract this FCR:\n\n${rawText}` }]
+      max_tokens: 4000, // small chunk (~3 pages) — this is comfortably more than any chunk should need
+      system,
+      messages: [{ role: 'user', content: `Excerpt:\n\n${chunkText}` }]
     })
   });
   if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
@@ -6115,8 +6175,8 @@ async function fcrCallClaudeExtract(rawText) {
   const rawResponseText = data.content?.[0]?.text || '';
 
   if (data.stop_reason === 'max_tokens') {
-    console.error('FCR extraction was truncated by max_tokens. Raw text so far:', rawResponseText);
-    throw new Error('The AI response was cut off before finishing (report may be larger than expected). Try again — if it keeps happening, let Claude know so the token limit can be raised further.');
+    console.error('FCR chunk extraction truncated. Raw text so far:', rawResponseText);
+    throw new Error('A section of the report produced an unexpectedly long response. Please try uploading again.');
   }
 
   return fcrParseJsonLoose(rawResponseText);
