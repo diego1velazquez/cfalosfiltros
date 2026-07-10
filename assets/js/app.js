@@ -5964,7 +5964,7 @@ const FCR_FLAT_FEE_CHECKS = [
 ];
 
 const FCR = { reports: [], lineItemsByReport: {}, pendingParse: null, _variance: [] };
-console.log('FCR module loaded: v3-chunked-extraction');
+console.log('FCR module loaded: v4-ai-header-footer');
 
 // ── Init ───────────────────────────────────────────────────────────
 async function fcrInit() {
@@ -6033,15 +6033,12 @@ async function fcrHandleFile(file) {
   try {
     const pages = await fcrExtractPdfPages(file);
     const fullText = pages.join('\n');
-
-    const headerFooter = fcrRegexExtractHeaderFooter(fullText);
-    if (!headerFooter.total_sales_cm || !headerFooter.net_profit_cm) {
-      throw new Error('Could not locate "Total Sales" and/or "Net Profit" in the PDF text — is this the right report? You can still fill these in manually below if the rest looks right.');
-    }
+    const regexHeaderFooter = fcrRegexExtractHeaderFooter(fullText); // cheap first pass, used as backup only
 
     const chunks = fcrChunkArray(pages, 3); // ~3 pages per AI call keeps each response small and reliable
     let allLineItems = [];
     let priorContext = null;
+    let aiTotalSales = null, aiNetProfit = null, aiNetProfitPct = null, aiMonth = null, aiYear = null;
 
     for (let i = 0; i < chunks.length; i++) {
       status.innerHTML = `<span style="color:var(--navy)">⚙️ Parsing line items with AI — section ${i + 1} of ${chunks.length}...</span>`;
@@ -6051,19 +6048,40 @@ async function fcrHandleFile(file) {
       allLineItems = allLineItems.concat(items);
       const lastTop = [...items].reverse().find(li => li.is_subtotal && !li.parent_line);
       if (lastTop) priorContext = lastTop.line_item;
+
+      // Coalesce header/footer fields — take the first chunk that actually reports each one.
+      if (aiTotalSales == null && result.total_sales_cm != null) aiTotalSales = result.total_sales_cm;
+      if (aiNetProfit == null && result.net_profit_cm != null) aiNetProfit = result.net_profit_cm;
+      if (aiNetProfitPct == null && result.net_profit_pct_cm != null) aiNetProfitPct = result.net_profit_pct_cm;
+      if (aiMonth == null && result.period_month != null) aiMonth = result.period_month;
+      if (aiYear == null && result.period_year != null) aiYear = result.period_year;
+    }
+
+    const total_sales_cm = aiTotalSales ?? regexHeaderFooter.total_sales_cm;
+    const net_profit_cm = aiNetProfit ?? regexHeaderFooter.net_profit_cm;
+    const net_profit_pct_cm = aiNetProfitPct ?? regexHeaderFooter.net_profit_pct_cm;
+    const period_month = aiMonth ?? regexHeaderFooter.period_month ?? (new Date().getMonth() + 1);
+    const period_year = aiYear ?? regexHeaderFooter.period_year ?? new Date().getFullYear();
+
+    let warning = '';
+    if (total_sales_cm == null || net_profit_cm == null) {
+      console.warn('FCR: neither AI nor regex found Total Sales / Net Profit.');
+      console.warn('First 800 chars of extracted text:', fullText.slice(0, 800));
+      warning = 'Could not auto-detect Total Sales and/or Net Profit — enter them manually in the fields below before saving.';
     }
 
     const parsed = {
-      period_month: headerFooter.period_month,
-      period_year: headerFooter.period_year,
-      total_sales_cm: headerFooter.total_sales_cm,
-      net_profit_cm: headerFooter.net_profit_cm,
-      net_profit_pct_cm: headerFooter.net_profit_pct_cm,
+      period_month, period_year,
+      total_sales_cm: total_sales_cm || 0,
+      net_profit_cm: net_profit_cm || 0,
+      net_profit_pct_cm: net_profit_pct_cm || 0,
       line_items: allLineItems
     };
 
     FCR.pendingParse = { file, parsed };
-    status.innerHTML = '<span style="color:#16a34a">✓ Parsed. Review below before saving.</span>';
+    status.innerHTML = warning
+      ? `<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px;color:#92400e;font-size:.83rem">⚠️ ${warning}</div>`
+      : '<span style="color:#16a34a">✓ Parsed. Review below before saving.</span>';
     fcrRenderPreview(parsed);
   } catch (err) {
     console.error(err);
@@ -6083,15 +6101,17 @@ function fcrChunkArray(arr, size) {
 function fcrRegexExtractHeaderFooter(fullText) {
   const monthMap = { January: 1, February: 2, March: 3, April: 4, May: 5, June: 6, July: 7, August: 8, September: 9, October: 10, November: 11, December: 12 };
   let period_month = null, period_year = null;
-  const dateMatch = fullText.match(/For The Month Ending\s+([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})/i);
+  const dateMatch = fullText.match(/For\s+The\s+Month\s+Ending\s+([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})/i);
   if (dateMatch) { period_month = monthMap[dateMatch[1]] || null; period_year = parseInt(dateMatch[3], 10); }
 
   let total_sales_cm = null;
-  const salesMatch = fullText.match(/Total Sales\s+([\d,]+\.\d{2})/);
+  // Tolerant of extra characters / a line break between the label and its number,
+  // in case the PDF's text layer splits them across reconstructed lines.
+  const salesMatch = fullText.match(/Total\s+Sales[\s\S]{0,30}?([\d,]+\.\d{2})/i);
   if (salesMatch) total_sales_cm = parseFloat(salesMatch[1].replace(/,/g, ''));
 
   let net_profit_cm = null, net_profit_pct_cm = null;
-  const npMatch = fullText.match(/Net Profit\s+([\d,]+\.\d{2})\s+([\d.]+)/);
+  const npMatch = fullText.match(/Net\s+Profit[\s\S]{0,30}?([\d,]+\.\d{2})[\s\S]{0,15}?([\d.]+)/i);
   if (npMatch) { net_profit_cm = parseFloat(npMatch[1].replace(/,/g, '')); net_profit_pct_cm = parseFloat(npMatch[2]); }
 
   return { period_month, period_year, total_sales_cm, net_profit_cm, net_profit_pct_cm };
@@ -6146,10 +6166,21 @@ STRUCTURE:
 - If this excerpt starts mid-section (no fresh "*" header visible yet), use the "current section context" note below to assign section/parent_line correctly for rows at the very top of the excerpt.
 - If this excerpt is pure transaction detail with no summary rows at all, return an empty line_items array — that's a valid, expected result, not an error.
 
+ALSO — if visible anywhere in THIS excerpt (usually only in the very first or very last chunk of the report, otherwise leave these null):
+- "Total Sales" is normally the very first data row, right after a header row like "USD % USD % USD % USD %". If you see it, extract its CM USD figure as total_sales_cm.
+- "For The Month Ending [Month] [DD], [YYYY]" appears near the top — if visible, extract period_month (1-12) and period_year.
+- "Net Profit" is the very last row of the entire report (often followed by a footnote starting with "* Indicates..."). If you see it, extract its CM USD as net_profit_cm and CM % as net_profit_pct_cm. (This is the only case where you SHOULD capture a "Net Profit" value — the instruction above to skip it only meant don't treat it as a line_items row.)
+
 {{CONTEXT_NOTE}}
 
 Return ONLY valid JSON, no markdown, no backticks, no preamble, in exactly this shape:
-{ "line_items": [
+{
+  "total_sales_cm": null,
+  "net_profit_cm": null,
+  "net_profit_pct_cm": null,
+  "period_month": null,
+  "period_year": null,
+  "line_items": [
   { "section":"Food Cost", "parent_line":null, "line_item":"Food Cost", "is_subtotal":true, "has_accrual_entries":false, "cm_amount":263800.04, "cm_pct":30.15, "ytd_amount":803135.97, "ytd_pct":30.37 },
   { "section":"Food Cost", "parent_line":"Food Cost", "line_item":"Food Cost less Refills", "is_subtotal":false, "has_accrual_entries":true, "cm_amount":260419.65, "cm_pct":29.76, "ytd_amount":792376.46, "ytd_pct":29.96 }
 ] }`;
