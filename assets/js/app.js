@@ -6105,7 +6105,7 @@ async function fcrCallClaudeExtract(rawText) {
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON}` },
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 8000,
+      max_tokens: 16000, // a full FCR can have 100+ line items — 8000 was cutting the JSON off mid-object
       system: FCR_SYSTEM_PROMPT,
       messages: [{ role: 'user', content: `Extract this FCR:\n\n${rawText}` }]
     })
@@ -6113,7 +6113,18 @@ async function fcrCallClaudeExtract(rawText) {
   if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
   const data = await res.json();
   const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
-  return JSON.parse(text);
+
+  if (data.stop_reason === 'max_tokens') {
+    console.error('FCR extraction was truncated by max_tokens. Raw text so far:', text);
+    throw new Error('The AI response was cut off before finishing (report may be larger than expected). Try again — if it keeps happening, let Claude know so the token limit can be raised further.');
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    console.error('FCR extraction returned invalid JSON:', text);
+    throw new Error('Could not parse the AI\'s response as JSON. Check the browser console for the raw output, or try uploading again.');
+  }
 }
 
 // ── Editable Preview ─────────────────────────────────────────────
