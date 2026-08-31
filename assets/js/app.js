@@ -2328,7 +2328,13 @@ function filterEmployeesTab() {
       <td style="font-weight:600;color:${sickBal<=0?'var(--red)':'#0f766e'}">${daysToHrs(sickBal)} hrs</td>
       <td style="font-weight:600;color:${vacBal<=0?'var(--red)':'var(--navy)'}">${daysToHrs(vacBal)} hrs${!accruals.vacationEligible?' <span style="font-size:.65rem;color:#d97706">⚠</span>':''}</td>
       <td style="font-size:.78rem;color:var(--text-light)">${tenure}</td>
-      <td><button class="btn btn-sm" onclick="showEmpDetail('${key}')">View</button></td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm" onclick="showEmpDetail('${key}')">View</button>
+        <button class="btn btn-sm" title="${emp.status==='active'?'Mark inactive':'Reactivate'}" onclick="toggleEmployeeStatus('${key}')"
+          style="${emp.status==='active' ? 'color:#b45309;border-color:#b45309' : 'color:#16a34a;border-color:#16a34a'}">
+          ${emp.status==='active' ? '🚫' : '✅'}
+        </button>
+      </td>
     </tr>`;
   }).join('');
 }
@@ -2360,6 +2366,73 @@ async function editHireDate(empKey) {
   recalculateAll();
   showEmpDetail(empKey);
   showToast(`✅ Hire date updated for ${emp.name}`);
+}
+
+// ══════════════════════════════════════════
+// REMOVE EMPLOYEE — mark inactive (soft, default) or delete permanently
+// ══════════════════════════════════════════
+async function toggleEmployeeStatus(key) {
+  const emp = EMPLOYEES[key];
+  if (!emp) return;
+  const goingInactive = (emp.status || 'active') === 'active';
+  if (goingInactive && !confirm(
+    `Mark ${emp.name} as inactive?\n\n` +
+    `They'll drop off active views and stop accruing sick/vacation, but all history ` +
+    `(hours, balances, time-off log) is kept for Act 180 compliance records. You can reactivate them later.`
+  )) return;
+
+  emp.status = goingInactive ? 'inactive' : 'active';
+  (async () => {
+    try {
+      _setSaveStatus('saving');
+      await saveEmployee(emp);
+      await writeAuditLog(goingInactive ? 'EMPLOYEE_DEACTIVATED' : 'EMPLOYEE_REACTIVATED', emp.name);
+      _setSaveStatus('saved');
+    } catch(e) { console.warn('Status toggle save error:', e); _setSaveStatus('error'); }
+  })();
+  _cacheToLocal();
+  recalculateAll();
+  populateEmployeeDropdowns();
+  updateEmployeesTab();
+  document.getElementById('sActive').textContent   = Object.values(EMPLOYEES).filter(e=>e.status==='active').length;
+  document.getElementById('sInactive').textContent = Object.values(EMPLOYEES).filter(e=>e.status!=='active').length;
+  showEmpDetail(key);
+  showToast(goingInactive ? `🚫 ${emp.name} marked inactive.` : `✅ ${emp.name} reactivated.`);
+}
+
+async function deleteEmployeeHard(key) {
+  const emp = EMPLOYEES[key];
+  if (!emp) return;
+  if (!confirm(
+    `⚠️ PERMANENTLY DELETE ${emp.name}?\n\n` +
+    `This erases their entire record — all hours, sick/vacation balances, and time-off history. ` +
+    `This cannot be undone and may affect Act 180 compliance records.\n\n` +
+    `Consider "Mark Inactive" instead if you just need them off active lists.`
+  )) return;
+  if (!confirm(`Last chance — permanently delete ${emp.name}? This cannot be undone.`)) return;
+
+  (async () => {
+    try {
+      _setSaveStatus('saving');
+      if (emp.supabase_id) {
+        await getSupa().from('time_off_log').delete().eq('employee_id', emp.supabase_id);
+        await getSupa().from('monthly_records').delete().eq('employee_id', emp.supabase_id);
+        await getSupa().from('employees').delete().eq('id', emp.supabase_id);
+      }
+      await writeAuditLog('EMPLOYEE_DELETED', `${emp.name} — permanently removed`);
+      _setSaveStatus('saved');
+    } catch(e) { console.warn('Delete employee error:', e); _setSaveStatus('error'); }
+  })();
+
+  delete EMPLOYEES[key];
+  _cacheToLocal();
+  recalculateAll();
+  populateEmployeeDropdowns();
+  updateEmployeesTab();
+  document.getElementById('sActive').textContent   = Object.values(EMPLOYEES).filter(e=>e.status==='active').length;
+  document.getElementById('sInactive').textContent = Object.values(EMPLOYEES).filter(e=>e.status!=='active').length;
+  cm('empDetailModal');
+  showToast(`🗑 ${emp.name} permanently deleted.`);
 }
 
 // Convert days to hours for display (1 day = 8 hours per PR Act 180)
@@ -2400,6 +2473,15 @@ function showEmpDetail(key) {
     '✏️ Edit hire date</button>';
   document.getElementById('detEligible').textContent = accruals.vacationEligible
     ? '✅ Vacation eligible' : '⚠️ Vacation not usable until 1yr';
+
+  const isActive = (emp.status || 'active') === 'active';
+  document.getElementById('detActions').innerHTML = `
+    <button class="btn btn-sm" onclick="toggleEmployeeStatus('${key}')"
+      style="${isActive ? 'color:#b45309;border-color:#b45309' : 'color:#16a34a;border-color:#16a34a'}">
+      ${isActive ? '🚫 Mark Inactive' : '✅ Reactivate'}
+    </button>
+    <button class="btn btn-red2 btn-sm" onclick="deleteEmployeeHard('${key}')">🗑 Delete Permanently</button>
+  `;
 
   // Monthly breakdown table
   const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
