@@ -6331,6 +6331,33 @@ async function fcrHandleFile(file) {
       if (aiYear == null && result.period_year != null) aiYear = result.period_year;
     }
 
+    // Post-merge deduplication — chunk boundaries can cause the AI to re-emit
+    // a section header it already emitted at the end of the previous chunk.
+    // Strategy: for each unique line_item key, keep the row with real numbers;
+    // if both have real numbers keep the first occurrence.
+    const seen = new Map();
+    const deduped = [];
+    for (const li of allLineItems) {
+      const key = `${li.section}|${li.parent_line || ''}|${li.line_item}`;
+      if (!seen.has(key)) {
+        seen.set(key, li);
+        deduped.push(li);
+      } else {
+        // If the existing entry has zero values but this one has real values, replace it
+        const existing = seen.get(key);
+        const existingHasData = Math.abs(existing.cm_amount || 0) > 0.001 || Math.abs(existing.ytd_amount || 0) > 0.001;
+        const thisHasData = Math.abs(li.cm_amount || 0) > 0.001 || Math.abs(li.ytd_amount || 0) > 0.001;
+        if (!existingHasData && thisHasData) {
+          // Replace zero row with real row
+          const idx = deduped.indexOf(existing);
+          if (idx !== -1) deduped[idx] = li;
+          seen.set(key, li);
+        }
+        // Otherwise keep first occurrence (already in deduped)
+      }
+    }
+    allLineItems = deduped;
+
     const total_sales_cm = aiTotalSales ?? regexHeaderFooter.total_sales_cm;
     const net_profit_cm = aiNetProfit ?? regexHeaderFooter.net_profit_cm;
     const net_profit_pct_cm = aiNetProfitPct ?? regexHeaderFooter.net_profit_pct_cm;
