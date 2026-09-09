@@ -6259,6 +6259,10 @@ function fcrRenderShell(app) {
         <h2 style="margin:0;font-size:1.2rem;color:var(--navy)">📈 FCR Trends</h2>
         <span style="font-size:.78rem;color:var(--text-mid)">Month-over-month &amp; YTD comparison across your Financial Control Reports</span>
       </div>
+      <div id="fcrMonthSelectorWrap" style="display:none;align-items:center;gap:8px">
+        <label style="font-size:.8rem;color:var(--text-mid);font-weight:600">Viewing:</label>
+        <select id="fcrMonthSelector" class="sel" onchange="fcrOnMonthChange()" style="min-width:160px"></select>
+      </div>
     </div>
     <div class="ccard ccard-top">
       <div class="ccard-body">
@@ -6922,7 +6926,26 @@ function fcrRenderDashboard() {
     return;
   }
   const sorted = fcrSortedReports();
-  const current = sorted[sorted.length - 1];
+
+  // Populate month selector
+  const selectorWrap = document.getElementById('fcrMonthSelectorWrap');
+  const selector = document.getElementById('fcrMonthSelector');
+  if (selector) {
+    const currentVal = selector.value;
+    selector.innerHTML = sorted.map(r =>
+      `<option value="${r.id}">${fcrMonthLabel(r)}</option>`
+    ).join('');
+    // Keep selection if still valid, otherwise default to latest
+    if (currentVal && sorted.find(r => r.id === currentVal)) {
+      selector.value = currentVal;
+    } else {
+      selector.value = sorted[sorted.length - 1].id;
+    }
+    if (selectorWrap) selectorWrap.style.display = sorted.length > 1 ? 'flex' : 'none';
+  }
+
+  const selectedId = selector?.value || sorted[sorted.length - 1].id;
+  const current = sorted.find(r => r.id === selectedId) || sorted[sorted.length - 1];
   const prior = fcrPriorReport(current);
   const baseline = fcrBaselineReports(current);
 
@@ -6936,6 +6959,10 @@ function fcrRenderDashboard() {
       fcrVarianceHTML(variance, current, prior, baseline) +
       fcrTrendTableHTML(sorted);
   });
+}
+
+function fcrOnMonthChange() {
+  fcrRenderDashboard();
 }
 
 function fcrArrow(delta, goodIsUp) {
