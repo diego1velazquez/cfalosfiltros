@@ -6309,7 +6309,7 @@ async function fcrHandleFile(file) {
     const fullText = pages.join('\n');
     const regexHeaderFooter = fcrRegexExtractHeaderFooter(fullText); // cheap first pass, used as backup only
 
-    const chunks = fcrChunkArray(pages, 3); // ~3 pages per AI call keeps each response small and reliable
+    const chunks = fcrChunkArray(pages, 2); // 2 pages per AI call — FCR pages are dense with invoice rows
     let allLineItems = [];
     let priorContext = null;
     let aiTotalSales = null, aiNetProfit = null, aiNetProfitPct = null, aiMonth = null, aiYear = null;
@@ -6470,7 +6470,7 @@ async function fcrCallClaudeExtractChunk(chunkText, priorContext) {
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON}` },
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 4000, // small chunk (~3 pages) — this is comfortably more than any chunk should need
+      max_tokens: 8000, // FCR pages are dense with invoice rows — needs headroom
       system,
       messages: [{ role: 'user', content: `Excerpt:\n\n${chunkText}` }]
     })
