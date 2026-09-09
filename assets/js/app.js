@@ -1082,11 +1082,23 @@ function recalculateAll() {
 }
 
 function updateDashboard() {
-  const tbody = document.getElementById('dashTbody');
+  const tbody      = document.getElementById('dashTbody');
   if (!tbody) return;
-  const emps = Object.entries(EMPLOYEES).sort((a,b) => a[1].name.localeCompare(b[1].name));
+  const search     = (document.getElementById('dashSearch')?.value || '').toLowerCase();
+  const statFilter = (document.getElementById('dashStatusFilter')?.value || '').toLowerCase();
+  const typeFilter = (document.getElementById('dashTypeFilter')?.value || '').toLowerCase();
+
+  let emps = Object.entries(EMPLOYEES)
+    .filter(([k, e]) => {
+      if (statFilter && (e.status || 'active').toLowerCase() !== statFilter) return false;
+      if (typeFilter && (e.type || 'hourly').toLowerCase() !== typeFilter) return false;
+      if (search && !e.name.toLowerCase().includes(search)) return false;
+      return true;
+    })
+    .sort((a, b) => a[1].name.localeCompare(b[1].name));
+
   if (!emps.length) {
-    tbody.innerHTML = '<tr><td colspan="10"><div class="empty"><div class="ei">📋</div><p>No data yet. Import data to get started.</p></div></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10"><div class="empty"><div class="ei">📋</div><p>No employees match.</p></div></td></tr>';
     return;
   }
   tbody.innerHTML = emps.map(([key, emp]) => {
@@ -1096,7 +1108,7 @@ function updateDashboard() {
     const vacBal   = accruals.vacationBal;
     const vacFlag  = !accruals.vacationEligible ? ' ⚠' : '';
     return `<tr>
-      <td><a href="#" style="color:var(--navy);font-weight:600;text-decoration:none" onclick="goTab('employees');return false">${emp.name}</a></td>
+      <td><a href="#" style="color:var(--navy);font-weight:600;text-decoration:none" onclick="showEmpDetail('${key}');return false">${emp.name}</a></td>
       <td><span class="badge bg-teal">${emp.type || 'hourly'}</span></td>
       <td><span class="badge ${emp.status === 'active' ? 'bg-green' : 'bg-gray'}">${emp.status || 'active'}</span></td>
       <td style="font-size:.8rem">${tenure}</td>
@@ -1445,32 +1457,39 @@ async function handleImport(file) {
     let newCount = 0, updatedCount = 0, totalHours = 0;
 
     for (const emp of result.employees) {
-      const key = emp.name.toLowerCase().replace(/\s+/g, '_');
+      // Fuzzy match to prevent duplicates from name format changes
+      const matchedKey = fuzzyMatchEmployee(emp.name);
+      const key = matchedKey || emp.name.toLowerCase().replace(/\s+/g, '_');
 
       if (!EMPLOYEES[key]) {
         EMPLOYEES[key] = {
-          name:         emp.name,
-          type:         'hourly',
-          status:       'active',
-          firstClockIn: result.periodStart?.toISOString().slice(0, 10) || null,
-          vacTaken:     0,
-          sickTaken:    0,
+          name:           emp.name,
+          type:           'hourly',
+          status:         'active',
+          firstClockIn:   result.periodStart?.toISOString().slice(0, 10) || null,
+          vacTaken:       0,
+          sickTaken:      0,
           monthlyRecords: [],
-          timeOffLog:   []
+          timeOffLog:     []
         };
         newCount++;
       } else {
         updatedCount++;
       }
 
-      // One clean record per month — no accumulation needed
-      EMPLOYEES[key].monthlyRecords.push({
-        year:        y,
-        month:       m,
-        hoursWorked: emp.totalHours,
-        reportStart: result.periodStart?.toISOString().slice(0, 10),
-        reportEnd:   result.periodEnd?.toISOString().slice(0, 10)
-      });
+      // Upsert monthly record — dont duplicate if already imported this month
+      const existingRec = EMPLOYEES[key].monthlyRecords.find(r => r.year === y && r.month === m);
+      if (!existingRec) {
+        EMPLOYEES[key].monthlyRecords.push({
+          year:        y,
+          month:       m,
+          hoursWorked: emp.totalHours,
+          reportStart: result.periodStart?.toISOString().slice(0, 10),
+          reportEnd:   result.periodEnd?.toISOString().slice(0, 10)
+        });
+      } else {
+        existingRec.hoursWorked = emp.totalHours;
+      }
 
       totalHours += emp.totalHours;
     }
@@ -2679,6 +2698,179 @@ function exportAuditLog() {
   URL.revokeObjectURL(url);
 }
 
+
+// ══════════════════════════════════════════
+// MERGE DUPLICATE EMPLOYEES
+// ══════════════════════════════════════════
+
+function openMergeModal() {
+  const emps = Object.entries(EMPLOYEES).sort((a,b) => a[1].name.localeCompare(b[1].name));
+  const opts = `<option value="">— Select employee —</option>` +
+    emps.map(([k,e]) => `<option value="${k}">${e.name}${e.status!=='active'?' (inactive)':''}</option>`).join('');
+  document.getElementById('mergeKeep').innerHTML = opts;
+  document.getElementById('mergeDrop').innerHTML = opts;
+  document.getElementById('mergePreview').style.display = 'none';
+  const btn = document.getElementById('mergeConfirmBtn');
+  btn.disabled = true; btn.style.opacity = '.4'; btn.style.cursor = 'not-allowed';
+  om('mergeEmpModal');
+}
+
+function previewMerge() {
+  const keepKey = document.getElementById('mergeKeep').value;
+  const dropKey = document.getElementById('mergeDrop').value;
+  const preview = document.getElementById('mergePreview');
+  const btn     = document.getElementById('mergeConfirmBtn');
+
+  if (!keepKey || !dropKey || keepKey === dropKey) {
+    preview.style.display = 'none';
+    btn.disabled = true; btn.style.opacity = '.4'; btn.style.cursor = 'not-allowed';
+    return;
+  }
+
+  const keep = EMPLOYEES[keepKey];
+  const drop = EMPLOYEES[dropKey];
+
+  // Calculate merged values
+  const mergedMonths = mergeMonthlyRecords(keep.monthlyRecords || [], drop.monthlyRecords || []);
+  const mergedSickTaken = +((keep.sickTaken || 0) + (drop.sickTaken || 0)).toFixed(2);
+  const mergedVacTaken  = +((keep.vacTaken  || 0) + (drop.vacTaken  || 0)).toFixed(2);
+  const mergedLogs      = [...(keep.timeOffLog || []), ...(drop.timeOffLog || [])];
+  const keepAccr = calcEmployeeAccruals(keep.monthlyRecords||[], keep.firstClockIn, keep.sickTaken||0, keep.vacTaken||0);
+  const dropAccr = calcEmployeeAccruals(drop.monthlyRecords||[], drop.firstClockIn, drop.sickTaken||0, drop.vacTaken||0);
+  const newAccr  = calcEmployeeAccruals(mergedMonths, keep.firstClockIn, mergedSickTaken, mergedVacTaken);
+
+  document.getElementById('mergePreviewContent').innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+      <thead><tr style="background:#e2e8f0">
+        <th style="padding:6px 10px;text-align:left">Field</th>
+        <th style="padding:6px 10px;text-align:left">Keep: ${keep.name}</th>
+        <th style="padding:6px 10px;text-align:left">Duplicate: ${drop.name}</th>
+        <th style="padding:6px 10px;text-align:left;color:#b45309">After Merge</th>
+      </tr></thead>
+      <tbody>
+        <tr style="border-top:1px solid #e2e8f0"><td style="padding:5px 10px">Months of data</td><td>${(keep.monthlyRecords||[]).length}</td><td>${(drop.monthlyRecords||[]).length}</td><td style="font-weight:700;color:#b45309">${mergedMonths.length}</td></tr>
+        <tr style="border-top:1px solid #e2e8f0"><td style="padding:5px 10px">Sick Balance</td><td>${daysToHrs(keepAccr.sickBal)} hrs</td><td>${daysToHrs(dropAccr.sickBal)} hrs</td><td style="font-weight:700;color:#b45309">${daysToHrs(newAccr.sickBal)} hrs</td></tr>
+        <tr style="border-top:1px solid #e2e8f0"><td style="padding:5px 10px">Vac Balance</td><td>${daysToHrs(keepAccr.vacationBal)} hrs</td><td>${daysToHrs(dropAccr.vacationBal)} hrs</td><td style="font-weight:700;color:#b45309">${daysToHrs(newAccr.vacationBal)} hrs</td></tr>
+        <tr style="border-top:1px solid #e2e8f0"><td style="padding:5px 10px">Sick Taken</td><td>${daysToHrs(keep.sickTaken||0)} hrs</td><td>${daysToHrs(drop.sickTaken||0)} hrs</td><td style="font-weight:700;color:#b45309">${daysToHrs(mergedSickTaken)} hrs</td></tr>
+        <tr style="border-top:1px solid #e2e8f0"><td style="padding:5px 10px">Vac Taken</td><td>${daysToHrs(keep.vacTaken||0)} hrs</td><td>${daysToHrs(drop.vacTaken||0)} hrs</td><td style="font-weight:700;color:#b45309">${daysToHrs(mergedVacTaken)} hrs</td></tr>
+        <tr style="border-top:1px solid #e2e8f0"><td style="padding:5px 10px">Time-off log entries</td><td>${(keep.timeOffLog||[]).length}</td><td>${(drop.timeOffLog||[]).length}</td><td style="font-weight:700;color:#b45309">${mergedLogs.length}</td></tr>
+        <tr style="border-top:1px solid #e2e8f0"><td style="padding:5px 10px">First Clock-In</td><td>${keep.firstClockIn||'—'}</td><td>${drop.firstClockIn||'—'}</td><td style="font-weight:700;color:#b45309">${keep.firstClockIn||drop.firstClockIn||'—'}</td></tr>
+      </tbody>
+    </table>
+    <p style="margin:10px 0 0;color:#991b1b;font-size:.8rem">⚠ <strong>${drop.name}</strong> will be permanently deleted from the system after merge.</p>
+  `;
+  preview.style.display = 'block';
+  btn.disabled = false; btn.style.opacity = '1'; btn.style.cursor = 'pointer';
+}
+
+function mergeMonthlyRecords(a, b) {
+  // Combine two arrays of monthly records — if same month exists in both, keep higher hours
+  const map = {};
+  for (const r of a) {
+    const k = `${r.year}-${r.month}`;
+    map[k] = r;
+  }
+  for (const r of b) {
+    const k = `${r.year}-${r.month}`;
+    if (!map[k] || r.hoursWorked > map[k].hoursWorked) map[k] = r;
+  }
+  return Object.values(map).sort((a,b) => a.year !== b.year ? a.year-b.year : a.month-b.month);
+}
+
+async function confirmMerge() {
+  const keepKey = document.getElementById('mergeKeep').value;
+  const dropKey = document.getElementById('mergeDrop').value;
+  if (!keepKey || !dropKey || keepKey === dropKey) return;
+
+  const keep = EMPLOYEES[keepKey];
+  const drop = EMPLOYEES[dropKey];
+  if (!confirm(`Merge "${drop.name}" INTO "${keep.name}"?\n\nThis will permanently delete "${drop.name}". This cannot be undone.`)) return;
+
+  // Merge data into keep
+  keep.monthlyRecords = mergeMonthlyRecords(keep.monthlyRecords || [], drop.monthlyRecords || []);
+  keep.sickTaken  = +((keep.sickTaken  || 0) + (drop.sickTaken  || 0)).toFixed(2);
+  keep.vacTaken   = +((keep.vacTaken   || 0) + (drop.vacTaken   || 0)).toFixed(2);
+  keep.timeOffLog = [...(keep.timeOffLog || []), ...(drop.timeOffLog || [])];
+  // Keep earliest first clock-in
+  if (drop.firstClockIn && (!keep.firstClockIn || drop.firstClockIn < keep.firstClockIn)) {
+    keep.firstClockIn = drop.firstClockIn;
+  }
+
+  // Delete duplicate from memory
+  delete EMPLOYEES[dropKey];
+
+  // Persist to Supabase
+  _setSaveStatus('saving');
+  try {
+    // Update canonical employee
+    await saveEmployee(keep);
+
+    // Re-upsert all monthly records for canonical
+    if (keep.supabase_id) {
+      // Delete existing monthly records and re-insert merged set
+      await getSupa().from('monthly_records').delete().eq('employee_id', keep.supabase_id);
+      for (const rec of keep.monthlyRecords) {
+        await getSupa().from('monthly_records').insert({
+          employee_id:  keep.supabase_id,
+          year:         rec.year,
+          month:        rec.month,
+          hours_worked: rec.hoursWorked,
+          report_start: rec.reportStart || null,
+          report_end:   rec.reportEnd || null,
+        });
+      }
+    }
+
+    // Delete duplicate from Supabase
+    if (drop.supabase_id) {
+      await getSupa().from('monthly_records').delete().eq('employee_id', drop.supabase_id);
+      await getSupa().from('time_off_log').delete().eq('employee_id', drop.supabase_id);
+      await getSupa().from('employees').delete().eq('id', drop.supabase_id);
+    }
+
+    await writeAuditLog('EMPLOYEE_MERGED',
+      `Merged "${drop.name}" into "${keep.name}" — ${keep.monthlyRecords.length} months combined`);
+    _setSaveStatus('saved');
+    showToast(`✅ "${drop.name}" merged into "${keep.name}" and deleted.`);
+  } catch(e) {
+    console.error('Merge save error:', e);
+    _setSaveStatus('error');
+    showToast('❌ Merge failed — check console.');
+  }
+
+  cm('mergeEmpModal');
+  recalculateAll();
+  _cacheToLocal();
+}
+
+// ── Fuzzy name matching for import ───────────────────────
+function fuzzyMatchEmployee(pdfName) {
+  // 1. Exact match first
+  const exactKey = pdfName.toLowerCase().replace(/\s+/g,'_');
+  if (EMPLOYEES[exactKey]) return exactKey;
+
+  // 2. Clean the PDF name — strip known suffixes like " Villa)", " (Antonio)", " (Jeral)", etc.
+  const cleaned = pdfName
+    .replace(/\s+Villa\)$/i, '')
+    .replace(/\s+\([^)]+\)$/i, '')
+    .replace(/-/g, ' ')
+    .trim();
+  const cleanedKey = cleaned.toLowerCase().replace(/\s+/g,'_');
+  if (EMPLOYEES[cleanedKey]) return cleanedKey;
+
+  // 3. Token overlap — split both names into parts and check if one contains the other
+  const pdfParts = cleaned.toLowerCase().split(/[\s,]+/).filter(Boolean);
+  for (const [key, emp] of Object.entries(EMPLOYEES)) {
+    const empParts = emp.name.toLowerCase().split(/[\s,]+/).filter(Boolean);
+    // Count how many parts match
+    const matches = pdfParts.filter(p => empParts.includes(p)).length;
+    const minLen  = Math.min(pdfParts.length, empParts.length);
+    // If 80%+ of the shorter name's parts match, consider it the same person
+    if (minLen >= 2 && matches / minLen >= 0.8) return key;
+  }
+
+  return null; // No match — new employee
+}
 
 function exportToCSV() {
   const rows = [['Name','Type','Status','First Clock-In','Tenure','Sick Earned','Sick Taken','Sick Balance','Vac Earned','Vac Taken','Vac Balance','Vac Eligible']];

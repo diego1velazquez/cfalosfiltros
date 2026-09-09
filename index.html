@@ -89,12 +89,14 @@
       <button class="btn btn-navy" onclick="doBackup()" style="margin-bottom:22px">💾 Backup Now</button>
       <div class="tbl-wrap">
         <div class="tbl-bar">
-          <input class="sinput" placeholder="Search employees..." oninput="searchDash(this.value)"/>
-          <select class="sel"><option value="Active" selected>Active</option><option value="Inactive">Inactive</option><option value="">All</option></select>
-          <select class="sel"><option>All Types</option><option>Hourly</option><option>Salary</option></select>
+          <input class="sinput" placeholder="Search employees..." id="dashSearch" oninput="updateDashboard()"/>
+          <select class="sel" id="dashStatusFilter" onchange="updateDashboard()"><option value="active" selected>Active</option><option value="inactive">Inactive</option><option value="">All</option></select>
+          <select class="sel" id="dashTypeFilter" onchange="updateDashboard()"><option value="">All Types</option><option value="hourly">Hourly</option><option value="salary">Salary</option></select>
           <div class="tr">
             <button class="btn" onclick="recalculateAll()">🔄 Recalculate</button>
-<button class="btn btn-navy" onclick="exportToCSV()">⬇ Export CSV</button><button class="btn" onclick="exportToPrint()" style="border-color:#7c3aed;color:#7c3aed">🖨 Print</button>
+            <button class="btn" onclick="openMergeModal()" style="border-color:#b45309;color:#b45309">🔀 Merge Duplicates</button>
+            <button class="btn btn-navy" onclick="exportToCSV()">⬇ Export CSV</button>
+            <button class="btn" onclick="exportToPrint()" style="border-color:#7c3aed;color:#7c3aed">🖨 Print</button>
           </div>
         </div>
         <div style="overflow-x:auto">
@@ -690,6 +692,36 @@
   </div>
 </div>
 
+
+<!-- MERGE EMPLOYEES MODAL -->
+<div class="moverlay" id="mergeEmpModal">
+  <div class="modal" style="max-width:640px">
+    <h3>🔀 Merge Duplicate Employees</h3>
+    <p style="font-size:.85rem;color:var(--text-mid);margin-bottom:18px">Select two employees to merge. All hours, time-off history, and records from the <strong>duplicate</strong> will be combined into the <strong>canonical</strong> record. The duplicate will be permanently deleted.</p>
+    <div class="frow">
+      <div class="field">
+        <label>Keep (Canonical)</label>
+        <select id="mergeKeep" onchange="previewMerge()" style="width:100%">
+          <option value="">— Select employee —</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Delete (Duplicate)</label>
+        <select id="mergeDrop" onchange="previewMerge()" style="width:100%">
+          <option value="">— Select employee —</option>
+        </select>
+      </div>
+    </div>
+    <div id="mergePreview" style="display:none;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px;margin:14px 0;font-size:.83rem">
+      <strong style="display:block;margin-bottom:10px;font-size:.9rem">Merge Preview</strong>
+      <div id="mergePreviewContent"></div>
+    </div>
+    <div class="mfooter">
+      <button class="btn" onclick="cm('mergeEmpModal')">Cancel</button>
+      <button class="btn" id="mergeConfirmBtn" onclick="confirmMerge()" style="background:#b45309;color:#fff;border-color:#b45309;opacity:.4;cursor:not-allowed" disabled>🔀 Merge & Delete Duplicate</button>
+    </div>
+  </div>
+</div>
 
 <!-- AUTO-LOGOUT MODAL -->
 <div class="timeout-overlay" id="timeoutOverlay">
