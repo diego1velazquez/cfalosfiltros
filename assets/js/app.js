@@ -6465,12 +6465,12 @@ async function fcrCallClaudeExtractChunk(chunkText, priorContext) {
     : `CURRENT SECTION CONTEXT: this is the start of the report.`;
   const system = FCR_CHUNK_SYSTEM_PROMPT.replace('{{CONTEXT_NOTE}}', contextNote);
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const res = await fetch(FCR_PROXY, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON}` },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 8000,
+      model: 'claude-sonnet-4-5',
+      max_tokens: 16000,
       system,
       messages: [{ role: 'user', content: `Excerpt:\n\n${chunkText}` }]
     })
