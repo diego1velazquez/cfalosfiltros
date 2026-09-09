@@ -6933,7 +6933,7 @@ function fcrRenderDashboard() {
     wrap.innerHTML =
       fcrSnapshotHTML(current, prior) +
       fcrVerificationHTML(verification, current) +
-      fcrVarianceHTML(variance, current, prior) +
+      fcrVarianceHTML(variance, current, prior, baseline) +
       fcrTrendTableHTML(sorted);
   });
 }
@@ -7020,16 +7020,32 @@ function fcrVerificationHTML(verification, current) {
   </div>`;
 }
 
-function fcrVarianceHTML(flagged, current, prior) {
+function fcrVarianceHTML(flagged, current, prior, baseline) {
   if (!prior) {
     return `<div class="ccard" style="margin-top:16px"><div class="ccard-body"><div class="empty"><div class="ei">📊</div><p>Operational trend flags need at least one prior month to compare against. Upload another month to activate this section.</p></div></div></div>`;
   }
+
+  // Build baseline label e.g. "Apr–Jun avg" or "May–Jun avg"
+  const baselineSorted = (baseline || []).slice().sort((a, b) => (a.period_year - b.period_year) || (a.period_month - b.period_month));
+  let baselineLabel = 'prior months avg';
+  if (baselineSorted.length === 1) {
+    baselineLabel = `${fcrMonthLabel(baselineSorted[0])} only`;
+  } else if (baselineSorted.length > 1) {
+    const first = baselineSorted[0];
+    const last = baselineSorted[baselineSorted.length - 1];
+    // Short form: "Apr–Jun avg"
+    const shortMonth = r => fcrMonthName(r.period_month).slice(0, 3);
+    baselineLabel = first.period_year === last.period_year
+      ? `${shortMonth(first)}–${shortMonth(last)} avg`
+      : `${shortMonth(first)} ${first.period_year}–${shortMonth(last)} ${last.period_year} avg`;
+  }
+
   const row = f => `
     <div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px;background:${f.tier === 1 ? '#fef2f2' : '#fffbeb'}">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
         <div>
           <div style="font-weight:700;font-size:.85rem;color:${f.tier === 1 ? '#991b1b' : '#92400e'}">${f.line_item}${f.hasAccrual ? ' <span style="font-weight:400;font-size:.72rem;color:var(--text-light)">(has accrual entries — check timing before assuming it\'s real)</span>' : ''}</div>
-          <div style="font-size:.78rem;color:var(--text-mid)">${f.parent_line || f.section} · $${fcrFmt(f.cm_amount)} this month vs $${fcrFmt(f.avgAmt)} trailing avg</div>
+          <div style="font-size:.78rem;color:var(--text-mid)">${f.parent_line || f.section} · $${fcrFmt(f.cm_amount)} in ${fcrMonthLabel(current)} vs $${fcrFmt(f.avgAmt)} ${baselineLabel}</div>
           ${f.notes.length ? `<div style="font-size:.76rem;color:#16a34a;margin-top:4px">📌 ${f.notes.map(n => fcrEsc(n)).join(' · ')}</div>` : ''}
         </div>
         <div style="text-align:right">
@@ -7046,7 +7062,7 @@ function fcrVarianceHTML(flagged, current, prior) {
   return `
   <div class="ccard" style="margin-top:16px">
     <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-      <strong style="color:var(--navy)">🔍 Operational Watch — worth asking your team</strong>
+      <strong style="color:var(--navy)">🔍 Operational Watch — ${fcrMonthLabel(current)} vs ${baselineLabel}</strong>
       <span style="font-size:.75rem;color:var(--text-light)">${flagged.length} flagged, ranked by $ impact</span>
     </div>
     <div class="ccard-body">
