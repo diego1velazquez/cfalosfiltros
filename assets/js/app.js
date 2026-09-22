@@ -101,6 +101,7 @@ function goTab(t) {
   if (t === 'fcr')       fcrInit();
   if (t === 'catering')  cateringInit();
   if (t === 'writeups')  { wuRefreshEmpList(); wuLoadPendingQueue(); }
+  if (t === 'reviews')   initRepTab();
 }
 
 // ══════════════════════════════════════════
@@ -7132,3 +7133,138 @@ function fcrTrendTableHTML(sorted) {
     </div>
   </div>`;
 }
+
+// ═══════════════════════════════════════════════════════════
+//  REPUTATION / REVIEWS TAB
+// ═══════════════════════════════════════════════════════════
+
+const GOOGLE_API_KEY  = 'AIzaSyCrrOs1hpIvq11FfqfP89UeM00qfN5ANiQ';
+const GOOGLE_PLACE_QUERY = 'Chick-fil-A Los Filtros Bayamon Puerto Rico';
+let _repGooglePlaceId  = null;
+let _repGoogleReviews  = [];
+
+// ── Init tab on first open ───────────────────────────────────
+function initRepTab() {
+  const cached = sessionStorage.getItem('rep_last_updated');
+  if (cached) {
+    document.getElementById('repLastUpdated').textContent = cached;
+    const g = JSON.parse(sessionStorage.getItem('rep_google') || 'null');
+    if (g) repRenderGoogle(g);
+  }
+}
+
+// ── Main refresh ─────────────────────────────────────────────
+async function repRefreshAll() {
+  const btn = document.getElementById('repRefreshBtn');
+  btn.textContent = 'Actualizando...';
+  btn.disabled = true;
+  try {
+    await repFetchGoogle();
+  } catch(e) {
+    console.error('Reputation refresh error:', e);
+  }
+  const now = new Date().toLocaleString('es-PR', { timeZone: 'America/Puerto_Rico' });
+  document.getElementById('repLastUpdated').textContent = now;
+  sessionStorage.setItem('rep_last_updated', now);
+  btn.textContent = 'Actualizar Todo';
+  btn.disabled = false;
+}
+
+// ── Google Places ────────────────────────────────────────────
+async function repFetchGoogle() {
+  // Step 1: Find Place ID if we don't have it
+  if (!_repGooglePlaceId) {
+    const cached = sessionStorage.getItem('rep_google_place_id');
+    if (cached) {
+      _repGooglePlaceId = cached;
+    } else {
+      const findUrl = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=${encodeURIComponent(GOOGLE_PLACE_QUERY)}&inputtype=textquery&fields=place_id&key=${GOOGLE_API_KEY}`;
+      // Use a CORS proxy since we're calling from browser
+      const proxyUrl = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json`;
+      const res = await fetch(`https://places.googleapis.com/v1/places:searchText`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': GOOGLE_API_KEY,
+          'X-Goog-FieldMask': 'places.id,places.displayName,places.rating,places.userRatingCount,places.reviews'
+        },
+        body: JSON.stringify({
+          textQuery: GOOGLE_PLACE_QUERY,
+          maxResultCount: 1,
+          languageCode: 'es'
+        })
+      });
+      const data = await res.json();
+      if (!data.places || data.places.length === 0) throw new Error('Place not found');
+      const place = data.places[0];
+      _repGooglePlaceId = place.id;
+      sessionStorage.setItem('rep_google_place_id', place.id);
+      repRenderGoogle(place);
+      sessionStorage.setItem('rep_google', JSON.stringify(place));
+      return;
+    }
+  }
+
+  // Step 2: Fetch place details using Places API (New)
+  const res = await fetch(`https://places.googleapis.com/v1/places/${_repGooglePlaceId}`, {
+    headers: {
+      'X-Goog-Api-Key': GOOGLE_API_KEY,
+      'X-Goog-FieldMask': 'id,displayName,rating,userRatingCount,reviews'
+    }
+  });
+  const place = await res.json();
+  repRenderGoogle(place);
+  sessionStorage.setItem('rep_google', JSON.stringify(place));
+}
+
+function repRenderGoogle(place) {
+  // Score card
+  const rating = place.rating || '—';
+  const count  = place.userRatingCount || 0;
+  document.getElementById('repGoogleRating').textContent = rating;
+  document.getElementById('repGoogleCount').textContent  = count.toLocaleString() + ' reseñas';
+
+  // Star display
+  const stars = Math.round(parseFloat(rating) || 0);
+  const starEl = document.getElementById('repGoogleRating').nextElementSibling;
+  if (starEl) starEl.textContent = '★'.repeat(stars) + '☆'.repeat(5 - stars);
+
+  // Reviews feed
+  _repGoogleReviews = place.reviews || [];
+  repRenderGoogleFeed(_repGoogleReviews);
+}
+
+function repRenderGoogleFeed(reviews) {
+  const feed = document.getElementById('repGoogleFeed');
+  if (!reviews || reviews.length === 0) {
+    feed.innerHTML = '<div style="padding:30px;text-align:center;color:var(--text-light)">No hay reseñas disponibles.</div>';
+    return;
+  }
+  feed.innerHTML = reviews.map(r => {
+    const stars    = r.rating || 0;
+    const starStr  = '★'.repeat(stars) + '☆'.repeat(5 - stars);
+    const color    = stars >= 4 ? '#16a34a' : stars === 3 ? '#d97706' : '#dc2626';
+    const name     = r.authorAttribution?.displayName || 'Anónimo';
+    const text     = r.text?.text || r.originalText?.text || '';
+    const timeDesc = r.relativePublishTimeDescription || '';
+    return `<div style="padding:14px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <div style="font-weight:600;font-size:.88rem;color:var(--navy)">${name}</div>
+        <div style="font-size:.78rem;color:var(--text-light)">${timeDesc}</div>
+      </div>
+      <div style="color:${color};font-size:.95rem;margin-bottom:6px">${starStr}</div>
+      <div style="font-size:.83rem;color:var(--text-mid);line-height:1.5">${text}</div>
+    </div>`;
+  }).join('');
+}
+
+function repFilterGoogle(val) {
+  if (!_repGoogleReviews.length) return;
+  let filtered = _repGoogleReviews;
+  if (val === '5') filtered = _repGoogleReviews.filter(r => r.rating === 5);
+  else if (val === '4') filtered = _repGoogleReviews.filter(r => r.rating === 4);
+  else if (val === '3') filtered = _repGoogleReviews.filter(r => r.rating <= 3);
+  repRenderGoogleFeed(filtered);
+}
+
+

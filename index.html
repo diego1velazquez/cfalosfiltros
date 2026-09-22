@@ -64,6 +64,7 @@
     <div class="tab" onclick="goTab('writeups')" id="t-writeups" style="display:none">Write-Ups</div>
     <div class="tab" onclick="goTab('eom')" id="t-eom" style="display:none">EOM Package</div>
     <div class="tab" onclick="goTab('catering')" id="t-catering">Catering</div>
+    <div class="tab" onclick="goTab('reviews')" id="t-reviews">Reputación</div>
   </div>
 
   <!-- Employee tab nav -->
@@ -797,6 +798,79 @@
 </div>
 
 
+
+<!-- REVIEWS / REPUTATION PAGE -->
+<div class="page" id="p-reviews">
+  <div style="padding:20px 20px 0">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:12px">
+      <div>
+        <h2 style="margin:0 0 4px;color:var(--navy)">Reputación</h2>
+        <p style="margin:0;font-size:.82rem;color:var(--text-light)">Google Reviews · SMG CEM · Uber Eats · Facebook · Instagram</p>
+      </div>
+      <button class="btn btn-navy" onclick="repRefreshAll()" id="repRefreshBtn">Actualizar Todo</button>
+    </div>
+
+    <!-- SCORE CARDS ROW -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:24px">
+      <!-- Google -->
+      <div class="ccard" style="text-align:center;padding:20px 16px">
+        <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:8px">Google</div>
+        <div id="repGoogleRating" style="font-size:2rem;font-weight:800;color:var(--navy)">—</div>
+        <div style="color:#f59e0b;font-size:1rem;margin:4px 0">★★★★★</div>
+        <div id="repGoogleCount" style="font-size:.78rem;color:var(--text-light)">— reseñas</div>
+      </div>
+      <!-- SMG CEM -->
+      <div class="ccard" style="text-align:center;padding:20px 16px">
+        <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:8px">SMG CEM</div>
+        <div id="repSmgScore" style="font-size:2rem;font-weight:800;color:var(--navy)">—</div>
+        <div style="font-size:.78rem;color:var(--text-light);margin-top:4px">Últimos 30 días</div>
+        <div id="repSmgStatus" style="font-size:.72rem;color:#d97706;margin-top:4px">Sin configurar</div>
+      </div>
+      <!-- Uber Eats -->
+      <div class="ccard" style="text-align:center;padding:20px 16px">
+        <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:8px">Uber Eats</div>
+        <div id="repUberRating" style="font-size:2rem;font-weight:800;color:var(--navy)">—</div>
+        <div style="font-size:.78rem;color:var(--text-light);margin-top:4px">Calificación</div>
+        <div id="repUberStatus" style="font-size:.72rem;color:#d97706;margin-top:4px">Sin configurar</div>
+      </div>
+      <!-- Facebook -->
+      <div class="ccard" style="text-align:center;padding:20px 16px">
+        <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:8px">Facebook</div>
+        <div id="repFbFollowers" style="font-size:2rem;font-weight:800;color:var(--navy)">—</div>
+        <div style="font-size:.78rem;color:var(--text-light);margin-top:4px">Seguidores</div>
+        <div id="repFbStatus" style="font-size:.72rem;color:#d97706;margin-top:4px">Sin configurar</div>
+      </div>
+      <!-- Instagram -->
+      <div class="ccard" style="text-align:center;padding:20px 16px">
+        <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:8px">Instagram</div>
+        <div id="repIgFollowers" style="font-size:2rem;font-weight:800;color:var(--navy)">—</div>
+        <div style="font-size:.78rem;color:var(--text-light);margin-top:4px">Seguidores</div>
+        <div id="repIgStatus" style="font-size:.72rem;color:#d97706;margin-top:4px">Sin configurar</div>
+      </div>
+    </div>
+
+    <!-- GOOGLE REVIEWS FEED -->
+    <div class="ccard" style="margin-bottom:20px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <h3 style="margin:0;color:var(--navy);font-size:1rem">Reseñas de Google <span id="repGooglePeriod" style="font-size:.78rem;color:var(--text-light);font-weight:400">— últimas 5</span></h3>
+        <div style="display:flex;gap:8px">
+          <select id="repGoogleFilter" onchange="repFilterGoogle(this.value)" style="padding:6px 10px;border:1.5px solid var(--border);border-radius:8px;font-size:.8rem;color:var(--navy);background:#fff">
+            <option value="all">Todas</option>
+            <option value="5">5 estrellas</option>
+            <option value="4">4 estrellas</option>
+            <option value="3">3 o menos</option>
+          </select>
+        </div>
+      </div>
+      <div id="repGoogleFeed"><div style="padding:30px;text-align:center;color:var(--text-light)">Haz clic en <strong>Actualizar Todo</strong> para cargar las reseñas.</div></div>
+    </div>
+
+    <!-- LAST UPDATED -->
+    <div style="text-align:right;font-size:.75rem;color:var(--text-light);padding-bottom:20px">
+      Última actualización: <span id="repLastUpdated">—</span>
+    </div>
+  </div>
+</div>
 
 <!-- CATERING DETAIL MODAL -->
 <div class="moverlay" id="cateringModal">
