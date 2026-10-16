@@ -219,7 +219,7 @@
   // ── roles & sections ──────────────────────────────────────
   // Sections in sidebar order.
   const ALL = ['home', 'calendar', 'equipment', 'quality', 'sales', 'foodcost', 'productivity', 'pl', 'cash', 'recon', 'fcr', 'dashboard', 'bonus', 'staffing', 'infractions', 'meals', 'access', 'catering', 'marketing', 'reputation'];
-  const EVERYONE = ['home', 'calendar']; // anyone with access to the hub
+  const EVERYONE = ['home']; // anyone with access to the hub (Calendar can be ticked on or off per person)
   H.SECTIONS = ALL;
   H.SECTION_LABELS = { bonus: 'Christmas bonus', home: 'Home', calendar: 'Calendar', quality: 'Speed & quality', sales: 'Sales', pl: 'Monthly P&L', cash: 'Cash', equipment: 'Equipment', foodcost: 'Food cost', productivity: 'Productivity', recon: 'Reconciliation', fcr: 'FCR trends', staffing: 'Staffing', infractions: 'Infractions', dashboard: 'Leave balances', import: 'Import hours', recordto: 'Record time-off', meals: 'Meal penalties', access: 'Users & access', catering: 'Catering', marketing: 'Marketing', reputation: 'Reputación' };
   H.ROLE_LABELS = { operator: 'Operator', admin: 'Operator', director: 'Director', shift_leader: 'Shift leader', marketing: 'Marketing', team_member: 'Team member' };
