@@ -45,10 +45,19 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
       errEl.style.display = 'block';
       return;
     }
-    const { data: profile } = await getSupa().from('profiles').select('*').eq('id', data.user.id).single();
-    const role = profile?.role || 'admin';
+    let { data: profile, error: profErr } = await getSupa().from('profiles').select('*').eq('id', data.user.id).maybeSingle();
+    if (profErr) { errEl.textContent = 'Signed in, but your access could not be loaded. Please try again.'; errEl.style.display = 'block'; return; }
+    // First sign-in of someone invited from Users & access: create their profile with the invited role.
+    if (!profile) {
+      try {
+        const { data: inv } = await getSupa().rpc('hub_accept_invite');
+        if (inv && inv[0] && inv[0].invited_role) profile = { role: inv[0].invited_role, name: inv[0].invited_name };
+      } catch (invErr) { console.warn('Invite check failed:', invErr.message); }
+    }
+    // A login with no saved role signs in as Director, never Operator (the database only treats saved operator/admin profiles as the operator)
+    const role = profile ? (profile.role || 'admin') : 'director';
     const name = profile?.name || data.user.email;
-    doLogin(data.user.email, { role, name });
+    doLogin(data.user.email, { role, name, id: data.user.id, sections: profile?.sections || null });
   } catch(err) {
     errEl.textContent = 'Login error: ' + err.message;
     errEl.style.display = 'block';
@@ -63,11 +72,14 @@ function doLogin(pin, user) {
   document.getElementById('loginErr').style.display = 'none';
   document.getElementById('pinIn').value = '';
   document.getElementById('passIn').value = '';
-  document.getElementById('navRolePill').textContent = 'ADMIN';
-  document.getElementById('navRolePill').className = 'role-pill admin-pill';
   document.getElementById('adminTabNav').style.display = 'flex';
   document.getElementById('empTabNav').style.display = 'none';
-  goTab('dashboard');
+  // Team data loads only after sign-in (the database only shares it with signed-in users).
+  // When it arrives, the open page redraws with it.
+  window._hubDataReady = loadFromStorage();
+  window._hubDataReady.then(() => { const pg = document.querySelector('.page.active'); if (currentUser && pg) goTab(pg.id.slice(2)); }).catch(() => {});
+  if (window.hubOnLogin) hubOnLogin(currentUser);
+  goTab(window.hubLanding ? hubLanding() : 'dashboard');
 }
 
 async function signOut() {
@@ -85,14 +97,22 @@ async function signOut() {
 // ══════════════════════════════════════════
 function goTab(t) {
   if (t === 'timeoff') t = 'recordto';
+  // Import hours and Record time-off now live inside the Leave balances page
+  if (t === 'import' || t === 'recordto') { window._hubLbSub = t; t = 'dashboard'; }
+  if (window.hubCanSee && !hubCanSee(t)) t = window.hubLanding ? hubLanding() : 'dashboard';
   document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
   document.querySelectorAll('.page').forEach(x => x.classList.remove('active'));
   const tabEl  = document.getElementById('t-' + t);
   const pageEl = document.getElementById('p-' + t);
   if (tabEl)  tabEl.classList.add('active');
   if (pageEl) pageEl.classList.add('active');
+  const titleEl = document.getElementById('pageTitle');
+  if (titleEl) titleEl.textContent = (tabEl && tabEl.dataset.title) || (tabEl && tabEl.textContent.trim()) || 'Los Filtros Hub';
+  document.title = (t === 'home' ? '' : ((tabEl && tabEl.dataset.title) || '') + ' — ') + 'Los Filtros Hub';
+  toggleNav(false);
+  window.scrollTo(0, 0);
+  if (window.hubOnTab)   hubOnTab(t);
   // Trigger renders on tab switch
-  if (t === 'timeoff')   renderTimeOffRequests();
   if (t === 'employees') updateEmployeesTab();
   if (t === 'gastos')    gastosInit();
   if (t === 'eom')       eomInit();
@@ -101,7 +121,12 @@ function goTab(t) {
   if (t === 'fcr')       fcrInit();
   if (t === 'catering')  cateringInit();
   if (t === 'writeups')  { wuRefreshEmpList(); wuLoadPendingQueue(); }
-  if (t === 'reviews')   initRepTab();
+}
+
+// Mobile sidebar
+function toggleNav(force) {
+  const open = typeof force === 'boolean' ? force : !document.body.classList.contains('nav-open');
+  document.body.classList.toggle('nav-open', open);
 }
 
 // ══════════════════════════════════════════
@@ -118,11 +143,6 @@ document.querySelectorAll('.moverlay').forEach(o =>
 // ══════════════════════════════════════════
 
 
-function searchDash(v) {
-  document.querySelectorAll('#dashTbody tr').forEach(r => {
-    r.style.display = r.textContent.toLowerCase().includes(v.toLowerCase()) ? '' : 'none';
-  });
-}
 
 
 
@@ -182,49 +202,9 @@ function parseMoney(v) {
   return Math.abs(+n.toFixed(2));
 }
 
-function parseDateLoose(v) {
-  if (!v) return null;
-  const s = String(v).trim();
-  // MM/DD/YYYY or MM-DD-YYYY
-  let m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/);
-  if (m) {
-    let y = +m[3];
-    if (y < 100) y += 2000;
-    return new Date(y, +m[1] - 1, +m[2]);
-  }
-  // YYYY-MM-DD
-  m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-  if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
-  // DD-MON-YYYY (e.g. 08-JUN-2026) — Gastos format
-  const MONTHS = {JAN:0,FEB:1,MAR:2,APR:3,MAY:4,JUN:5,JUL:6,AUG:7,SEP:8,OCT:9,NOV:10,DEC:11};
-  m = s.match(/^(\d{1,2})-([A-Z]{3})-(\d{4})$/i);
-  if (m) {
-    const mon = MONTHS[m[2].toUpperCase()];
-    if (mon !== undefined) return new Date(+m[3], mon, +m[1]);
-  }
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? null : d;
-}
-
 function fmtDate(d) {
   if (!d) return '';
   return d.toISOString().slice(0, 10);
-}
-
-function dateDiffDays(a, b) {
-  const ms = Math.abs(a.getTime() - b.getTime());
-  return Math.floor(ms / (1000 * 60 * 60 * 24));
-}
-
-function normText(s) {
-  return String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-function tokenOverlap(a, b) {
-  const A = new Set(normText(a).split(' ').filter(t => t.length >= 4));
-  const B = new Set(normText(b).split(' ').filter(t => t.length >= 4));
-  for (const t of A) if (B.has(t)) return true;
-  return false;
 }
 
 function getHeaderIndex(headers, candidates) {
@@ -310,7 +290,7 @@ function csvToTxns(text, sourceName) {
     // Bank: only keep rows within current month OR up to 14 days prior
     // Also skip CFA wires, payroll, CC payments, draws
     if (sourceName === 'bank') {
-      const now = new Date();
+      const now = typeof reconRef === 'function' ? reconRef() : new Date();
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
       const twoWeeksPrior = new Date(monthStart.getTime() - 14 * 24 * 60 * 60 * 1000);
       if (date < twoWeeksPrior) continue;
@@ -337,6 +317,46 @@ function csvToTxns(text, sourceName) {
   return out;
 }
 
+function parseDateLoose(v) {
+  if (!v) return null;
+  const s = String(v).trim();
+  // MM/DD/YYYY or MM-DD-YYYY
+  let m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/);
+  if (m) {
+    let y = +m[3];
+    if (y < 100) y += 2000;
+    return new Date(y, +m[1] - 1, +m[2]);
+  }
+  // YYYY-MM-DD
+  m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
+  // DD-MON-YYYY (e.g. 08-JUN-2026) — Gastos format
+  const MONTHS = {JAN:0,FEB:1,MAR:2,APR:3,MAY:4,JUN:5,JUL:6,AUG:7,SEP:8,OCT:9,NOV:10,DEC:11};
+  m = s.match(/^(\d{1,2})-([A-Z]{3})-(\d{4})$/i);
+  if (m) {
+    const mon = MONTHS[m[2].toUpperCase()];
+    if (mon !== undefined) return new Date(+m[3], mon, +m[1]);
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function dateDiffDays(a, b) {
+  const ms = Math.abs(a.getTime() - b.getTime());
+  return Math.floor(ms / (1000 * 60 * 60 * 24));
+}
+
+function normText(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function tokenOverlap(a, b) {
+  const A = new Set(normText(a).split(' ').filter(t => t.length >= 4));
+  const B = new Set(normText(b).split(' ').filter(t => t.length >= 4));
+  for (const t of A) if (B.has(t)) return true;
+  return false;
+}
+
 function readFileText(file) {
   return new Promise((resolve, reject) => {
     const fr = new FileReader();
@@ -357,7 +377,7 @@ function updateReconHeaderStats() {
   const groups      = VENDOR_GROUPS.length;
   const needsEntry  = RECON_DATA.unmatchedExternal.filter(x => {
     const d = x.date instanceof Date ? x.date : new Date(x.date);
-    const now = new Date();
+    const now = typeof reconRef === 'function' ? reconRef() : new Date();
     return x.source !== 'bank' && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
   }).length;
   const achCount = RECON_DATA.unmatchedGastos ? RECON_DATA.unmatchedGastos.filter(g => {
@@ -491,7 +511,7 @@ function renderReconReport() {
       }
       // Skip prior-month CC charges — only include current month in groups
       const xDate = x.date instanceof Date ? x.date : new Date(x.date);
-      const now = new Date();
+      const now = typeof reconRef === 'function' ? reconRef() : new Date();
       if (x.source !== 'bank' && (xDate.getMonth() !== now.getMonth() || xDate.getFullYear() !== now.getFullYear())) return false;
       groupUsedExternal.add(x.id); return true;
     });
@@ -571,7 +591,7 @@ function renderReconReport() {
   RECON_DATA.unmatchedGastos   = unmatchedGastos;
 
   // Separate unmatched by month
-  const now = new Date();
+  const now = typeof reconRef === 'function' ? reconRef() : new Date();
   const curMonth = now.getMonth();
   const curYear  = now.getFullYear();
   // Needs entry = only CC/Amazon charges (not bank debits) in current month
@@ -702,7 +722,7 @@ function renderReconReport() {
 
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem;flex-wrap:wrap;gap:8px">
       <div>
-        <div style="font-size:16px;font-weight:500;color:var(--color-text-primary)">Los Filtros — ${new Date(RECON_DATA.lastRunAt).toLocaleString('en-US',{month:'long',year:'numeric'})}</div>
+        <div style="font-size:16px;font-weight:500;color:var(--color-text-primary)">Los Filtros — ${(typeof reconRef === 'function' ? reconRef() : new Date(RECON_DATA.lastRunAt)).toLocaleString('en-US',{month:'long',year:'numeric'})}</div>
         <div style="font-size:12px;color:var(--color-text-secondary);margin-top:2px">Chase + Amex + Amazon + Banco Popular + Gastos · ${new Date(RECON_DATA.lastRunAt).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}</div>
       </div>
       <span style="display:inline-block;font-size:12px;font-weight:600;padding:5px 12px;border-radius:8px;${needsEntry > 0 ? 'background:var(--color-background-danger,#fee2e2);color:var(--color-text-danger,#991b1b)' : 'background:var(--color-background-success,#dcfce7);color:var(--color-text-success,#166534)'}">${needsEntry > 0 ? needsEntry + ' items need entry' : '✓ All charges accounted for'}</span>
@@ -808,6 +828,13 @@ async function handleReconUpload(kind, files) {
       } catch (err) {
         alert(`Error parsing Chase PDF: ${err.message}`);
       }
+      continue;
+    }
+
+    // Excel statements (e.g. the Amex XLSX download) are turned into CSV text and read like any CSV
+    if (['xlsx', 'xls'].includes(ext) && typeof reconSheetToCsv === 'function') {
+      try { uploaded.push(...csvToTxns(await reconSheetToCsv(file), kind === 'gastos' ? 'gastos' : kind)); }
+      catch (err) { alert(`Could not read "${file.name}": ${err.message}`); }
       continue;
     }
 
@@ -1751,21 +1778,21 @@ function _setSaveStatus(state, msg) {
   const el = document.getElementById('saveStatusBadge');
   if (!el) return;
   if (state === 'saving') {
-    el.textContent = '⏳ Saving…';
-    el.style.background = '#fef3c7';
-    el.style.color = '#92400e';
+    el.textContent = 'Saving…';
+    el.style.background = 'var(--warn-wash)';
+    el.style.color = 'var(--warn)';
   } else if (state === 'saved') {
     const now = new Date().toLocaleString('en-US', { timeZone: 'America/Puerto_Rico', hour12: true, month:'short', day:'numeric', hour:'numeric', minute:'2-digit' });
-    el.textContent = '✅ Saved ' + now;
-    el.style.background = '#dcfce7';
-    el.style.color = '#166534';
+    el.textContent = 'Saved ' + now;
+    el.style.background = 'transparent';
+    el.style.color = 'var(--text-light)';
     const sb = document.getElementById('sBackup');
     if (sb) sb.textContent = now;
     try { localStorage.setItem('cfa_losfiltros_backup_time', now); } catch(e){}
   } else {
-    el.textContent = '❌ Save failed — check connection';
-    el.style.background = '#fee2e2';
-    el.style.color = '#991b1b';
+    el.textContent = 'Save failed — check connection';
+    el.style.background = 'var(--bad-wash)';
+    el.style.color = 'var(--bad)';
   }
 }
 
@@ -1839,12 +1866,20 @@ async function saveToStorage() {
   _cacheToLocal();
   try {
     // Settings / Slack config
-    const slackCfg = {
-      webhookUrl: document.getElementById('slackWebhook')?.value || '',
-      notifOnApprove: true,
-      notifOnRequest: true,
-    };
-    await getSupa().from('app_settings').upsert({ key: 'slack', value: slackCfg }, { onConflict: 'key' });
+    // Only write the Slack config when its settings field is on the page; otherwise
+    // this would overwrite the stored webhook with an empty value on every save.
+    const slackEl = document.getElementById('slackWebhook');
+    if (slackEl) {
+      const slackCfg = { webhookUrl: slackEl.value || '', notifOnApprove: true, notifOnRequest: true };
+      await getSupa().from('app_settings').upsert({ key: 'slack', value: slackCfg }, { onConflict: 'key' });
+    }
+
+    if (!window._hubSettingsLoaded) {
+      // Stored meals/requests were never read — refuse to overwrite them.
+      console.warn('saveToStorage: skipped meals/requests save because they were not loaded from Supabase');
+      _setSaveStatus('error');
+      return;
+    }
 
     // Requests (small table, full upsert)
     if (TIME_OFF_REQUESTS.length) {
@@ -1863,11 +1898,45 @@ async function saveToStorage() {
   }
 }
 
+// ── Read every row of a table ─────────────────────────────
+// Supabase returns at most 1,000 rows per request. Reading hours or time-off with a single
+// request would silently drop rows once a table passes 1,000, and Merge duplicates would then
+// re-save only what was loaded. This pages through the table, checks the total against the
+// database's own count, and falls back to one request per employee if they ever disagree.
+async function _selectAll(table, orderCols, perEmployeeFallback) {
+  const PAGE = 1000, rows = [];
+  for (let page = 0; page < 200; page++) {
+    let q = getSupa().from(table).select('*');
+    for (const c of orderCols) q = q.order(c, { ascending: true });
+    const { data, error } = await q.range(page * PAGE, page * PAGE + PAGE - 1);
+    if (error) return { data: null, error };
+    rows.push(...(data || []));
+    if (!data || data.length < PAGE) break;
+  }
+  try {
+    const { count, error } = await getSupa().from(table).select('*', { count: 'exact', head: true });
+    if (!error && typeof count === 'number' && count !== rows.length) {
+      console.warn(`[hub] ${table}: read ${rows.length} of ${count} rows; re-reading one employee at a time`);
+      if (!perEmployeeFallback) return { data: null, error: { message: `Only ${rows.length} of ${count} ${table} rows could be read` } };
+      const all = [];
+      for (const empId of perEmployeeFallback()) {
+        const { data, error: e2 } = await getSupa().from(table).select('*').eq('employee_id', empId);
+        if (e2) return { data: null, error: e2 };
+        all.push(...(data || []));
+      }
+      if (all.length !== count) return { data: null, error: { message: `Only ${all.length} of ${count} ${table} rows could be read` } };
+      return { data: all, error: null };
+    }
+  } catch (e) { /* count not available: keep the paged result */ }
+  return { data: rows, error: null };
+}
+const _empIdsLoaded = () => Object.values(EMPLOYEES).map(e => e.supabase_id).filter(Boolean);
+
 // ── Load all data from Supabase on startup ────────────────
 async function loadFromStorage() {
   try {
     // Load employees
-    const { data: empRows, error: empErr } = await getSupa().from('employees').select('*').order('name');
+    const { data: empRows, error: empErr } = await _selectAll('employees', ['name', 'id']);
     if (!empErr && empRows && empRows.length) {
       for (const row of empRows) {
         const key = row.name.toLowerCase().replace(/\s+/g, '_');
@@ -1889,7 +1958,9 @@ async function loadFromStorage() {
     }
 
     // Load monthly records
-    const { data: mrRows, error: mrErr } = await getSupa().from('monthly_records').select('*');
+    const { data: mrRows, error: mrErr } = await _selectAll('monthly_records', ['employee_id', 'year', 'month'], _empIdsLoaded);
+    window._hubHoursComplete = !mrErr;
+    if (mrErr) console.error('[hub] Hours could not be fully loaded:', mrErr.message);
     if (!mrErr && mrRows && mrRows.length) {
       // Clear existing monthly records first to avoid duplication
       for (const emp of Object.values(EMPLOYEES)) emp.monthlyRecords = [];
@@ -1914,7 +1985,9 @@ async function loadFromStorage() {
     }
 
     // Load time-off log entries
-    const { data: tolRows, error: tolErr } = await getSupa().from('time_off_log').select('*').order('recorded_at');
+    const { data: tolRows, error: tolErr } = await _selectAll('time_off_log', ['recorded_at', 'employee_id', 'start_date', 'type'], _empIdsLoaded);
+    window._hubTimeOffComplete = !tolErr;
+    if (tolErr) console.error('[hub] Time-off log could not be fully loaded:', tolErr.message);
     if (!tolErr && tolRows && tolRows.length) {
       for (const emp of Object.values(EMPLOYEES)) emp.timeOffLog = [];
       const empById = {};
@@ -1940,7 +2013,7 @@ async function loadFromStorage() {
     }
 
     // Load imported periods
-    const { data: ipRows, error: ipErr } = await getSupa().from('imported_periods').select('*').order('month_key');
+    const { data: ipRows, error: ipErr } = await _selectAll('imported_periods', ['month_key']);
     if (!ipErr && ipRows && ipRows.length) {
       for (const row of ipRows) {
         IMPORTED_PERIODS[row.month_key] = {
@@ -1955,7 +2028,10 @@ async function loadFromStorage() {
     }
 
     // Load requests and meals from app_settings
-    const { data: settRows } = await getSupa().from('app_settings').select('*');
+    const { data: settRows, error: settErr } = await getSupa().from('app_settings').select('*');
+    // Data-safety guard: only allow saving meals/requests back once they were read successfully,
+    // so a failed load can never overwrite the stored lists with empty ones.
+    if (!settErr && Array.isArray(settRows)) window._hubSettingsLoaded = true;
     if (settRows) {
       for (const row of settRows) {
         if (row.key === 'requests' && Array.isArray(row.value)) {
@@ -2000,7 +2076,6 @@ async function loadFromStorage() {
 
   populateEmployeeDropdowns();
   recalculateAll();
-  updateRequestBadge();
   migrateMealPenalties();
 }
 
@@ -2023,8 +2098,7 @@ async function doBackup() {
   }
 }
 
-// Load data on page load
-window.addEventListener('load', loadFromStorage);
+// Team data loads in doLogin(), right after sign-in.
 
 
 // ══════════════════════════════════════════
@@ -2143,147 +2217,6 @@ async function submitAddEmployee() {
 // ══════════════════════════════════════════
 
 
-
-// ══════════════════════════════════════════
-// TIME-OFF REQUESTS — employee submit + admin approve/reject
-// ══════════════════════════════════════════
-
-// Store pending requests
-// TIME_OFF_REQUESTS initialized at module level
-
-function updateRequestBadge() {
-  const pending = TIME_OFF_REQUESTS.filter(r => r.status==='pending').length;
-  const badge = document.getElementById('tob');
-  const nb    = document.getElementById('nb');
-  const sp    = document.getElementById('sPending');
-  if (badge)  { badge.textContent  = pending; badge.style.display = pending > 0 ? 'inline-flex' : 'none'; }
-  if (nb)     { nb.textContent     = pending; nb.style.display    = pending > 0 ? 'flex' : 'none'; }
-  if (sp)       sp.textContent     = pending;
-}
-
-function renderTimeOffRequests() {
-  const tbody = document.querySelector('#p-timeoff table tbody');
-  if (!tbody) return;
-  const filter = document.getElementById('toFilter')?.value || 'pending';
-  const filtered = filter === 'all' ? TIME_OFF_REQUESTS : TIME_OFF_REQUESTS.filter(r => r.status === filter);
-
-  if (!filtered.length) {
-    tbody.innerHTML = `<tr><td colspan="11"><div class="empty"><div class="ei">📭</div><p>No ${filter} requests.</p></div></td></tr>`;
-    return;
-  }
-
-  tbody.innerHTML = filtered.map(req => {
-    const submittedAt = req.submittedAt ? new Date(req.submittedAt).toLocaleString() : '—';
-    const reviewedAt  = req.reviewedAt  ? new Date(req.reviewedAt).toLocaleString()  : '—';
-    const reviewedBy  = req.reviewedBy  || '—';
-    return `
-    <tr id="toRow${req.id}">
-      <td>${req.empName||req.empKey}</td>
-      <td><span class="badge bg-teal">${req.type}</span></td>
-      <td>${daysToHrs(req.days)} hrs</td>
-      <td>${req.start}</td>
-      <td>${req.end}</td>
-      <td style="font-size:.8rem">${req.notes||'—'}</td>
-      <td style="font-size:.75rem;color:#888">${submittedAt}</td>
-      <td><span class="badge ${req.status==='approved'?'bg-green':req.status==='rejected'?'bg-red':'bg-yellow'}" id="toStatus${req.id}">${req.status}</span></td>
-      <td style="font-size:.78rem;font-weight:600;color:var(--navy)">${req.status!=='pending' ? reviewedBy : '—'}</td>
-      <td style="font-size:.75rem;color:#888">${req.status!=='pending' ? reviewedAt : '—'}</td>
-      <td id="toActions${req.id}">
-        ${req.status==='pending'
-          ? `<button class="btn btn-green btn-sm" onclick="approveRequest(${req.id})">Approve</button>
-             <button class="btn btn-red2 btn-sm" onclick="rejectRequest(${req.id})">Reject</button>`
-          : `<span style="font-size:.78rem;color:var(--text-light)">${req.status==='approved'?'✓ Approved':'✗ Rejected'}</span>`}
-      </td>
-    </tr>`;
-  }).join('');
-}
-
-async function approveRequest(id) {
-  const req = TIME_OFF_REQUESTS.find(r => r.id === id);
-  if (!req) return;
-  req.status = 'approved';
-  req.reviewedAt = new Date().toISOString();
-  req.reviewedBy = currentUser?.name || currentUser?.pin || 'admin';
-
-  // Deduct from employee balance
-  const empKey = Object.keys(EMPLOYEES).find(k =>
-    EMPLOYEES[k].name === req.empName || k === req.empKey
-  );
-  if (empKey) {
-    const emp = EMPLOYEES[empKey];
-    const accr = calcEmployeeAccruals(emp.monthlyRecords || [], emp.firstClockIn, emp.vacTaken || 0, emp.sickTaken || 0);
-    if (req.type === 'Sick') {
-      if (req.days > accr.sickBal) {
-        alert(`❌ Cannot approve request. ${emp.name} only has ${daysToHrs(accr.sickBal)} sick hours available.`);
-        return;
-      }
-      emp.sickTaken = +((emp.sickTaken||0) + req.days).toFixed(2);
-    } else {
-      if (!accr.vacationEligible) {
-        alert(`⚠️ ${emp.name} has not completed 1 year of service (PR Act 180). Vacation cannot be approved yet.`);
-        return;
-      }
-      if (req.days > accr.vacationBal) {
-        alert(`❌ Cannot approve request. ${emp.name} only has ${daysToHrs(accr.vacationBal)} vacation hours available.`);
-        return;
-      }
-      emp.vacTaken  = +((emp.vacTaken||0)  + req.days).toFixed(2);
-    }
-    // ── Duplicate check: already manually recorded in timeOffLog for same date+type? ──
-    const dupLog = (emp.timeOffLog || []).find(l =>
-      l.date === req.start && l.type === req.type && l.notes !== 'Approved request'
-    );
-    if (dupLog) {
-      if (!confirm(`⚠️ Duplicate detected!\n\n${emp.name} already has a manually recorded ${req.type} entry on ${req.start} (${daysToHrs(dupLog.days)} hrs).\n\nApproving this request will also deduct ${daysToHrs(req.days)} hrs — double-deducting the balance. Continue anyway?`)) return;
-    }
-
-    if (!emp.timeOffLog) emp.timeOffLog = [];
-    const accrBefore = calcEmployeeAccruals(emp.monthlyRecords||[], emp.firstClockIn, emp.vacTaken||0, emp.sickTaken||0);
-    const logEntry = {
-      type: req.type, days: req.days, date: req.start,
-      notes: 'Approved request',
-      recordedBy: req.reviewedBy,
-      recordedAt: req.reviewedAt,
-      source: 'request_approval',
-      requestId: req.id,
-      balanceBefore: req.type === 'Sick' ? accrBefore.sickBal : accrBefore.vacationBal
-    };
-    emp.timeOffLog.push(logEntry);
-
-    // Save to Supabase immediately
-    (async () => {
-      try {
-        _setSaveStatus('saving');
-        await saveEmployee(emp);
-        await saveTimeOffEntry(emp, logEntry);
-        await writeAuditLog('REQUEST_APPROVED',
-          `${emp.name} — ${req.type} — ${daysToHrs(req.days)} hrs on ${req.start}`);
-        _setSaveStatus('saved');
-      } catch(e) { console.warn('Approve save error:', e); _setSaveStatus('error'); }
-    })();
-  }
-
-  recalculateAll();
-  saveToStorage();
-  try { localStorage.setItem('cfa_losfiltros_requests', JSON.stringify(TIME_OFF_REQUESTS)); } catch(e){}
-  updateRequestBadge();
-  renderTimeOffRequests();
-  showToast('✅ Request approved — balance updated.');
-}
-
-function rejectRequest(id) {
-  const req = TIME_OFF_REQUESTS.find(r => r.id === id);
-  if (!req) return;
-  req.status = 'rejected';
-  req.reviewedAt = new Date().toISOString();
-  req.reviewedBy = currentUser?.name || currentUser?.pin || 'admin';
-  saveToStorage();
-  try { localStorage.setItem('cfa_losfiltros_requests', JSON.stringify(TIME_OFF_REQUESTS)); } catch(e){}
-  writeAuditLog('REQUEST_REJECTED', `${req.empName||req.empKey} — ${req.type} — ${daysToHrs(req.days)} hrs`);
-  updateRequestBadge();
-  renderTimeOffRequests();
-  showToast('✗ Request rejected.');
-}
 
 // ══════════════════════════════════════════
 // TOAST NOTIFICATION
@@ -2782,6 +2715,12 @@ async function confirmMerge() {
   const keepKey = document.getElementById('mergeKeep').value;
   const dropKey = document.getElementById('mergeDrop').value;
   if (!keepKey || !dropKey || keepKey === dropKey) return;
+  // Merging deletes both people's saved hours/time-off and re-saves the combined copy from memory.
+  // Never do that unless every row was loaded.
+  if (window._hubHoursComplete === false || window._hubTimeOffComplete === false) {
+    alert('Merge is paused: not all hours or time-off records loaded from the database. Reload the page and try again. Nothing was changed.');
+    return;
+  }
 
   const keep = EMPLOYEES[keepKey];
   const drop = EMPLOYEES[dropKey];
@@ -2945,41 +2884,6 @@ function exportToPrint() {
   </table>
   <script>window.onload=()=>window.print()<\/script>
 
-
-<!-- ADD MEAL PENALTY MODAL -->
-<div class="moverlay" id="addMealModal">
-  <div class="modal" style="max-width:560px">
-    <h3>Log Meal Penalty Violation</h3>
-    <div id="mealErr" style="display:none;background:#fee2e2;color:#991b1b;border-radius:7px;padding:9px 12px;font-size:.82rem;margin-bottom:12px"></div>
-    <div id="mealViolationBanner" style="display:none;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:.82rem;color:#92400e"></div>
-    <div class="frow full"><div class="field"><label>Employee</label>
-      <select id="mealEmpSel" onchange="autoFillMealRate(this.value)"><option value="">Select employee...</option></select>
-    </div></div>
-    <div class="frow"><div class="field"><label>Date</label>
-      <input type="date" id="mealDate"/>
-    </div><div class="field"><label>Hourly Rate ($)</label>
-      <input type="number" id="mealRate" placeholder="e.g. 10.50" step="0.01" min="0"/>
-    </div></div>
-    <div class="frow"><div class="field"><label>Shift Start</label>
-      <input type="time" id="mealShiftStart" oninput="checkMealViolation()"/>
-    </div><div class="field"><label>Shift End</label>
-      <input type="time" id="mealShiftEnd" oninput="checkMealViolation()"/>
-    </div></div>
-    <div class="frow"><div class="field"><label>Break Start (leave blank if no break)</label>
-      <input type="time" id="mealBreakStart" oninput="checkMealViolation()"/>
-    </div><div class="field"><label>Break End</label>
-      <input type="time" id="mealBreakEnd" oninput="checkMealViolation()"/>
-    </div></div>
-    <div id="mealCalcResult" style="display:none;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px 14px;margin:10px 0;font-size:.83rem;color:#166534"></div>
-    <div class="frow full"><div class="field"><label>Notes (optional)</label>
-      <input type="text" id="mealNotes" placeholder="Additional context..."/>
-    </div></div>
-    <div class="mfooter">
-      <button class="btn" onclick="cm('addMealModal')">Cancel</button>
-      <button class="btn btn-red2" onclick="submitMealPenalty()">Log Violation</button>
-    </div>
-  </div>
-</div>
 
 </body></html>`);
   win.document.close();
@@ -3333,7 +3237,7 @@ function clearAllMealPenalties() {
 
 function exportMealsCSV() {
   const rows = [['Employee','Date','Shift Start','Shift End','Break Start','Break End','Break Duration (min)','Violations','Hourly Rate','Time Owed','Penalty Amount']];
-  MEAL_PENALTIES.forEach(p => rows.push([p.empName,p.date,p.shiftStart,p.shiftEnd,p.breakStart||'',p.breakEnd||'',p.breakDuration,p.violationTypes.join('; '),'$'+(p.rate||0),p.penaltyAmount>0?'30 min @ 1.5x':'—','$'+p.penaltyAmount]));
+  MEAL_PENALTIES.forEach(p => rows.push([p.empName,p.date,p.shiftStart,p.shiftEnd,p.breakStart||'',p.breakEnd||'',p.breakDuration,(p.violationTypes || (p.violation ? [p.violation] : [])).join('; '),'$'+(p.rate||0),p.penaltyAmount>0?'30 min @ 1.5x':'—','$'+p.penaltyAmount]));
   const csv = rows.map(r=>r.map(v=>`"${v}"`).join(',')).join('\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
@@ -6022,6 +5926,8 @@ async function cateringRefresh() {
       .order('created_at', { ascending: false });
     if (error) throw error;
     _cateringAllOrders = data || [];
+    window._hubCatering = _cateringAllOrders;
+    if (window.hubRefreshCounts) hubRefreshCounts();
     cateringApplyFilters();
   } catch (err) {
     document.getElementById('cateringTableBody').innerHTML =
@@ -7140,131 +7046,3 @@ function fcrTrendTableHTML(sorted) {
 
 const GOOGLE_API_KEY  = 'AIzaSyCrrOs1hpIvq11FfqfP89UeM00qfN5ANiQ';
 const GOOGLE_PLACE_QUERY = 'Chick-fil-A Los Filtros Bayamon Puerto Rico';
-let _repGooglePlaceId  = null;
-let _repGoogleReviews  = [];
-
-// ── Init tab on first open ───────────────────────────────────
-function initRepTab() {
-  const cached = sessionStorage.getItem('rep_last_updated');
-  if (cached) {
-    document.getElementById('repLastUpdated').textContent = cached;
-    const g = JSON.parse(sessionStorage.getItem('rep_google') || 'null');
-    if (g) repRenderGoogle(g);
-  }
-}
-
-// ── Main refresh ─────────────────────────────────────────────
-async function repRefreshAll() {
-  const btn = document.getElementById('repRefreshBtn');
-  btn.textContent = 'Actualizando...';
-  btn.disabled = true;
-  try {
-    await repFetchGoogle();
-  } catch(e) {
-    console.error('Reputation refresh error:', e);
-  }
-  const now = new Date().toLocaleString('es-PR', { timeZone: 'America/Puerto_Rico' });
-  document.getElementById('repLastUpdated').textContent = now;
-  sessionStorage.setItem('rep_last_updated', now);
-  btn.textContent = 'Actualizar Todo';
-  btn.disabled = false;
-}
-
-// ── Google Places ────────────────────────────────────────────
-async function repFetchGoogle() {
-  // Step 1: Find Place ID if we don't have it
-  if (!_repGooglePlaceId) {
-    const cached = sessionStorage.getItem('rep_google_place_id');
-    if (cached) {
-      _repGooglePlaceId = cached;
-    } else {
-      const findUrl = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=${encodeURIComponent(GOOGLE_PLACE_QUERY)}&inputtype=textquery&fields=place_id&key=${GOOGLE_API_KEY}`;
-      // Use a CORS proxy since we're calling from browser
-      const proxyUrl = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json`;
-      const res = await fetch(`https://places.googleapis.com/v1/places:searchText`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Goog-Api-Key': GOOGLE_API_KEY,
-          'X-Goog-FieldMask': 'places.id,places.displayName,places.rating,places.userRatingCount,places.reviews'
-        },
-        body: JSON.stringify({
-          textQuery: GOOGLE_PLACE_QUERY,
-          maxResultCount: 1,
-          languageCode: 'es'
-        })
-      });
-      const data = await res.json();
-      if (!data.places || data.places.length === 0) throw new Error('Place not found');
-      const place = data.places[0];
-      _repGooglePlaceId = place.id;
-      sessionStorage.setItem('rep_google_place_id', place.id);
-      repRenderGoogle(place);
-      sessionStorage.setItem('rep_google', JSON.stringify(place));
-      return;
-    }
-  }
-
-  // Step 2: Fetch place details using Places API (New)
-  const res = await fetch(`https://places.googleapis.com/v1/places/${_repGooglePlaceId}`, {
-    headers: {
-      'X-Goog-Api-Key': GOOGLE_API_KEY,
-      'X-Goog-FieldMask': 'id,displayName,rating,userRatingCount,reviews'
-    }
-  });
-  const place = await res.json();
-  repRenderGoogle(place);
-  sessionStorage.setItem('rep_google', JSON.stringify(place));
-}
-
-function repRenderGoogle(place) {
-  // Score card
-  const rating = place.rating || '—';
-  const count  = place.userRatingCount || 0;
-  document.getElementById('repGoogleRating').textContent = rating;
-  document.getElementById('repGoogleCount').textContent  = count.toLocaleString() + ' reseñas';
-
-  // Star display
-  const stars = Math.round(parseFloat(rating) || 0);
-  const starEl = document.getElementById('repGoogleRating').nextElementSibling;
-  if (starEl) starEl.textContent = '★'.repeat(stars) + '☆'.repeat(5 - stars);
-
-  // Reviews feed
-  _repGoogleReviews = place.reviews || [];
-  repRenderGoogleFeed(_repGoogleReviews);
-}
-
-function repRenderGoogleFeed(reviews) {
-  const feed = document.getElementById('repGoogleFeed');
-  if (!reviews || reviews.length === 0) {
-    feed.innerHTML = '<div style="padding:30px;text-align:center;color:var(--text-light)">No hay reseñas disponibles.</div>';
-    return;
-  }
-  feed.innerHTML = reviews.map(r => {
-    const stars    = r.rating || 0;
-    const starStr  = '★'.repeat(stars) + '☆'.repeat(5 - stars);
-    const color    = stars >= 4 ? '#16a34a' : stars === 3 ? '#d97706' : '#dc2626';
-    const name     = r.authorAttribution?.displayName || 'Anónimo';
-    const text     = r.text?.text || r.originalText?.text || '';
-    const timeDesc = r.relativePublishTimeDescription || '';
-    return `<div style="padding:14px 0;border-bottom:1px solid var(--border)">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-        <div style="font-weight:600;font-size:.88rem;color:var(--navy)">${name}</div>
-        <div style="font-size:.78rem;color:var(--text-light)">${timeDesc}</div>
-      </div>
-      <div style="color:${color};font-size:.95rem;margin-bottom:6px">${starStr}</div>
-      <div style="font-size:.83rem;color:var(--text-mid);line-height:1.5">${text}</div>
-    </div>`;
-  }).join('');
-}
-
-function repFilterGoogle(val) {
-  if (!_repGoogleReviews.length) return;
-  let filtered = _repGoogleReviews;
-  if (val === '5') filtered = _repGoogleReviews.filter(r => r.rating === 5);
-  else if (val === '4') filtered = _repGoogleReviews.filter(r => r.rating === 4);
-  else if (val === '3') filtered = _repGoogleReviews.filter(r => r.rating <= 3);
-  repRenderGoogleFeed(filtered);
-}
-
-
