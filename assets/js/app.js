@@ -1,0 +1,7048 @@
+
+
+// ══════════════════════════════════════════
+// GLOBAL ERROR HANDLER
+// ══════════════════════════════════════════
+window.onerror = function(msg, src, line, col, err) {
+  console.error('JS Error:', msg, 'at', src, line+':'+col);
+  return false;
+};
+
+// ══════════════════════════════════════════
+// SUPABASE SETUP
+// ══════════════════════════════════════════
+const SUPABASE_URL  = 'https://ccmprabfwhfvrkeyfamg.supabase.co';
+const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNjbXByYWJmd2hmdnJrZXlmYW1nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2MzUzODYsImV4cCI6MjA5MDIxMTM4Nn0.PV2tAkcC2p7QuQQNBw31GIjmr--qu-ULoqqtDBg6lH8';
+let _supaClient = null;
+function getSupa() {
+  if (!_supaClient) _supaClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+  return _supaClient;
+}
+
+// ══════════════════════════════════════════
+// USER DATABASE
+// ══════════════════════════════════════════
+const USERS = {};
+const EMPLOYEES = {};
+let currentUser = null;
+
+// ══════════════════════════════════════════
+// LOGIN
+// ══════════════════════════════════════════
+document.getElementById('loginForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const email = document.getElementById('pinIn').value.trim();
+  const pass  = document.getElementById('passIn').value.trim();
+  if (!email || !pass) return;
+
+  const errEl = document.getElementById('loginErr');
+  errEl.style.display = 'none';
+
+  try {
+    const { data, error } = await getSupa().auth.signInWithPassword({ email, password: pass });
+    if (error || !data.user) {
+      errEl.textContent = 'Invalid email or password.';
+      errEl.style.display = 'block';
+      return;
+    }
+    let { data: profile, error: profErr } = await getSupa().from('profiles').select('*').eq('id', data.user.id).maybeSingle();
+    if (profErr) { errEl.textContent = 'Signed in, but your access could not be loaded. Please try again.'; errEl.style.display = 'block'; return; }
+    // First sign-in of someone invited from Users & access: create their profile with the invited role.
+    if (!profile) {
+      try {
+        const { data: inv } = await getSupa().rpc('hub_accept_invite');
+        if (inv && inv[0] && inv[0].invited_role) profile = { role: inv[0].invited_role, name: inv[0].invited_name };
+      } catch (invErr) { console.warn('Invite check failed:', invErr.message); }
+    }
+    // A login with no saved role signs in as Director, never Operator (the database only treats saved operator/admin profiles as the operator)
+    const role = profile ? (profile.role || 'admin') : 'director';
+    const name = profile?.name || data.user.email;
+    doLogin(data.user.email, { role, name, id: data.user.id, sections: profile?.sections || null });
+  } catch(err) {
+    errEl.textContent = 'Login error: ' + err.message;
+    errEl.style.display = 'block';
+  }
+});
+
+function doLogin(pin, user) {
+  currentUser = { pin, ...user };
+  document.getElementById('navUser').textContent = user.name || pin;
+  document.getElementById('loginPage').style.display = 'none';
+  document.getElementById('appShell').style.display = 'flex';
+  document.getElementById('loginErr').style.display = 'none';
+  document.getElementById('pinIn').value = '';
+  document.getElementById('passIn').value = '';
+  document.getElementById('adminTabNav').style.display = 'flex';
+  document.getElementById('empTabNav').style.display = 'none';
+  // Team data loads only after sign-in (the database only shares it with signed-in users).
+  // When it arrives, the open page redraws with it.
+  window._hubDataReady = loadFromStorage();
+  window._hubDataReady.then(() => { const pg = document.querySelector('.page.active'); if (currentUser && pg) goTab(pg.id.slice(2)); }).catch(() => {});
+  if (window.hubOnLogin) hubOnLogin(currentUser);
+  goTab(window.hubLanding ? hubLanding() : 'dashboard');
+}
+
+async function signOut() {
+  await getSupa().auth.signOut();
+  currentUser = null;
+  clearInterval(window._autoSaveInterval);
+  document.getElementById('loginPage').style.display = 'flex';
+  document.getElementById('appShell').style.display = 'none';
+  const tw = document.getElementById('timeoutOverlay');
+  if (tw) tw.classList.remove('open');
+}
+
+// ══════════════════════════════════════════
+// TABS
+// ══════════════════════════════════════════
+function goTab(t) {
+  if (t === 'timeoff') t = 'recordto';
+  // Import hours and Record time-off now live inside the Leave balances page
+  if (t === 'import' || t === 'recordto') { window._hubLbSub = t; t = 'dashboard'; }
+  if (window.hubCanSee && !hubCanSee(t)) t = window.hubLanding ? hubLanding() : 'dashboard';
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(x => x.classList.remove('active'));
+  const tabEl  = document.getElementById('t-' + t);
+  const pageEl = document.getElementById('p-' + t);
+  if (tabEl)  tabEl.classList.add('active');
+  if (pageEl) pageEl.classList.add('active');
+  const titleEl = document.getElementById('pageTitle');
+  if (titleEl) titleEl.textContent = (tabEl && tabEl.dataset.title) || (tabEl && tabEl.textContent.trim()) || 'Los Filtros Hub';
+  document.title = (t === 'home' ? '' : ((tabEl && tabEl.dataset.title) || '') + ' — ') + 'Los Filtros Hub';
+  toggleNav(false);
+  window.scrollTo(0, 0);
+  if (window.hubOnTab)   hubOnTab(t);
+  // Trigger renders on tab switch
+  if (t === 'employees') updateEmployeesTab();
+  if (t === 'gastos')    gastosInit();
+  if (t === 'eom')       eomInit();
+  if (t === 'meals')     { renderMealPenalties(); populateEmployeeDropdowns(); }
+  if (t === 'recon')     { initReconciliationUI(); renderReconReport(); }
+  if (t === 'fcr')       fcrInit();
+  if (t === 'catering')  cateringInit();
+  if (t === 'writeups')  { wuRefreshEmpList(); wuLoadPendingQueue(); }
+}
+
+// Mobile sidebar
+function toggleNav(force) {
+  const open = typeof force === 'boolean' ? force : !document.body.classList.contains('nav-open');
+  document.body.classList.toggle('nav-open', open);
+}
+
+// ══════════════════════════════════════════
+// MODALS
+// ══════════════════════════════════════════
+function om(id) { document.getElementById(id).classList.add('open'); }
+function cm(id) { document.getElementById(id).classList.remove('open'); }
+document.querySelectorAll('.moverlay').forEach(o =>
+  o.addEventListener('click', function(e) { if (e.target === o) o.classList.remove('open'); })
+);
+
+// ══════════════════════════════════════════
+// MISC
+// ══════════════════════════════════════════
+
+
+
+
+
+
+
+// ══════════════════════════════════════════
+// RECONCILIATION (CSV-based, beginner-friendly)
+// ══════════════════════════════════════════
+const RECON_DATA = {
+  gastos: [],
+  bank: [],
+  amex: [],
+  chase: [],
+  amazon: [],
+  allCC: [],
+  matches: [],
+  unmatchedExternal: [],
+  unmatchedGastos: [],
+  lastRunAt: null
+};
+let _reconUiBound = false;
+
+function parseCsvRows(text) {
+  const rows = [];
+  let row = [];
+  let cell = '';
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (ch === '"' && inQuotes && next === '"') { cell += '"'; i++; continue; }
+    if (ch === '"') { inQuotes = !inQuotes; continue; }
+    if (ch === ',' && !inQuotes) { row.push(cell.trim()); cell = ''; continue; }
+    if ((ch === '\n' || ch === '\r') && !inQuotes) {
+      if (ch === '\r' && next === '\n') i++;
+      row.push(cell.trim());
+      if (row.some(v => v !== '')) rows.push(row);
+      row = [];
+      cell = '';
+      continue;
+    }
+    cell += ch;
+  }
+  if (cell.length || row.length) {
+    row.push(cell.trim());
+    if (row.some(v => v !== '')) rows.push(row);
+  }
+  return rows;
+}
+
+function parseMoney(v) {
+  if (v == null) return null;
+  const s = String(v).replace(/\$/g, '').replace(/,/g, '').trim();
+  if (!s) return null;
+  const n = parseFloat(s.replace(/[^\d.-]/g, ''));
+  if (!isFinite(n)) return null;
+  return Math.abs(+n.toFixed(2));
+}
+
+function fmtDate(d) {
+  if (!d) return '';
+  return d.toISOString().slice(0, 10);
+}
+
+function getHeaderIndex(headers, candidates) {
+  for (const c of candidates) {
+    const idx = headers.findIndex(h => h.includes(c));
+    if (idx >= 0) return idx;
+  }
+  return -1;
+}
+
+function csvToTxns(text, sourceName) {
+  const rows = parseCsvRows(text);
+  if (rows.length < 2) return [];
+  const headers = rows[0].map(h => String(h || '').toLowerCase().trim());
+  const dateIdx = getHeaderIndex(headers, ['payment_date', 'date', 'posted', 'transaction']);
+  // For Gastos: use VENDOR as the description so matching works against vendor names
+  const isGastos = sourceName === 'gastos';
+  const descIdx = isGastos
+    ? getHeaderIndex(headers, ['vendor'])
+    : getHeaderIndex(headers, ['description', 'merchant', 'vendor', 'memo', 'name', 'details']);
+  const amountIdx = getHeaderIndex(headers, ['amount', 'total', 'value']);
+  const voidIdx = isGastos ? getHeaderIndex(headers, ['void_date', 'void']) : -1;
+  const debitIdx = getHeaderIndex(headers, ['debit', 'withdrawal', 'charge']);
+  const creditIdx = getHeaderIndex(headers, ['credit', 'deposit', 'payment']);
+
+  // Detect BPPR format by checking for a 'type' column (CR/DB)
+  const typeIdx = getHeaderIndex(headers, ['type']);
+
+  const out = [];
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r];
+    const rawDate = dateIdx >= 0 ? row[dateIdx] : '';
+    const rawDesc = descIdx >= 0 ? row[descIdx] : `Row ${r + 1}`;
+
+    // Skip voided Gastos entries
+    if (isGastos && voidIdx >= 0 && String(row[voidIdx] || '').trim()) continue;
+
+    // If this is a BPPR bank statement, skip credits and cash requests
+    if (sourceName === 'bank' && typeIdx >= 0) {
+      const txType = String(row[typeIdx] || '').trim();
+      if (txType !== 'DB') continue; // skip credits/deposits
+      if (String(rawDesc || '').includes('CURRENCY CASH REQ')) continue; // skip cash requests
+    }
+
+    // Chase CSV: skip Payment rows (Type column = 'Payment')
+    if (sourceName === 'chase') {
+      const typeColIdx = getHeaderIndex(headers, ['type']);
+      if (typeColIdx >= 0) {
+        const txType = String(row[typeColIdx] || '').trim().toLowerCase();
+        if (txType === 'payment') continue;
+      }
+    }
+
+    let amount = null;
+    let rawAmount = null;
+    if (amountIdx >= 0) rawAmount = row[amountIdx];
+    // Only fall back to debit/credit cols for non-Gastos sources
+    // Gastos uses PAYMENT_ID which falsely matches 'payment' — never use fallback for Gastos
+    if (!isGastos) {
+      if (rawAmount == null && debitIdx >= 0) rawAmount = row[debitIdx];
+      if (rawAmount == null && creditIdx >= 0) rawAmount = row[creditIdx];
+    }
+
+    // For Amex: positive = charge, negative = payment — skip negatives
+    if (sourceName === 'amex') {
+      const raw = String(rawAmount || '').replace(/[$,]/g, '').trim();
+      const n = parseFloat(raw);
+      if (!isFinite(n) || n <= 0) continue;
+      amount = +n.toFixed(2);
+    } else if (sourceName === 'bank') {
+      // Bank CSV: negative = debit (money out), positive = deposit — keep only negatives
+      const raw = String(rawAmount || '').replace(/[$,]/g, '').trim();
+      const n = parseFloat(raw);
+      if (!isFinite(n) || n >= 0) continue;  // skip deposits
+      amount = +Math.abs(n).toFixed(2);
+    } else {
+      amount = parseMoney(rawAmount);
+    }
+
+    const date = parseDateLoose(rawDate);
+    if (!date || amount == null || amount <= 0) continue;
+
+    // Bank: only keep rows within current month OR up to 14 days prior
+    // Also skip CFA wires, payroll, CC payments, draws
+    if (sourceName === 'bank') {
+      const now = typeof reconRef === 'function' ? reconRef() : new Date();
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const twoWeeksPrior = new Date(monthStart.getTime() - 14 * 24 * 60 * 60 * 1000);
+      if (date < twoWeeksPrior) continue;
+      const skipKw = ['CHICK FIL A PR','CHASE CREDIT CRD','AMERICAN EXPRESS','CURRENCY CASH',
+        'TELEPAGO','BPPR MERCHANT','COMM SVC','STATE IVU','MUNICIPAL IVU','AJUSTE','CFA CORP WEB',
+        'VIRTUAL S DEPOSIT','BPPR MRCH. DEP','EFT DEPOSIT','UBER USA','DEPOSITO'];
+      const dUp = (rawDesc || '').toUpperCase();
+      if (skipKw.some(k => dUp.includes(k))) continue;
+    }
+
+    // For Gastos: also capture expense category
+    const categoryIdx = isGastos ? getHeaderIndex(headers, ['expense_category']) : -1;
+    const category = (isGastos && categoryIdx >= 0) ? String(row[categoryIdx] || '').trim() : '';
+
+    out.push({
+      id: `${sourceName}-${r}-${fmtDate(date)}-${amount.toFixed(2)}`,
+      source: sourceName,
+      date,
+      amount,
+      description: String(rawDesc || '').trim() || '(no description)',
+      ...(isGastos && { category })
+    });
+  }
+  return out;
+}
+
+function parseDateLoose(v) {
+  if (!v) return null;
+  const s = String(v).trim();
+  // MM/DD/YYYY or MM-DD-YYYY
+  let m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/);
+  if (m) {
+    let y = +m[3];
+    if (y < 100) y += 2000;
+    return new Date(y, +m[1] - 1, +m[2]);
+  }
+  // YYYY-MM-DD
+  m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
+  // DD-MON-YYYY (e.g. 08-JUN-2026) — Gastos format
+  const MONTHS = {JAN:0,FEB:1,MAR:2,APR:3,MAY:4,JUN:5,JUL:6,AUG:7,SEP:8,OCT:9,NOV:10,DEC:11};
+  m = s.match(/^(\d{1,2})-([A-Z]{3})-(\d{4})$/i);
+  if (m) {
+    const mon = MONTHS[m[2].toUpperCase()];
+    if (mon !== undefined) return new Date(+m[3], mon, +m[1]);
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function dateDiffDays(a, b) {
+  const ms = Math.abs(a.getTime() - b.getTime());
+  return Math.floor(ms / (1000 * 60 * 60 * 24));
+}
+
+function normText(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function tokenOverlap(a, b) {
+  const A = new Set(normText(a).split(' ').filter(t => t.length >= 4));
+  const B = new Set(normText(b).split(' ').filter(t => t.length >= 4));
+  for (const t of A) if (B.has(t)) return true;
+  return false;
+}
+
+function readFileText(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result || ''));
+    fr.onerror = () => reject(new Error('Could not read file'));
+    fr.readAsText(file);
+  });
+}
+
+function updateReconHeaderStats() {
+  const page = document.getElementById('p-recon');
+  if (!page) return;
+  const cards = page.querySelectorAll('.stat-grid .stat-card');
+  if (cards.length < 5) return;
+
+  const gastosTotal = RECON_DATA.gastos.reduce((a, x) => a + x.amount, 0);
+  const matched     = RECON_DATA.matches.length;
+  const groups      = VENDOR_GROUPS.length;
+  const needsEntry  = RECON_DATA.unmatchedExternal.filter(x => {
+    const d = x.date instanceof Date ? x.date : new Date(x.date);
+    const now = typeof reconRef === 'function' ? reconRef() : new Date();
+    return x.source !== 'bank' && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+  }).length;
+  const achCount = RECON_DATA.unmatchedGastos ? RECON_DATA.unmatchedGastos.filter(g => {
+    const ACH = ['LOOMIS','MCS','HOLSUM','IDEAL ACCOUNTING','ANGEL BERRIOS'];
+    return ACH.some(v => (g.description||'').toUpperCase().includes(v));
+  }).length : 0;
+
+  const extTotal = RECON_DATA.allCC.length + RECON_DATA.bank.length;
+  const progress = extTotal ? Math.round((matched / extTotal) * 100) : 0;
+
+  if (cards[0]) {
+    cards[0].querySelector('.sval').textContent = `$${gastosTotal.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+    const txNode = cards[0].querySelector('div[style*="font-size:.75rem"]');
+    if (txNode) txNode.textContent = `${RECON_DATA.gastos.length} entries`;
+  }
+  if (cards[1]) cards[1].querySelector('.sval').textContent = matched.toString();
+  if (cards[2]) cards[2].querySelector('.sval').textContent = groups.toString();
+  if (cards[3]) cards[3].querySelector('.sval').textContent = needsEntry.toString();
+  if (cards[4]) cards[4].querySelector('.sval').textContent = achCount.toString();
+
+  const fill = page.querySelector('.recon-progress-fill');
+  if (fill) {
+    fill.style.width = `${progress}%`;
+    fill.textContent = `${progress}% reconciled`;
+  }
+}
+
+// ── Vendor group definitions ─────────────────────────────────────────────────
+// Each group maps one or more CC/bank charge keywords → one or more GASTOS vendor names.
+// Chase charges whose description contains any keyword get pooled together,
+// and their sum is compared against the sum of all matching GASTOS rows.
+const VENDOR_GROUPS = [
+  {
+    label:          'Freshpoint / Sysco',
+    chargeKeywords: ['SYSCO', 'FRESHPOINT', 'SYGMA'],
+    gastosVendors:  ['FRESHPOINT PUERTO RICO'],
+    // 06/01-06/07 Sysco charges are prior-month payments — skip them
+    skipIfDayOfMonth: { max: 7 },
+  },
+  {
+    label:          'Coca-Cola / PR Coffee',
+    chargeKeywords: ['COCA COLA', 'COCA-COLA', 'PR COFFEE', 'COKE'],
+    gastosVendors:  ['COCA-COLA PR', 'PR COFFEE'],
+  },
+  {
+    label:          'Amazon Business',
+    chargeKeywords: ['AMAZON'],
+    gastosVendors:  ['AMAZON BUSINESS', 'AMAZON'],
+  },
+];
+
+// CC charges that are prior-month payments — always treat as spillover regardless of date
+const PRIOR_MONTH_KEYWORDS = ['CC1 BEER'];
+// Sysco charges in first 7 days = prior month payment (handled by skipIfDayOfMonth in group)
+// But they also fall through to 1:1 — mark them as spillover there too
+const PRIOR_MONTH_EARLY_VENDORS = ['SYSCO'];
+const PRIOR_MONTH_EARLY_MAX_DAY = 7;
+// Bank ACH payments in first 7 days of month = paying prior month vendor invoices
+const PRIOR_MONTH_EARLY_BANK_KW = ['EFT PMT PERTENECEN LLC'];
+const PRIOR_MONTH_EARLY_BANK_MAX_DAY = 7;
+
+function descMatchesKeywords(desc, keywords) {
+  const d = (desc || '').toUpperCase();
+  return keywords.some(k => d.includes(k.toUpperCase()));
+}
+
+function renderReconReport() {
+  const wrap = document.getElementById('rRecon');
+  if (!wrap) return;
+
+  if (!RECON_DATA.lastRunAt) {
+    wrap.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:3rem 1rem;gap:12px">
+        <i class="ti ti-chart-bar" style="font-size:40px;color:var(--color-text-tertiary,#9ca3af)"></i>
+        <p style="color:var(--color-text-secondary,#6b7280);font-size:.95rem;margin:0">Upload GASTOS + Bank/CC files and click Run Reconciliation.</p>
+      </div>`;
+    updateReconHeaderStats();
+    return;
+  }
+
+  // ── helpers ──────────────────────────────────────────────────────────────
+  const fmt$ = v => '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+  const fmtD = d => d ? (d instanceof Date ? d.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit'}) : d) : '—';
+  const srcBadge = s => {
+    const map = {
+      amex:   ['#EAF3DE','#27500A','AMEX'],
+      chase:  ['#E6F1FB','#0C447C','CHASE'],
+      amazon: ['#FEF3C7','#92400E','AMAZON'],
+      bank:   ['#F1EFE8','#444441','BANK'],
+    };
+    const [bg, fg, label] = map[(s||'').toLowerCase()] || ['#f3f4f6','#374151', (s||'').toUpperCase()];
+    return `<span style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:3px;background:${bg};color:${fg};white-space:nowrap">${label}</span>`;
+  };
+  const tag = (text, type) => {
+    const styles = {
+      ok:   'background:var(--color-background-success,#dcfce7);color:var(--color-text-success,#166534)',
+      warn: 'background:var(--color-background-warning,#fef9c3);color:var(--color-text-warning,#854d0e)',
+      flag: 'background:var(--color-background-danger,#fee2e2);color:var(--color-text-danger,#991b1b)',
+      pend: 'background:var(--color-background-info,#dbeafe);color:var(--color-text-info,#1e40af)',
+      note: 'background:var(--color-background-secondary,#f9fafb);color:var(--color-text-secondary,#6b7280)',
+    };
+    return `<span style="display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:6px;white-space:nowrap;${styles[type]||styles.note}">${text}</span>`;
+  };
+  const secHeader = (icon, text) =>
+    `<div style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:var(--color-text-tertiary,#9ca3af);letter-spacing:.06em;text-transform:uppercase;margin:1.5rem 0 8px">
+      <i class="ti ti-${icon}" aria-hidden="true"></i>${text}
+    </div>`;
+  const card = inner =>
+    `<div style="background:var(--color-background-primary,#fff);border:0.5px solid var(--color-border-tertiary,rgba(0,0,0,.12));border-radius:12px;overflow:hidden;margin-bottom:12px">${inner}</div>`;
+  const tHead = cols =>
+    `<thead><tr>${cols.map(([w,label,align])=>`<th style="font-size:11px;font-weight:600;color:var(--color-text-tertiary,#9ca3af);text-align:${align||'left'};padding:6px 10px;border-bottom:0.5px solid var(--color-border-tertiary,rgba(0,0,0,.1));${w?`width:${w}`:''}"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}</div></th>`).join('')}</tr></thead>`;
+
+  // ── 1. Vendor group matching ──────────────────────────────────────────────
+  const groupUsedExternal = new Set();
+  const groupUsedGastos   = new Set();
+  const groupResults = [];
+
+  // Mark prior-month keywords as spillover before group matching
+  const priorMonthKws = typeof PRIOR_MONTH_KEYWORDS !== 'undefined' ? PRIOR_MONTH_KEYWORDS : [];
+
+  VENDOR_GROUPS.forEach(grp => {
+    const keywords = grp.chargeKeywords || grp.ccKeywords || [];
+    const charges = [...RECON_DATA.allCC, ...RECON_DATA.bank].filter(x => {
+      if (!descMatchesKeywords(x.description, keywords)) return false;
+      // Skip if marked as prior-month keyword
+      if (priorMonthKws.some(k => (x.description||'').toUpperCase().includes(k.toUpperCase()))) return false;
+      // Skip if group has skipIfDayOfMonth and charge falls in that range
+      if (grp.skipIfDayOfMonth) {
+        const d = x.date instanceof Date ? x.date : new Date(x.date);
+        if (grp.skipIfDayOfMonth.max && d.getDate() <= grp.skipIfDayOfMonth.max) return false;
+      }
+      // Skip prior-month CC charges — only include current month in groups
+      const xDate = x.date instanceof Date ? x.date : new Date(x.date);
+      const now = typeof reconRef === 'function' ? reconRef() : new Date();
+      if (x.source !== 'bank' && (xDate.getMonth() !== now.getMonth() || xDate.getFullYear() !== now.getFullYear())) return false;
+      groupUsedExternal.add(x.id); return true;
+    });
+    const gRows = RECON_DATA.gastos.filter((g, i) => {
+      if (grp.gastosVendors.some(v => (g.description||'').toUpperCase().includes(v.toUpperCase()))) {
+        groupUsedGastos.add(i); return true;
+      }
+      return false;
+    });
+    const ccTotal = charges.reduce((s,x) => s + x.amount, 0);
+    const gTotal  = gRows.reduce((s,g) => s + g.amount, 0);
+    const diff    = gTotal - ccTotal;
+    // Freshpoint: allow up to $200 diff to account for Sysco supplier credits
+    const isFreshpoint = (grp.label||'').toLowerCase().includes('freshpoint');
+    const isMatch = isFreshpoint ? Math.abs(diff) <= 200 : Math.abs(diff) < 0.05;
+    const noCC = charges.length === 0;
+    groupResults.push({ grp, charges, gRows, ccTotal, gTotal, diff, isMatch, noCC });
+  });
+
+  // ── 2. 1:1 matching ───────────────────────────────────────────────────────
+  const remainingExternal = [...RECON_DATA.allCC, ...RECON_DATA.bank].filter(x => {
+    if (!groupUsedExternal.has(x.id)) return true;
+    return false;
+  });
+
+  // Holsum: sum all Gastos entries and match against single bank ACH batch
+  const holsumGastosWithIdx = RECON_DATA.gastos
+    .map((g,i) => ({g,i}))
+    .filter(({g,i}) => !groupUsedGastos.has(i) && (g.description||'').toUpperCase().includes('HOLSUM'));
+  const holsumTotal = holsumGastosWithIdx.reduce((s,{g}) => s + g.amount, 0);
+  const holsumBank  = RECON_DATA.bank.find(b => Math.abs(b.amount - holsumTotal) < 0.05);
+  if (holsumBank) groupUsedExternal.add(holsumBank.id);
+  holsumGastosWithIdx.forEach(({i}) => groupUsedGastos.add(i));
+
+  const remainingGastos = RECON_DATA.gastos.filter((_, i) => !groupUsedGastos.has(i));
+  const usedG = new Set();
+  const matches = [];
+  const unmatchedExternal = [];
+
+  // Also exclude prior-month keyword charges from 1:1 matching — they go to spillover
+  for (const ext of remainingExternal) {
+    const extDesc = (ext.description||'').toUpperCase();
+    const extDate = ext.date instanceof Date ? ext.date : new Date(ext.date);
+    // Always-spillover keywords
+    if (priorMonthKws.some(k => extDesc.includes(k.toUpperCase()))) {
+      unmatchedExternal.push(ext); continue;
+    }
+    // Early-month vendor payments (e.g. Sysco on 06/01-06/07 = paying May invoices)
+    const earlyVendors = typeof PRIOR_MONTH_EARLY_VENDORS !== 'undefined' ? PRIOR_MONTH_EARLY_VENDORS : [];
+    const maxDay = typeof PRIOR_MONTH_EARLY_MAX_DAY !== 'undefined' ? PRIOR_MONTH_EARLY_MAX_DAY : 7;
+    if (earlyVendors.some(v => extDesc.includes(v.toUpperCase())) && extDate.getDate() <= maxDay) {
+      unmatchedExternal.push(ext); continue;
+    }
+    // Early-month bank ACH payments = prior month vendor payments (Holsum, Tres Monjitas, etc.)
+    const earlyBankKw = typeof PRIOR_MONTH_EARLY_BANK_KW !== 'undefined' ? PRIOR_MONTH_EARLY_BANK_KW : [];
+    const earlyBankMaxDay = typeof PRIOR_MONTH_EARLY_BANK_MAX_DAY !== 'undefined' ? PRIOR_MONTH_EARLY_BANK_MAX_DAY : 7;
+    if (ext.source === 'bank' && earlyBankKw.some(k => extDesc.includes(k.toUpperCase())) && extDate.getDate() <= earlyBankMaxDay) {
+      unmatchedExternal.push(ext); continue;
+    }
+    let bestIdx = -1, bestScore = -1;
+    for (let i = 0; i < remainingGastos.length; i++) {
+      if (usedG.has(i)) continue;
+      const g = remainingGastos[i];
+      if (Math.abs(g.amount - ext.amount) > 0.10) continue;
+      const dd = dateDiffDays(g.date, ext.date);
+      if (dd > 14) continue;
+      const score = (14 - dd) + (tokenOverlap(ext.description, g.description) ? 4 : 0);
+      if (score > bestScore) { bestScore = score; bestIdx = i; }
+    }
+    if (bestIdx >= 0) { usedG.add(bestIdx); matches.push({ external: ext, gastos: remainingGastos[bestIdx] }); }
+    else unmatchedExternal.push(ext);
+  }
+  const unmatchedGastos = remainingGastos.filter((_, i) => !usedG.has(i));
+
+  RECON_DATA.matches           = matches;
+  RECON_DATA.unmatchedExternal = unmatchedExternal;
+  RECON_DATA.unmatchedGastos   = unmatchedGastos;
+
+  // Separate unmatched by month
+  const now = typeof reconRef === 'function' ? reconRef() : new Date();
+  const curMonth = now.getMonth();
+  const curYear  = now.getFullYear();
+  // Needs entry = only CC/Amazon charges (not bank debits) in current month
+  const juneNeeds  = unmatchedExternal.filter(x => {
+    if (x.source === 'bank') return false;  // bank debits handled in ACH section
+    const d = x.date instanceof Date ? x.date : new Date(x.date);
+    return d.getMonth() === curMonth && d.getFullYear() === curYear;
+  });
+  const spillover  = unmatchedExternal.filter(x => { const d = x.date instanceof Date ? x.date : new Date(x.date); return !(d.getMonth() === curMonth && d.getFullYear() === curYear); });
+
+  // Separate unmatchedGastos into ACH (no CC expected) vs truly unmatched
+  const achVendors = ['LOOMIS','MCS','HOLSUM','HOLSUM PR','IDEAL ACCOUNTING','ANGEL BERRIOS'];
+  const achOnly    = unmatchedGastos.filter(g => achVendors.some(v => (g.description||'').toUpperCase().includes(v)));
+  const gUnmatched = unmatchedGastos.filter(g => !achVendors.some(v => (g.description||'').toUpperCase().includes(v)));
+
+  // ── 3. Summary stat cards ─────────────────────────────────────────────────
+  const gastosTotal  = RECON_DATA.gastos.reduce((s,g) => s + g.amount, 0);
+  const ccTotal = RECON_DATA.allCC.reduce((s,x) => s + x.amount, 0);
+  const needsEntry   = juneNeeds.length;
+  const matchedCount = matches.length + groupResults.filter(r => r.isMatch).length;
+
+  const statCard = (icon, label, value, sub, danger) =>
+    `<div style="background:var(--color-background-secondary,#f9fafb);border-radius:8px;padding:1rem;${danger?'border:1px solid var(--color-border-danger,#fecaca)':''}">
+      <div style="font-size:12px;color:var(--color-text-secondary,#6b7280);margin-bottom:4px;display:flex;align-items:center;gap:5px">
+        <i class="ti ti-${icon}" aria-hidden="true" ${danger?'style="color:var(--color-text-danger,#dc2626)"':''}></i>${label}
+      </div>
+      <div style="font-size:22px;font-weight:500;color:${danger?'var(--color-text-danger,#dc2626)':'var(--color-text-primary,#111)'}">${value}</div>
+      <div style="font-size:12px;color:var(--color-text-tertiary,#9ca3af);margin-top:3px">${sub}</div>
+    </div>`;
+
+  // ── 4. Vendor group HTML ──────────────────────────────────────────────────
+  const groupTableRows = groupResults.map(({grp, charges, gRows, ccTotal: ct, gTotal: gt, diff, isMatch, noCC}) => {
+    const isPending = diff > 0.05;
+    const isAmazon = (grp.label||'').toLowerCase().includes('amazon');
+    const statusTag = isMatch
+      ? tag('✓ Match', 'ok')
+      : (noCC && isAmazon)
+        ? tag('Upload screenshot', 'note')
+        : isPending
+          ? tag('CC pending', 'pend')
+          : tag(`Missing ${fmt$(Math.abs(diff))}`, 'flag');
+    return `<tr>
+      <td style="padding:8px 10px;font-weight:500;color:var(--color-text-primary)">${grp.label}</td>
+      <td style="padding:8px 10px;color:var(--color-text-secondary);text-align:center">${charges.length}</td>
+      <td style="padding:8px 10px;color:var(--color-text-secondary);text-align:center">${gRows.length}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:500">${fmt$(ct)}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:500">${fmt$(gt)}</td>
+      <td style="padding:8px 10px">${statusTag}</td>
+    </tr>`;
+  }).join('');
+
+  // ── 5. Not in GASTOS rows ─────────────────────────────────────────────────
+  const needsRows = juneNeeds.map(x =>
+    `<tr>
+      <td style="padding:6px 10px">${fmtD(x.date)}</td>
+      <td style="padding:6px 10px">${srcBadge(x.source)}</td>
+      <td style="padding:6px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${x.description}</td>
+      <td style="padding:6px 10px;text-align:right;font-weight:600;color:var(--color-text-danger,#dc2626)">${fmt$(x.amount)}</td>
+    </tr>`
+  ).join('') || `<tr><td colspan="4" style="padding:10px;color:var(--color-text-success,#166534);text-align:center">✓ All current-month charges are in GASTOS</td></tr>`;
+
+  // ── 6. ACH payments rows ──────────────────────────────────────────────────
+  // Group Holsum into single row, match others individually against bank
+  const holsumAch = achOnly.filter(g => (g.description||'').toUpperCase().includes('HOLSUM'));
+  const otherAch  = achOnly.filter(g => !(g.description||'').toUpperCase().includes('HOLSUM'));
+  const holsumAchTotal = holsumAch.reduce((s,g) => s + g.amount, 0);
+  const holsumBankMatch = RECON_DATA.bank.find(b => Math.abs(b.amount - holsumAchTotal) < 0.05);
+
+  const achItems = [];
+  if (holsumAch.length) {
+    achItems.push({
+      label: `Holsum PR (×${holsumAch.length} invoices)`,
+      amount: holsumAchTotal,
+      status: holsumBankMatch ? tag('✓ Cleared', 'ok') : tag('Not paid yet', 'pend'),
+    });
+  }
+  for (const g of otherAch) {
+    const bankMatch = RECON_DATA.bank.find(b => Math.abs(b.amount - g.amount) < 0.05);
+    const desc = (g.description||'').toUpperCase();
+    let statusTag;
+    if (desc.includes('IDEAL')) {
+      // Ideal: $2,000 ACH = $725 Gastos (FCR) + $1,275 owner draw — match by $2,000 in bank
+      const idealBank = RECON_DATA.bank.find(b => Math.abs(b.amount - 2000) < 0.05 && (b.description||'').toUpperCase().includes('IDEAL'));
+      statusTag = idealBank ? tag('✓ Cleared · $1,275 draw', 'ok') : tag('Not paid yet · $1,275 draw', 'pend');
+    } else if (bankMatch)                              statusTag = tag('✓ Cleared', 'ok');
+
+    else if (desc.includes('MCS') || desc.includes('LOOMIS')) statusTag = tag('Not paid yet', 'pend');
+    else                                        statusTag = tag('Verify', 'warn');
+    achItems.push({ label: g.description, amount: g.amount, status: statusTag });
+  }
+  // Add Angel Berrios if matched via bank
+  const angelMatch = RECON_DATA.matches ? RECON_DATA.matches.find(m => (m.gastos.description||'').toUpperCase().includes('ANGEL BERRIOS')) : null;
+  if (angelMatch) {
+    achItems.unshift({ label: 'Angel Berrios Garcia OSO', amount: angelMatch.external.amount, status: tag('✓ Cleared', 'ok') });
+  }
+
+  const achRows = achItems.map(item => `<tr>
+    <td style="padding:6px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.label}</td>
+    <td style="padding:6px 10px;text-align:right;font-weight:500">${fmt$(item.amount)}</td>
+    <td style="padding:6px 10px">${item.status}</td>
+  </tr>`).join('') || `<tr><td colspan="3" style="padding:10px;color:var(--color-text-secondary)">No ACH entries found.</td></tr>`;
+
+  // ── 7. Matched 1:1 rows ───────────────────────────────────────────────────
+  const matchedRows = matches.map(m =>
+    `<tr>
+      <td style="padding:6px 10px">${fmtD(m.external.date)}</td>
+      <td style="padding:6px 10px">${srcBadge(m.external.source)}</td>
+      <td style="padding:6px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${m.external.description}</td>
+      <td style="padding:6px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-text-secondary)">${m.gastos.description}</td>
+      <td style="padding:6px 10px;text-align:right;font-weight:500">${fmt$(m.external.amount)}</td>
+    </tr>`
+  ).join('') || `<tr><td colspan="5" style="padding:10px;color:var(--color-text-secondary)">No 1:1 matches found.</td></tr>`;
+
+  // ── 8. Spillover rows ─────────────────────────────────────────────────────
+  const spillRows = spillover.length
+    ? spillover.map(x =>
+        `<tr style="opacity:.7">
+          <td style="padding:5px 10px">${fmtD(x.date)}</td>
+          <td style="padding:5px 10px">${srcBadge(x.source)}</td>
+          <td style="padding:5px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${x.description}</td>
+          <td style="padding:5px 10px;text-align:right">${fmt$(x.amount)}</td>
+        </tr>`
+      ).join('')
+    : `<tr><td colspan="4" style="padding:10px;color:var(--color-text-success,#166534);text-align:center">✓ No prior-month spillover</td></tr>`;
+
+  // ── 9. Assemble HTML ──────────────────────────────────────────────────────
+  wrap.innerHTML = `
+
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem;flex-wrap:wrap;gap:8px">
+      <div>
+        <div style="font-size:16px;font-weight:500;color:var(--color-text-primary)">Los Filtros — ${(typeof reconRef === 'function' ? reconRef() : new Date(RECON_DATA.lastRunAt)).toLocaleString('en-US',{month:'long',year:'numeric'})}</div>
+        <div style="font-size:12px;color:var(--color-text-secondary);margin-top:2px">Chase + Amex + Amazon + Banco Popular + Gastos · ${new Date(RECON_DATA.lastRunAt).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}</div>
+      </div>
+      <span style="display:inline-block;font-size:12px;font-weight:600;padding:5px 12px;border-radius:8px;${needsEntry > 0 ? 'background:var(--color-background-danger,#fee2e2);color:var(--color-text-danger,#991b1b)' : 'background:var(--color-background-success,#dcfce7);color:var(--color-text-success,#166534)'}">${needsEntry > 0 ? needsEntry + ' items need entry' : '✓ All charges accounted for'}</span>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:1.5rem">
+      ${statCard('file-invoice','Gastos total', fmt$(gastosTotal), `${RECON_DATA.gastos.length} active entries`, false)}
+      ${statCard('credit-card','CC + Amazon', fmt$(ccTotal), `${RECON_DATA.allCC.length} charges`, false)}
+      ${statCard('alert-triangle','Needs entry', needsEntry.toString(), 'current month only', needsEntry > 0)}
+      ${statCard('circle-check','Matched', matchedCount.toString(), `+ ${spillover.length} prior month excluded`, false)}
+    </div>
+
+    ${secHeader('layout-grid', 'vendor group reconciliation')}
+    ${card(`<table style="width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed">
+      ${tHead([['170px','Group'],['55px','CC','center'],['55px','Gastos','center'],['100px','CC net','right'],['100px','Gastos','right'],['','Status']])}
+      <tbody>${groupTableRows}</tbody>
+    </table>`)}
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+
+      <div>
+        ${secHeader('alert-circle', `not in gastos — enter now (${needsEntry})`)}
+        ${card(`<table style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed">
+          ${tHead([['48px','Date'],['60px','Source'],['','Description'],['80px','Amount','right']])}
+          <tbody>${needsRows}</tbody>
+        </table>`)}
+
+        ${secHeader('building-bank', 'ach payments')}
+        ${card(`<table style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed">
+          ${tHead([['','Vendor'],['85px','Gastos','right'],['100px','Status']])}
+          <tbody>${achRows}</tbody>
+        </table>`)}
+      </div>
+
+      <div>
+        ${secHeader('circle-check', `matched 1:1 (${matches.length})`)}
+        ${card(`<table style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed">
+          ${tHead([['48px','Date'],['60px','Source'],['','CC description'],['','Gastos vendor'],['80px','Amount','right']])}
+          <tbody>${matchedRows}</tbody>
+        </table>`)}
+
+
+      </div>
+
+    </div>
+
+    ${gUnmatched.length ? `
+    ${secHeader('alert-triangle', `only in gastos — no matching charge (${gUnmatched.length})`)}
+    ${card(`<table style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed">
+      ${tHead([['60px','Date'],['','Gastos vendor'],['120px','Category'],['85px','Amount','right']])}
+      <tbody>${gUnmatched.map(g => `<tr>
+        <td style="padding:6px 10px">${fmtD(g.date)}</td>
+        <td style="padding:6px 10px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${g.description}</td>
+        <td style="padding:6px 10px;color:var(--color-text-secondary,#6b7280);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${g.category||'—'}</td>
+        <td style="padding:6px 10px;text-align:right;font-weight:500;color:var(--color-text-warning,#92400e)">${fmt$(g.amount)}</td>
+      </tr>`).join('')}
+      </tbody>
+    </table>`)}` : ''}
+
+    <div style="margin-top:4px;padding:10px 12px;background:var(--color-background-secondary,#f9fafb);border-radius:8px;font-size:12px;color:var(--color-text-secondary,#6b7280);display:flex;align-items:center;gap:8px">
+      <i class="ti ti-info-circle" aria-hidden="true"></i>
+      Voided Gastos entries excluded automatically · ACH payments matched against bank debits by amount
+    </div>
+  `;
+
+  updateReconHeaderStats();
+}
+
+function runReconciliation() {
+  const external = [...RECON_DATA.bank, ...RECON_DATA.allCC];
+  if (!RECON_DATA.gastos.length) { alert('Upload at least one GASTOS CSV first.'); return; }
+  if (!external.length) { alert('Upload at least one Bank or Credit Card statement first.'); return; }
+  RECON_DATA.lastRunAt = new Date().toISOString();
+  renderReconReport();
+  showToast('✅ Reconciliation complete!');
+}
+
+function applyReconSearchFilter() {
+  const q = document.querySelector('#p-recon .recon-search')?.value?.trim().toLowerCase();
+  const rows = document.querySelectorAll('#rRecon tbody tr');
+  rows.forEach(r => {
+    if (!q) { r.style.display = ''; return; }
+    r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+
+async function handleReconUpload(kind, files) {
+  if (!files || !files.length) return;
+  const uploaded = [];
+  for (const file of Array.from(files)) {
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
+
+    // Chase: PDF statement (native parser) or CSV (generic parser)
+    if (kind === 'chase' && ext === 'pdf') {
+      try {
+        const txns = await parseChaseStatementPDF(file);
+        if (!txns.length) {
+          alert(`No charges found in "${file.name}". Make sure this is a Chase Ink statement PDF.`);
+        } else {
+          showToast(`✅ Chase PDF loaded — ${txns.length} charges parsed.`);
+        }
+        uploaded.push(...txns);
+      } catch (err) {
+        alert(`Error parsing Chase PDF: ${err.message}`);
+      }
+      continue;
+    }
+
+    // Excel statements (e.g. the Amex XLSX download) are turned into CSV text and read like any CSV
+    if (['xlsx', 'xls'].includes(ext) && typeof reconSheetToCsv === 'function') {
+      try { uploaded.push(...csvToTxns(await reconSheetToCsv(file), kind === 'gastos' ? 'gastos' : kind)); }
+      catch (err) { alert(`Could not read "${file.name}": ${err.message}`); }
+      continue;
+    }
+
+    if (kind === 'amex' && ext !== 'csv') {
+      alert('AMEX upload currently supports CSV only. Please export to CSV and upload again.');
+      continue;
+    }
+
+    // Amazon: accept image screenshots — parse via Claude Vision
+    if (kind === 'amazon' && ['jpg','jpeg','png','webp'].includes(ext)) {
+      try {
+        showToast('📸 Reading Amazon screenshot with AI...');
+        const txns = await parseAmazonScreenshot(file);
+        if (!txns.length) {
+          alert(`No transactions found in the screenshot. Make sure amounts are visible.`);
+        } else {
+          showToast(`✅ Amazon screenshot — ${txns.length} transactions extracted.`);
+          uploaded.push(...txns);
+        }
+      } catch (err) {
+        showToast(`❌ Amazon screenshot failed: ${err.message}. Try uploading a CSV instead.`);
+        console.error('Amazon Vision error:', err);
+      }
+      continue;
+    }
+
+    if (ext !== 'csv') {
+      alert(`"${file.name}" is not CSV. Please upload CSV files for reconciliation.`);
+      continue;
+    }
+    const text = await readFileText(file);
+    const srcName = kind === 'gastos' ? 'gastos' : kind === 'bank' ? 'bank' : kind;
+    uploaded.push(...csvToTxns(text, srcName));
+  }
+
+  if (kind === 'gastos') RECON_DATA.gastos = uploaded;
+  if (kind === 'bank') RECON_DATA.bank = uploaded;
+  if (kind === 'amex') RECON_DATA.amex = uploaded;
+  if (kind === 'chase') RECON_DATA.chase = uploaded;
+  if (kind === 'amazon') RECON_DATA.amazon = uploaded;
+  RECON_DATA.allCC = [...RECON_DATA.amex, ...RECON_DATA.chase, ...RECON_DATA.amazon];
+  RECON_DATA.lastRunAt = null;
+  RECON_DATA.matches = [];
+  RECON_DATA.unmatchedExternal = [];
+  RECON_DATA.unmatchedGastos = [];
+  renderReconReport();
+}
+
+function initReconciliationUI() {
+  if (_reconUiBound) return;
+  const page = document.getElementById('p-recon');
+  if (!page) return;
+  const slots = page.querySelectorAll('.file-slot input[type="file"]');
+  if (slots.length < 5) { console.warn('Expected 5 file slots, found', slots.length); return; }
+
+  const notes = page.querySelectorAll('.cached-note');
+  const runBtn = document.getElementById('runReconBtn');
+  const search = page.querySelector('.recon-search');
+
+  slots[0].addEventListener('change', async (e) => {
+    await handleReconUpload('gastos', e.target.files);
+    showToast(`✅ GASTOS loaded (${RECON_DATA.gastos.length} rows).`);
+  });
+  slots[1].addEventListener('change', async (e) => {
+    await handleReconUpload('amex', e.target.files);
+    if (notes[0]) notes[0].textContent = `✓ ${RECON_DATA.amex.length} rows cached`;
+  });
+  slots[2].addEventListener('change', async (e) => {
+    await handleReconUpload('chase', e.target.files);
+    if (notes[1]) notes[1].textContent = `✓ ${RECON_DATA.chase.length} rows cached`;
+  });
+  slots[3].addEventListener('change', async (e) => {
+    await handleReconUpload('amazon', e.target.files);
+    if (notes[2]) notes[2].textContent = `✓ ${RECON_DATA.amazon.length} rows cached`;
+  });
+  slots[4].addEventListener('change', async (e) => {
+    // Feed bank data into reconciliation engine
+    await handleReconUpload('bank', e.target.files);
+    // Also feed into BP debit display panel
+    if (e.target.files && e.target.files[0]) handleBPStatement(e.target.files[0]);
+    if (notes[3]) notes[3].textContent = `✓ ${e.target.files[0]?.name || 'file'} loaded — ${RECON_DATA.bank.length} debits parsed`;
+  });
+
+  if (runBtn) runBtn.addEventListener('click', runReconciliation);
+  if (search) search.addEventListener('input', applyReconSearchFilter);
+
+  renderReconReport();
+  _reconUiBound = true;
+}
+
+// ══════════════════════════════════════════
+// AUTO-LOGOUT (15 min idle → 60s warning)
+// ══════════════════════════════════════════
+const IDLE_TIMEOUT = 15 * 60 * 1000; // 15 minutes
+const WARN_DURATION = 60;             // 60 second countdown
+let idleTimer = null;
+let countdownTimer = null;
+let countdownVal = WARN_DURATION;
+
+function resetTimer() {
+  // Hide warning modal
+  document.getElementById('timeoutOverlay').classList.remove('open');
+  clearInterval(countdownTimer);
+  countdownVal = WARN_DURATION;
+  document.getElementById('timeoutCountdown').textContent = WARN_DURATION;
+
+  // Only run if logged in
+  if (!currentUser) return;
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(showTimeoutWarning, IDLE_TIMEOUT);
+}
+
+function showTimeoutWarning() {
+  if (!currentUser) return;
+  document.getElementById('timeoutOverlay').classList.add('open');
+  countdownVal = WARN_DURATION;
+  clearInterval(countdownTimer);
+  countdownTimer = setInterval(() => {
+    countdownVal--;
+    document.getElementById('timeoutCountdown').textContent = countdownVal;
+    if (countdownVal <= 0) {
+      clearInterval(countdownTimer);
+      document.getElementById('timeoutOverlay').classList.remove('open');
+      signOut();
+      // Show a brief message on the login page
+      document.getElementById('loginErr').textContent = 'You were logged out due to inactivity.';
+      document.getElementById('loginErr').style.background = '#fef9c3';
+      document.getElementById('loginErr').style.color = '#854d0e';
+      document.getElementById('loginErr').style.display = 'block';
+    }
+  }, 1000);
+}
+
+// Listen for any user activity
+['mousemove','keydown','mousedown','touchstart','scroll','click'].forEach(evt =>
+  document.addEventListener(evt, () => { if (currentUser) resetTimer(); }, { passive: true })
+);
+
+
+// ══════════════════════════════════════════
+// PR LABOR LAW ACCRUAL ENGINE
+// Law: Act No. 180-1998 as amended by Act 4-2017 (LTFA)
+// Note: Act 41-2022 was declared null and void by federal
+//       court on March 3, 2023 — Act 4-2017 rules apply.
+//
+// VACATION (requires ≥130 hrs/month to qualify):
+//   Year 0 – <1 yr  : 0.50 days/month  (½ day)
+//   Year 1 – <5 yrs : 0.75 days/month  (¾ day)
+//   Year 5 – <15 yrs: 1.00 day/month
+//   Year 15+        : 1.25 days/month
+//   ⚠ Cannot be USED until employee completes 1 full year.
+//
+// SICK (requires ≥130 hrs/month to qualify):
+//   ALL years       : 1.00 day/month  (flat, no tier)
+//   Max carryover   : 15 days
+// ══════════════════════════════════════════
+
+/**
+ * Returns the vacation accrual rate (days/month) for a given
+ * number of completed years of service per PR Act 180 / Act 4-2017.
+ */
+function getVacationRateForYears(completedYears) {
+  if (completedYears >= 15) return 1.25;
+  if (completedYears >= 5)  return 1.00;
+  if (completedYears >= 1)  return 0.75;
+  return 0.50; // first year of service
+}
+
+/**
+ * Calculates the accrual earned in a single calendar month.
+ *
+ * @param {number} hoursWorked  - Total hours worked that month
+ * @param {number} completedYears - Full years of service at the time of accrual
+ * @returns {{ vacationEarned: number, sickEarned: number, tier: string, qualified: boolean }}
+ */
+function calcMonthlyAccrual(hoursWorked, completedYears) {
+  const HOURS_THRESHOLD = 130; // Act 4-2017 requirement
+  const qualified = hoursWorked >= HOURS_THRESHOLD;
+
+  if (!qualified) {
+    return { vacationEarned: 0, sickEarned: 0, tier: 'none', qualified: false };
+  }
+
+  const vacRate = getVacationRateForYears(completedYears);
+  // Sick leave is always 1.00 day/month flat (no seniority tier)
+  const sickRate = 1.00;
+
+  // Determine label for UI display
+  let tier = 'full';
+  if (completedYears < 1)  tier = 'year1';
+  else if (completedYears < 5)  tier = 'year1to5';
+  else if (completedYears < 15) tier = 'year5to15';
+  else tier = 'year15plus';
+
+  return {
+    vacationEarned: +vacRate.toFixed(4),
+    sickEarned:     +sickRate.toFixed(4),
+    tier,
+    qualified: true
+  };
+}
+
+/**
+ * Calculates total accrued vacation and sick balances for an employee
+ * across their full monthly history.
+ *
+ * @param {Array}  monthlyRecords - Array of { year, month, hoursWorked }
+ * @param {string} firstClockIn   - ISO date string of first day of work
+ * @param {number} vacTaken       - Total vacation days already taken
+ * @param {number} sickTaken      - Total sick days already taken
+ * @returns {{ vacationEarned, vacationBal, sickEarned, sickBal, vacationEligible }}
+ */
+function calcEmployeeAccruals(monthlyRecords, firstClockIn, vacTaken, sickTaken) {
+  const startDate = firstClockIn ? new Date(firstClockIn) : null;
+
+  let totalVacEarned  = 0;
+  let totalSickEarned = 0;
+
+  for (const rec of (monthlyRecords || [])) {
+    // Compute how many full years of service the employee had
+    // at the START of this month (conservative, employee-favorable rounding)
+    let completedYears = 0;
+    if (startDate) {
+      const monthStart = new Date(rec.year, rec.month - 1, 1);
+      const msPerYear  = 1000 * 60 * 60 * 24 * 365.25;
+      completedYears   = Math.floor((monthStart - startDate) / msPerYear);
+      if (completedYears < 0) completedYears = 0;
+    }
+
+    const acr = calcMonthlyAccrual(rec.hoursWorked, completedYears);
+    totalVacEarned  += acr.vacationEarned;
+    totalSickEarned += acr.sickEarned;
+  }
+
+  // Sick leave carryover cap: 15 days (Act 180 §250d(l))
+  const SICK_CAP = 15;
+  totalSickEarned = Math.min(totalSickEarned, SICK_CAP + (sickTaken || 0));
+
+  const vacBal  = +(totalVacEarned  - (vacTaken  || 0)).toFixed(2);
+  const sickBal = +(totalSickEarned - (sickTaken || 0)).toFixed(2);
+
+  // Vacation cannot be USED until 1 full year of service (Act 180 §250d(f))
+  let vacationEligible = false;
+  if (startDate) {
+    const msPerYear  = 1000 * 60 * 60 * 24 * 365.25;
+    vacationEligible = (Date.now() - startDate.getTime()) >= msPerYear;
+  }
+
+  return {
+    vacationEarned:   +totalVacEarned.toFixed(2),
+    vacationBal:      Math.max(0, vacBal),
+    sickEarned:       +totalSickEarned.toFixed(2),
+    sickBal:          Math.max(0, sickBal),
+    vacationEligible
+  };
+}
+
+/**
+ * Refreshes all employee accrual displays and UI counts.
+ * Call after any data change (import, time-off entry, status change).
+ */
+function recalculateAll() {
+  for (const key of Object.keys(EMPLOYEES)) {
+    const emp = EMPLOYEES[key];
+    // Ensure required fields exist
+    if (!emp.monthlyRecords) emp.monthlyRecords = [];
+    if (emp.vacTaken  == null) emp.vacTaken  = 0;
+    if (emp.sickTaken == null) emp.sickTaken = 0;
+  }
+  // Refresh all dependent UI
+  updateEmployeesTab();
+  updateDashboard();
+}
+
+function updateDashboard() {
+  const tbody      = document.getElementById('dashTbody');
+  if (!tbody) return;
+  const search     = (document.getElementById('dashSearch')?.value || '').toLowerCase();
+  const statFilter = (document.getElementById('dashStatusFilter')?.value || '').toLowerCase();
+  const typeFilter = (document.getElementById('dashTypeFilter')?.value || '').toLowerCase();
+
+  let emps = Object.entries(EMPLOYEES)
+    .filter(([k, e]) => {
+      if (statFilter && (e.status || 'active').toLowerCase() !== statFilter) return false;
+      if (typeFilter && (e.type || 'hourly').toLowerCase() !== typeFilter) return false;
+      if (search && !e.name.toLowerCase().includes(search)) return false;
+      return true;
+    })
+    .sort((a, b) => a[1].name.localeCompare(b[1].name));
+
+  if (!emps.length) {
+    tbody.innerHTML = '<tr><td colspan="10"><div class="empty"><div class="ei">📋</div><p>No employees match.</p></div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = emps.map(([key, emp]) => {
+    const accruals = calcEmployeeAccruals(emp.monthlyRecords || [], emp.firstClockIn, emp.vacTaken || 0, emp.sickTaken || 0);
+    const tenure   = getTenureString(emp.firstClockIn);
+    const sickBal  = accruals.sickBal;
+    const vacBal   = accruals.vacationBal;
+    const vacFlag  = !accruals.vacationEligible ? ' ⚠' : '';
+    return `<tr>
+      <td><a href="#" style="color:var(--navy);font-weight:600;text-decoration:none" onclick="showEmpDetail('${key}');return false">${emp.name}</a></td>
+      <td><span class="badge bg-teal">${emp.type || 'hourly'}</span></td>
+      <td><span class="badge ${emp.status === 'active' ? 'bg-green' : 'bg-gray'}">${emp.status || 'active'}</span></td>
+      <td style="font-size:.8rem">${tenure}</td>
+      <td style="text-align:right">${daysToHrs(accruals.sickEarned)}</td>
+      <td style="text-align:right">${daysToHrs(emp.sickTaken || 0)}</td>
+      <td style="text-align:right;font-weight:700;color:${sickBal <= 0 ? 'var(--red)' : '#0f766e'}">${daysToHrs(sickBal)}</td>
+      <td style="text-align:right">${daysToHrs(accruals.vacationEarned)}</td>
+      <td style="text-align:right">${daysToHrs(emp.vacTaken || 0)}</td>
+      <td style="text-align:right;font-weight:700;color:${vacBal <= 0 ? 'var(--red)' : 'var(--navy)'}">${daysToHrs(vacBal)}${vacFlag}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ══════════════════════════════════════════
+// AMAZON SCREENSHOT PARSER — Claude Vision
+// ══════════════════════════════════════════
+async function parseAmazonScreenshot(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const base64 = reader.result.split(',')[1];
+        const mediaType = file.type || 'image/jpeg';
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-6',
+            max_tokens: 1000,
+            messages: [{
+              role: 'user',
+              content: [
+                {
+                  type: 'image',
+                  source: { type: 'base64', media_type: mediaType, data: base64 }
+                },
+                {
+                  type: 'text',
+                  text: 'This is a screenshot of Amazon Business credit card transactions. Extract all POSTED transactions (ignore PENDING). Return ONLY a JSON array, no markdown, no explanation. Each item: {"date":"MM/DD/YYYY","amount":number,"description":"Amazon Business"}. Example: [{"date":"06/18/2026","amount":49.75,"description":"Amazon Business"}]'
+                }
+              ]
+            }]
+          })
+        });
+        const data = await response.json();
+        const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+        const clean = text.replace(/```json|```/g, '').trim();
+        const rows = JSON.parse(clean);
+        const txns = rows.map((r, i) => ({
+          id: `amazon-img-${i}-${r.amount}`,
+          source: 'amazon',
+          date: parseDateLoose(r.date),
+          amount: Math.abs(parseFloat(r.amount)),
+          description: r.description || 'Amazon Business'
+        })).filter(t => t.date && t.amount > 0);
+        resolve(txns);
+      } catch (err) {
+        reject(err);
+      }
+    };
+    reader.onerror = () => reject(new Error('Could not read image file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+// PDF PARSER — Chase Ink Premier Statement
+// ══════════════════════════════════════════
+// The Chase statement PDF uses a doubled-character font for section headers
+// (e.g. "AACCCCOOUUNNTT AACCTTIIVVIITTYY") so we cannot rely on matching
+// "ACCOUNT ACTIVITY" directly. Instead we detect the start of transactions
+// by finding the "Merchant Name or Transaction Description" header line,
+// and stop at the "DIEGO VELAZQUEZ" footer or "Year-to-Date" summary.
+
+async function parseChaseStatementPDF(file) {
+  if (typeof pdfjsLib === 'undefined') {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+      s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+
+  const ab  = await file.arrayBuffer();
+  const pdf = await window.pdfjsLib.getDocument({ data: ab }).promise;
+
+  // Extract text grouped by Y position to reconstruct logical lines
+  let fullText = '';
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const tc   = await page.getTextContent();
+    const byY  = {};
+    for (const item of tc.items) {
+      const y = Math.round(item.transform[5]);
+      if (!byY[y]) byY[y] = [];
+      byY[y].push(item.str);
+    }
+    const ys = Object.keys(byY).map(Number).sort((a, b) => b - a); // top→bottom
+    for (const y of ys) fullText += byY[y].join(' ') + '\n';
+    fullText += '\n';
+  }
+
+  // Resolve statement year + closing month from "Opening/Closing Date: MM/DD/YY - MM/DD/YY"
+  let statYear     = new Date().getFullYear();
+  let closingMonth = new Date().getMonth() + 1;
+  const periodMatch = fullText.match(/Opening\/Closing Date:\s*(\d{2})\/(\d{2})\/(\d{2,4})\s*-\s*(\d{2})\/(\d{2})\/(\d{2,4})/i);
+  if (periodMatch) {
+    const rawYear = periodMatch[6];
+    statYear      = rawYear.length === 2 ? 2000 + parseInt(rawYear) : parseInt(rawYear);
+    closingMonth  = parseInt(periodMatch[4]);
+  }
+
+  // Transaction line pattern: MM/DD  <description words>  <amount>
+  const txnRe = /^(\d{2}\/\d{2})\s+(.+?)\s+(-?\$?[\d,]+\.\d{2})\s*$/;
+  const lines  = fullText.split('\n');
+
+  // Section boundaries:
+  //   START: "Merchant Name or Transaction Description" column header
+  //   STOP:  summary lines that follow the last transaction
+  let inActivity = false;
+  const txns = [];
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+
+    // START: column header line (rendered normally, not doubled)
+    if (/Merchant\s+Name\s+or\s+Transaction\s+Description/i.test(line)) {
+      inActivity = true;
+      continue;
+    }
+
+    // STOP: footer / year-to-date summary section
+    if (inActivity && /TRANSACTIONS THIS CYCLE|Year-to-Date|Total fees charged|INTEREST CHARGES/i.test(line)) {
+      break;
+    }
+
+    if (!inActivity) continue;
+
+    const m = line.match(txnRe);
+    if (!m) continue;
+
+    const [, datePart, desc, amtRaw] = m;
+    const amount = parseFloat(amtRaw.replace(/[$,]/g, ''));
+
+    // Skip payments and credits (negative amounts)
+    if (amount <= 0) continue;
+
+    const [mm, dd] = datePart.split('/').map(Number);
+    // If month is significantly after closing month, it belongs to prior year
+    const year = mm > closingMonth + 3 ? statYear - 1 : statYear;
+    const date = new Date(year, mm - 1, dd);
+
+    txns.push({
+      id: `chase-pdf-${datePart}-${amount.toFixed(2)}-${txns.length}`,
+      source: 'cc',
+      date,
+      amount,
+      description: desc.trim()
+    });
+  }
+
+  return txns;
+}
+
+// ══════════════════════════════════════════
+// PDF PARSER — CFA Time Summary Report
+// ══════════════════════════════════════════
+
+/** Convert "HH:MM" or "H:MM" string to decimal hours */
+function hhmm(s) {
+  if (!s) return 0;
+  const parts = s.trim().split(':');
+  return parseInt(parts[0]) + parseInt(parts[1]) / 60;
+}
+
+/** Parse the Time Summary PDF using pdf.js (loaded from CDN).
+ *  Calibrated against real CFA Time Summary Report layout (Apr 2026).
+ *
+ *  Confirmed column x-positions (pdfplumber):
+ *    Employee Name : x <  145
+ *    Total Time    : x ~  157–165   (< 180)
+ *    Regular Hours : x ~  291–295   (180–340)
+ *    OT Hours      : x ~  417–421   (340–450)
+ *    Dollar cols   : x > 340 and contain '$' — skipped
+ */
+async function parseTimeSummaryPDF(file) {
+  const pdfjsLib = window['pdfjs-dist/build/pdf'];
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+  let allWords = [];
+  let headerText = '';
+
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page  = await pdf.getPage(p);
+    const content  = await page.getTextContent();
+    const viewport = page.getViewport({ scale: 1 });
+
+    for (const item of content.items) {
+      const t = item.str.trim();
+      if (!t) continue;
+      const x = item.transform[4];
+      const y = viewport.height - item.transform[5];
+      if (p === 1) headerText += t + ' ';
+      allWords.push({ text: t, x, y, page: p });
+    }
+  }
+
+  // ── Date range ──────────────────────────────────────────────────────────
+  // Header looks like: "From Sunday, Mar 01, 2026 through Tuesday, Mar 31, 2026"
+  // Words come in separately so we reconstruct from the header string.
+  const MONTHS = { Jan:1,Feb:2,Mar:3,Apr:4,May:5,Jun:6,
+                   Jul:7,Aug:8,Sep:9,Oct:10,Nov:11,Dec:12 };
+  let periodStart = null, periodEnd = null, year = null, month = null;
+
+  // Match "Mar 01, 2026" style tokens anywhere in the header
+  const dateRangeMatch = headerText.match(
+    /From\s+\w+,\s+(\w+)\s+(\d+),\s+(\d+)\s+through\s+\w+,\s+(\w+)\s+(\d+),\s+(\d+)/
+  );
+  if (dateRangeMatch) {
+    const [, sm, sd, sy, em, ed, ey] = dateRangeMatch;
+    periodStart = new Date(+sy, (MONTHS[sm] || 1) - 1, +sd);
+    periodEnd   = new Date(+ey, (MONTHS[em] || 1) - 1, +ed);
+    year  = periodStart.getFullYear();
+    month = periodStart.getMonth() + 1;
+  }
+
+  // ── Group words into rows by y-coordinate (±2px tolerance) ─────────────
+  const rowMap = {};
+  for (const w of allWords) {
+    const key = Math.round(w.y / 2) * 2;
+    if (!rowMap[key]) rowMap[key] = [];
+    rowMap[key].push(w);
+  }
+
+  const SKIP = new Set([
+    'Employee','Name','Total','Time','Wage','Rate','Regular','Hours','Wages',
+    'Overtime','Grand','All',"Employees'","Employees'",'Page','of',
+    'FSU','Filtros','Los','Summary','Report','From','through',
+    'Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday',
+    'AM','PM'
+  ]);
+
+  const employees = [];
+  const timeRe   = /^\d+:\d{2}$/;   // matches "156:54", "0:31", etc.
+  const dollarRe = /^\$/;            // skip all dollar-amount cells
+
+  for (const words of Object.values(rowMap)) {
+    const sorted = words.sort((a, b) => a.x - b.x);
+    let nameParts = [], totalTime = null, regHours = null, otHours = null;
+
+    for (const w of sorted) {
+      const t = w.text;
+
+      // Skip header words, timestamps (HH:MM:SS), dollar amounts, page numbers
+      if (SKIP.has(t) || dollarRe.test(t)) continue;
+      if (/^\d{2}\/\d{2}\/\d{4}$/.test(t)) continue;  // date stamps
+      if (/^\d{1,2}:\d{2}:\d{2}$/.test(t)) continue;  // time-of-day stamps
+      if (/^\d+$/.test(t)) continue;                   // bare page numbers
+
+      if (timeRe.test(t)) {
+        // Assign to column by x position (calibrated from real report):
+        //   Total Time   x < 180
+        //   Reg Hours    180 ≤ x < 340
+        //   OT Hours     340 ≤ x < 450
+        if      (w.x < 180) totalTime = t;
+        else if (w.x < 340) regHours  = t;
+        else if (w.x < 450) otHours   = t;
+      } else if (w.x < 145) {
+        // Employee name tokens are always left-aligned (x < 145)
+        nameParts.push(t);
+      }
+    }
+
+    if (nameParts.length && totalTime && regHours) {
+      const name = nameParts.join(' ').trim();
+      if (/grand|employees/i.test(name)) continue;  // skip grand total row
+      const totalHours = hhmm(totalTime);
+      employees.push({
+        name,
+        totalTime,
+        regularHours: regHours,
+        otHours: otHours || '0:00',
+        totalHours: +totalHours.toFixed(2)
+      });
+    }
+  }
+
+  return { periodStart, periodEnd, year, month, employees };
+}
+
+// ══════════════════════════════════════════
+// IMPORT DATA — wire up the upload button
+// ══════════════════════════════════════════
+
+// Track imported months to avoid double-counting
+// key: "YYYY-MM" → { start, end, empCount, totalHours }
+let IMPORTED_PERIODS = {};
+let TIME_OFF_REQUESTS = [];  // pending/approved/rejected requests
+
+async function handleImport(file) {
+  const statusEl   = document.getElementById('importStatus');
+  const progressEl = document.getElementById('importProgress');
+
+  statusEl.style.display   = 'block';
+  statusEl.innerHTML       = '<span style="color:var(--navy)">⏳ Parsing PDF...</span>';
+  progressEl.style.display = 'block';
+
+  try {
+    const result = await parseTimeSummaryPDF(file);
+
+    if (!result.employees.length) {
+      statusEl.innerHTML = '<span style="color:var(--red)">❌ No employees found. Is this a Time Summary Report?</span>';
+      progressEl.style.display = 'none';
+      return;
+    }
+
+    // Monthly key — one upload per calendar month
+    const y = result.year, m = result.month;
+    const monthKey  = `${y}-${String(m).padStart(2,'0')}`;
+    const monthName = new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+    // If this month already exists, ask director whether to overwrite
+    if (IMPORTED_PERIODS[monthKey]) {
+      const overwrite = confirm(
+        `⚠️ ${monthName} has already been imported.\n\n` +
+        `Do you want to overwrite it with this new report?\n\n` +
+        `OK = replace existing data   |   Cancel = keep current data`
+      );
+      if (!overwrite) {
+        statusEl.innerHTML = `<span style="color:#d97706">⚠ Import cancelled — existing ${monthName} data kept.</span>`;
+        progressEl.style.display = 'none';
+        return;
+      }
+      // Wipe the old monthly record from every employee before re-importing
+      for (const emp of Object.values(EMPLOYEES)) {
+        emp.monthlyRecords = (emp.monthlyRecords || []).filter(r => !(r.year === y && r.month === m));
+      }
+    }
+
+    let newCount = 0, updatedCount = 0, totalHours = 0;
+
+    for (const emp of result.employees) {
+      // Fuzzy match to prevent duplicates from name format changes
+      const matchedKey = fuzzyMatchEmployee(emp.name);
+      const key = matchedKey || emp.name.toLowerCase().replace(/\s+/g, '_');
+
+      if (!EMPLOYEES[key]) {
+        EMPLOYEES[key] = {
+          name:           emp.name,
+          type:           'hourly',
+          status:         'active',
+          firstClockIn:   result.periodStart?.toISOString().slice(0, 10) || null,
+          vacTaken:       0,
+          sickTaken:      0,
+          monthlyRecords: [],
+          timeOffLog:     []
+        };
+        newCount++;
+      } else {
+        updatedCount++;
+      }
+
+      // Upsert monthly record — dont duplicate if already imported this month
+      const existingRec = EMPLOYEES[key].monthlyRecords.find(r => r.year === y && r.month === m);
+      if (!existingRec) {
+        EMPLOYEES[key].monthlyRecords.push({
+          year:        y,
+          month:       m,
+          hoursWorked: emp.totalHours,
+          reportStart: result.periodStart?.toISOString().slice(0, 10),
+          reportEnd:   result.periodEnd?.toISOString().slice(0, 10)
+        });
+      } else {
+        existingRec.hoursWorked = emp.totalHours;
+      }
+
+      totalHours += emp.totalHours;
+    }
+
+    // Register month as imported (in-memory)
+    IMPORTED_PERIODS[monthKey] = {
+      monthKey,
+      start:      result.periodStart?.toISOString().slice(0, 10),
+      end:        result.periodEnd?.toISOString().slice(0, 10),
+      empCount:   result.employees.length,
+      totalHours: +totalHours.toFixed(1)
+    };
+
+    // ── Persist to Supabase proper tables ──────────────────
+    _setSaveStatus('saving');
+    try {
+      // 1. Upsert employees
+      for (const empEntry of result.employees) {
+        const key = empEntry.name.toLowerCase().replace(/\s+/g, '_');
+        const emp = EMPLOYEES[key];
+        if (!emp) continue;
+
+        if (!emp.supabase_id) {
+          // Insert new employee
+          const { data: newEmp, error: insErr } = await getSupa().from('employees').insert({
+            name:           emp.name,
+            type:           emp.type || 'hourly',
+            status:         emp.status || 'active',
+            first_clock_in: emp.firstClockIn || result.periodStart?.toISOString().slice(0,10) || null,
+            vac_taken:      0,
+            sick_taken:     0,
+          }).select('id').single();
+          if (!insErr && newEmp) emp.supabase_id = newEmp.id;
+        } else {
+          // Update existing
+          await getSupa().from('employees').update({
+            updated_at: new Date().toISOString(),
+          }).eq('id', emp.supabase_id);
+        }
+
+        // 2. Upsert monthly record
+        if (emp.supabase_id) {
+          const rec = (emp.monthlyRecords || []).find(r => r.year === y && r.month === m);
+          if (rec) {
+            await getSupa().from('monthly_records').upsert({
+              employee_id:  emp.supabase_id,
+              year:         y,
+              month:        m,
+              hours_worked: rec.hoursWorked,
+              report_start: rec.reportStart || null,
+              report_end:   rec.reportEnd || null,
+              imported_at:  new Date().toISOString(),
+            }, { onConflict: 'employee_id,year,month' });
+          }
+        }
+      }
+
+      // 3. Upsert imported_periods
+      await getSupa().from('imported_periods').upsert({
+        month_key:   monthKey,
+        start_date:  result.periodStart?.toISOString().slice(0,10) || null,
+        end_date:    result.periodEnd?.toISOString().slice(0,10) || null,
+        emp_count:   result.employees.length,
+        total_hours: +totalHours.toFixed(1),
+        imported_at: new Date().toISOString(),
+      }, { onConflict: 'month_key' });
+
+      _setSaveStatus('saved');
+      await writeAuditLog('IMPORT', `Imported ${monthName}: ${result.employees.length} employees, ${totalHours.toFixed(1)} hrs`);
+    } catch(saveErr) {
+      console.error('Supabase save error during import:', saveErr);
+      _setSaveStatus('error');
+    }
+    // ──────────────────────────────────────────────────────
+
+    // Dashboard counts
+    document.getElementById('sActive').textContent   = Object.values(EMPLOYEES).filter(e => e.status === 'active').length;
+    document.getElementById('sInactive').textContent = Object.values(EMPLOYEES).filter(e => e.status !== 'active').length;
+
+    // Data range display
+    const allMonths = Object.keys(IMPORTED_PERIODS).sort();
+    if (allMonths.length) {
+      const first = IMPORTED_PERIODS[allMonths[0]];
+      const last  = IMPORTED_PERIODS[allMonths[allMonths.length - 1]];
+      const srEl  = document.getElementById('sRange');
+      if (srEl) srEl.textContent = (first.start || allMonths[0]) + ' → ' + (last.end || allMonths[allMonths.length - 1]);
+    }
+
+    recalculateAll();
+    populateEmployeeDropdowns();
+    _cacheToLocal();
+
+    statusEl.innerHTML = `
+      <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:14px 16px">
+        <div style="font-weight:700;color:#166534;margin-bottom:6px">✅ Import Successful!</div>
+        <div style="font-size:.83rem;color:#166534">
+          Month: <strong>${monthName}</strong><br>
+          ${result.employees.length} employees processed (${newCount} new, ${updatedCount} updated)<br>
+          Accruals recalculated per PR Act 180.
+        </div>
+      </div>`;
+    progressEl.style.display = 'none';
+
+    updateEmployeesTab();
+    setTimeout(() => goTab('dashboard'), 1500);
+
+  } catch (err) {
+    console.error(err);
+    statusEl.innerHTML = `<span style="color:var(--red)">❌ Error parsing PDF: ${err.message}</span>`;
+    progressEl.style.display = 'none';
+  }
+}
+
+// ══════════════════════════════════════════
+// POPULATE EMPLOYEE DROPDOWNS everywhere
+// ══════════════════════════════════════════
+function populateEmployeeDropdowns() {
+  const empList = Object.entries(EMPLOYEES)
+    .filter(([k,e]) => e.status === 'active')
+    .sort((a,b) => a[1].name.localeCompare(b[1].name));
+
+  // Record Time-Off employee dropdown
+  const rtoSel = document.getElementById('rtoEmployeeSel');
+  if (rtoSel) {
+    rtoSel.innerHTML = '<option value="">Select employee...</option>' +
+      empList.map(([k,e]) => `<option value="${k}">${e.name}</option>`).join('');
+  }
+
+  // Meal penalty modal employee dropdown
+  const mealSel = document.getElementById('mealEmpSel');
+  if (mealSel) {
+    mealSel.innerHTML = '<option value="">Select employee...</option>' +
+      empList.map(([k,e]) => `<option value="${k}">${e.name}</option>`).join('');
+  }
+}
+
+// ══════════════════════════════════════════
+// RECORD TIME-OFF — actually saves
+// ══════════════════════════════════════════
+async function submitRecordTimeOff() {
+  const empKey  = document.getElementById('rtoEmployeeSel').value;
+  const type    = document.getElementById('rtoType').value;
+  const inputHrs = parseFloat(document.getElementById('rtoDays').value);
+  const days      = inputHrs / 8;  // convert hours to days for internal storage
+  const date    = document.getElementById('rtoDate').value;
+  const notes   = document.getElementById('rtoNotes').value;
+
+  if (!empKey) { alert('Please select an employee.'); return; }
+  if (!inputHrs || inputHrs <= 0) { alert('Please enter valid number of hours.'); return; }
+  if (!date) { alert('Please select a date.'); return; }
+
+  const emp = EMPLOYEES[empKey];
+  if (!emp) { alert('Employee not found.'); return; }
+
+  // Calculate current balances before deducting
+  const accr = calcEmployeeAccruals(emp.monthlyRecords || [], emp.firstClockIn, emp.vacTaken || 0, emp.sickTaken || 0);
+
+  // Apply to correct balance — with eligibility and balance guards
+  if (type === 'Sick') {
+    if (days > accr.sickBal) {
+      alert(`❌ Cannot record time-off. ${emp.name} only has ${daysToHrs(accr.sickBal)} sick hours available.`);
+      return;
+    }
+    emp.sickTaken = +(( emp.sickTaken || 0) + days).toFixed(2);
+  } else if (type === 'Vacation' || type === 'Vacation Liquidation (Payout)') {
+    if (!accr.vacationEligible && type !== 'Vacation Liquidation (Payout)') {
+      alert(`⚠️ ${emp.name} has not completed 1 year of service and cannot use vacation yet (PR Act 180). Vacation accrues but cannot be claimed until the 1-year anniversary.`);
+      return;
+    }
+    if (days > accr.vacationBal) {
+      alert(`❌ Cannot record time-off. ${emp.name} only has ${daysToHrs(accr.vacationBal)} vacation hours available.`);
+      return;
+    }
+    emp.vacTaken  = +(( emp.vacTaken  || 0) + days).toFixed(2);
+  }
+
+  // ── Duplicate check: pending or approved request for same employee/date/type? ──
+  const dupRequest = TIME_OFF_REQUESTS.find(r =>
+    (r.empKey === empKey || r.empName === emp.name) &&
+    r.type === type &&
+    r.start <= date && r.end >= date &&
+    (r.status === 'pending' || r.status === 'approved')
+  );
+  if (dupRequest) {
+    const statusLabel = dupRequest.status === 'approved' ? 'already approved' : 'still pending';
+    if (!confirm(`⚠️ Duplicate detected!\n\n${emp.name} has a ${dupRequest.status} request for ${dupRequest.type} covering ${dupRequest.start}→${dupRequest.end} (${daysToHrs(dupRequest.days)} hrs) — ${statusLabel}.\n\nRecording this manually may double-deduct their balance. Continue anyway?`)) return;
+  }
+
+  // ── Duplicate check: already manually logged for same date+type? ──
+  const dupLog = (emp.timeOffLog || []).find(l => l.date === date && l.type === type);
+  if (dupLog) {
+    if (!confirm(`⚠️ Duplicate detected!\n\n${emp.name} already has a ${type} entry on ${date} (${daysToHrs(dupLog.days)} hrs, recorded ${new Date(dupLog.recordedAt).toLocaleDateString()}).\n\nContinue anyway?`)) return;
+  }
+
+  // Log it
+  if (!emp.timeOffLog) emp.timeOffLog = [];
+  const accrBeforeManual = calcEmployeeAccruals(emp.monthlyRecords||[], emp.firstClockIn, emp.vacTaken||0, emp.sickTaken||0);
+  const logEntry = {
+    type, days, date, notes,
+    recordedBy: currentUser?.name || currentUser?.pin || 'admin',
+    recordedAt: new Date().toISOString(),
+    source: 'manual_entry',
+    balanceBefore: type === 'Sick' ? accrBeforeManual.sickBal : accrBeforeManual.vacationBal
+  };
+  emp.timeOffLog.push(logEntry);
+
+  recalculateAll();
+
+  // ── Save to Supabase immediately ──────────────────────────
+  _setSaveStatus('saving');
+  try {
+    await saveEmployee(emp);
+    await saveTimeOffEntry(emp, logEntry);
+    await writeAuditLog('TIME_OFF_RECORDED',
+      `${emp.name} — ${type} — ${daysToHrs(days)} hrs on ${date}${notes ? ' — ' + notes : ''}`);
+    _setSaveStatus('saved');
+  } catch(e) {
+    console.warn('Time-off save error:', e);
+    _setSaveStatus('error');
+  }
+  _cacheToLocal();
+  // ─────────────────────────────────────────────────────────
+
+  // Show confirmation
+  const btn = document.getElementById('rtoSubmitBtn');
+  btn.textContent = '✅ Recorded!';
+  btn.style.background = '#16a34a';
+  setTimeout(() => {
+    btn.textContent = 'Record Time-Off';
+    btn.style.background = '';
+    // Reset form
+    document.getElementById('rtoEmployeeSel').value = '';
+    document.getElementById('rtoDays').value = '';
+    document.getElementById('rtoDate').value = '';
+    document.getElementById('rtoNotes').value = '';
+  }, 2000);
+}
+
+// Toggle inactive employees in Record Time-Off
+function toggleInactiveEmployees(checked) {
+  const sel = document.getElementById('rtoEmployeeSel');
+  if (!sel) return;
+  const list = checked
+    ? Object.entries(EMPLOYEES)
+    : Object.entries(EMPLOYEES).filter(([k,e]) => e.status === 'active');
+  sel.innerHTML = '<option value="">Select employee...</option>' +
+    list.sort((a,b) => a[1].name.localeCompare(b[1].name))
+        .map(([k,e]) => `<option value="${k}">${e.name}${e.status!=='active'?' (inactive)':''}</option>`).join('');
+}
+
+// ══════════════════════════════════════════
+// DATA PERSISTENCE — Proper Supabase tables
+// ══════════════════════════════════════════
+
+// ── Save status indicator ──────────────────────────────────
+function _setSaveStatus(state, msg) {
+  // state: 'saving' | 'saved' | 'error'
+  const el = document.getElementById('saveStatusBadge');
+  if (!el) return;
+  if (state === 'saving') {
+    el.textContent = 'Saving…';
+    el.style.background = 'var(--warn-wash)';
+    el.style.color = 'var(--warn)';
+  } else if (state === 'saved') {
+    const now = new Date().toLocaleString('en-US', { timeZone: 'America/Puerto_Rico', hour12: true, month:'short', day:'numeric', hour:'numeric', minute:'2-digit' });
+    el.textContent = 'Saved ' + now;
+    el.style.background = 'transparent';
+    el.style.color = 'var(--text-light)';
+    const sb = document.getElementById('sBackup');
+    if (sb) sb.textContent = now;
+    try { localStorage.setItem('cfa_losfiltros_backup_time', now); } catch(e){}
+  } else {
+    el.textContent = 'Save failed — check connection';
+    el.style.background = 'var(--bad-wash)';
+    el.style.color = 'var(--bad)';
+  }
+}
+
+// ── Audit log writer ──────────────────────────────────────
+async function writeAuditLog(action, details) {
+  try {
+    await getSupa().from('audit_log').insert({
+      action,
+      details,
+      performed_by: currentUser?.name || currentUser?.pin || 'admin',
+    });
+  } catch(e) { console.warn('Audit log write failed:', e.message); }
+}
+
+// ── localStorage fallback cache ───────────────────────────
+function _cacheToLocal() {
+  try {
+    localStorage.setItem('cfa_losfiltros_employees', JSON.stringify(EMPLOYEES));
+    localStorage.setItem('cfa_losfiltros_periods',   JSON.stringify(IMPORTED_PERIODS));
+    localStorage.setItem('cfa_losfiltros_requests',  JSON.stringify(TIME_OFF_REQUESTS));
+    localStorage.setItem('cfa_losfiltros_meals',     JSON.stringify(MEAL_PENALTIES));
+  } catch(e) { console.warn('localStorage cache failed:', e); }
+}
+
+// ── Save a single employee's core fields to Supabase ─────
+async function saveEmployee(emp) {
+  // emp must have a supabase_id (uuid) to update; otherwise insert
+  if (!emp.supabase_id) {
+    const { data, error } = await getSupa().from('employees').insert({
+      name:          emp.name,
+      type:          emp.type || 'hourly',
+      status:        emp.status || 'active',
+      first_clock_in: emp.firstClockIn || null,
+      vac_taken:     emp.vacTaken || 0,
+      sick_taken:    emp.sickTaken || 0,
+    }).select('id').single();
+    if (!error && data) emp.supabase_id = data.id;
+    return;
+  }
+  await getSupa().from('employees').update({
+    name:           emp.name,
+    type:           emp.type || 'hourly',
+    status:         emp.status || 'active',
+    first_clock_in: emp.firstClockIn || null,
+    vac_taken:      +(emp.vacTaken || 0),
+    sick_taken:     +(emp.sickTaken || 0),
+    updated_at:     new Date().toISOString(),
+  }).eq('id', emp.supabase_id);
+}
+
+// ── Save a time-off log entry to Supabase ────────────────
+async function saveTimeOffEntry(emp, logEntry) {
+  if (!emp.supabase_id) return;
+  try {
+    await getSupa().from('time_off_log').insert({
+      employee_id:   emp.supabase_id,
+      type:          logEntry.type,
+      days:          logEntry.days,
+      start_date:    logEntry.date || null,
+      end_date:      logEntry.date || null,
+      notes:         logEntry.notes || null,
+      balance_before: logEntry.balanceBefore != null ? logEntry.balanceBefore : null,
+      recorded_by:   logEntry.recordedBy || null,
+    });
+  } catch(e) { console.warn('Time-off log insert failed:', e.message); }
+}
+
+// ── Main save — called after every meaningful action ─────
+async function saveToStorage() {
+  _setSaveStatus('saving');
+  _cacheToLocal();
+  try {
+    // Settings / Slack config
+    // Only write the Slack config when its settings field is on the page; otherwise
+    // this would overwrite the stored webhook with an empty value on every save.
+    const slackEl = document.getElementById('slackWebhook');
+    if (slackEl) {
+      const slackCfg = { webhookUrl: slackEl.value || '', notifOnApprove: true, notifOnRequest: true };
+      await getSupa().from('app_settings').upsert({ key: 'slack', value: slackCfg }, { onConflict: 'key' });
+    }
+
+    if (!window._hubSettingsLoaded) {
+      // Stored meals/requests were never read — refuse to overwrite them.
+      console.warn('saveToStorage: skipped meals/requests save because they were not loaded from Supabase');
+      _setSaveStatus('error');
+      return;
+    }
+
+    // Requests (small table, full upsert)
+    if (TIME_OFF_REQUESTS.length) {
+      const reqPayload = { key: 'requests', value: TIME_OFF_REQUESTS };
+      await getSupa().from('app_settings').upsert(reqPayload, { onConflict: 'key' });
+    }
+
+    // Meals (small table, full upsert)
+    const mealsPayload = { key: 'meals', value: MEAL_PENALTIES };
+    await getSupa().from('app_settings').upsert(mealsPayload, { onConflict: 'key' });
+
+    _setSaveStatus('saved');
+  } catch(e) {
+    console.warn('saveToStorage error:', e.message);
+    _setSaveStatus('error');
+  }
+}
+
+// ── Read every row of a table ─────────────────────────────
+// Supabase returns at most 1,000 rows per request. Reading hours or time-off with a single
+// request would silently drop rows once a table passes 1,000, and Merge duplicates would then
+// re-save only what was loaded. This pages through the table, checks the total against the
+// database's own count, and falls back to one request per employee if they ever disagree.
+async function _selectAll(table, orderCols, perEmployeeFallback) {
+  const PAGE = 1000, rows = [];
+  for (let page = 0; page < 200; page++) {
+    let q = getSupa().from(table).select('*');
+    for (const c of orderCols) q = q.order(c, { ascending: true });
+    const { data, error } = await q.range(page * PAGE, page * PAGE + PAGE - 1);
+    if (error) return { data: null, error };
+    rows.push(...(data || []));
+    if (!data || data.length < PAGE) break;
+  }
+  try {
+    const { count, error } = await getSupa().from(table).select('*', { count: 'exact', head: true });
+    if (!error && typeof count === 'number' && count !== rows.length) {
+      console.warn(`[hub] ${table}: read ${rows.length} of ${count} rows; re-reading one employee at a time`);
+      if (!perEmployeeFallback) return { data: null, error: { message: `Only ${rows.length} of ${count} ${table} rows could be read` } };
+      const all = [];
+      for (const empId of perEmployeeFallback()) {
+        const { data, error: e2 } = await getSupa().from(table).select('*').eq('employee_id', empId);
+        if (e2) return { data: null, error: e2 };
+        all.push(...(data || []));
+      }
+      if (all.length !== count) return { data: null, error: { message: `Only ${all.length} of ${count} ${table} rows could be read` } };
+      return { data: all, error: null };
+    }
+  } catch (e) { /* count not available: keep the paged result */ }
+  return { data: rows, error: null };
+}
+const _empIdsLoaded = () => Object.values(EMPLOYEES).map(e => e.supabase_id).filter(Boolean);
+
+// ── Load all data from Supabase on startup ────────────────
+async function loadFromStorage() {
+  try {
+    // Load employees
+    const { data: empRows, error: empErr } = await _selectAll('employees', ['name', 'id']);
+    if (!empErr && empRows && empRows.length) {
+      for (const row of empRows) {
+        const key = row.name.toLowerCase().replace(/\s+/g, '_');
+        const existing = EMPLOYEES[key] || {};
+        EMPLOYEES[key] = {
+          ...existing,
+          supabase_id:  row.id,
+          name:         row.name,
+          type:         row.type || 'hourly',
+          status:       row.status || 'active',
+          firstClockIn: row.first_clock_in || null,
+          vacTaken:     parseFloat(row.vac_taken) || 0,
+          sickTaken:    parseFloat(row.sick_taken) || 0,
+          monthlyRecords: existing.monthlyRecords || [],
+          timeOffLog:   existing.timeOffLog || [],
+        };
+      }
+      console.log(`✅ Loaded ${empRows.length} employees from Supabase`);
+    }
+
+    // Load monthly records
+    const { data: mrRows, error: mrErr } = await _selectAll('monthly_records', ['employee_id', 'year', 'month'], _empIdsLoaded);
+    window._hubHoursComplete = !mrErr;
+    if (mrErr) console.error('[hub] Hours could not be fully loaded:', mrErr.message);
+    if (!mrErr && mrRows && mrRows.length) {
+      // Clear existing monthly records first to avoid duplication
+      for (const emp of Object.values(EMPLOYEES)) emp.monthlyRecords = [];
+      // Map by employee supabase_id
+      const empById = {};
+      for (const emp of Object.values(EMPLOYEES)) {
+        if (emp.supabase_id) empById[emp.supabase_id] = emp;
+      }
+      for (const row of mrRows) {
+        const emp = empById[row.employee_id];
+        if (emp) {
+          emp.monthlyRecords.push({
+            year:        row.year,
+            month:       row.month,
+            hoursWorked: parseFloat(row.hours_worked),
+            reportStart: row.report_start,
+            reportEnd:   row.report_end,
+          });
+        }
+      }
+      console.log(`✅ Loaded ${mrRows.length} monthly records from Supabase`);
+    }
+
+    // Load time-off log entries
+    const { data: tolRows, error: tolErr } = await _selectAll('time_off_log', ['recorded_at', 'employee_id', 'start_date', 'type'], _empIdsLoaded);
+    window._hubTimeOffComplete = !tolErr;
+    if (tolErr) console.error('[hub] Time-off log could not be fully loaded:', tolErr.message);
+    if (!tolErr && tolRows && tolRows.length) {
+      for (const emp of Object.values(EMPLOYEES)) emp.timeOffLog = [];
+      const empById = {};
+      for (const emp of Object.values(EMPLOYEES)) {
+        if (emp.supabase_id) empById[emp.supabase_id] = emp;
+      }
+      for (const row of tolRows) {
+        const emp = empById[row.employee_id];
+        if (emp) {
+          emp.timeOffLog.push({
+            type:          row.type,
+            days:          parseFloat(row.days),
+            date:          row.start_date,
+            notes:         row.notes || '',
+            balanceBefore: row.balance_before != null ? parseFloat(row.balance_before) : null,
+            recordedBy:    row.recorded_by || 'admin',
+            recordedAt:    row.recorded_at,
+            source:        'manual_entry',
+          });
+        }
+      }
+      console.log(`✅ Loaded ${tolRows.length} time-off log entries from Supabase`);
+    }
+
+    // Load imported periods
+    const { data: ipRows, error: ipErr } = await _selectAll('imported_periods', ['month_key']);
+    if (!ipErr && ipRows && ipRows.length) {
+      for (const row of ipRows) {
+        IMPORTED_PERIODS[row.month_key] = {
+          monthKey:   row.month_key,
+          start:      row.start_date,
+          end:        row.end_date,
+          empCount:   row.emp_count,
+          totalHours: parseFloat(row.total_hours),
+        };
+      }
+      console.log(`✅ Loaded ${ipRows.length} pay periods from Supabase`);
+    }
+
+    // Load requests and meals from app_settings
+    const { data: settRows, error: settErr } = await getSupa().from('app_settings').select('*');
+    // Data-safety guard: only allow saving meals/requests back once they were read successfully,
+    // so a failed load can never overwrite the stored lists with empty ones.
+    if (!settErr && Array.isArray(settRows)) window._hubSettingsLoaded = true;
+    if (settRows) {
+      for (const row of settRows) {
+        if (row.key === 'requests' && Array.isArray(row.value)) {
+          TIME_OFF_REQUESTS.length = 0;
+          TIME_OFF_REQUESTS.push(...row.value);
+        }
+        if (row.key === 'meals' && Array.isArray(row.value)) {
+          MEAL_PENALTIES.length = 0;
+          MEAL_PENALTIES.push(...row.value);
+        }
+      }
+    }
+
+  } catch(e) {
+    console.warn('Supabase load failed, trying localStorage:', e.message);
+    try {
+      const empData = localStorage.getItem('cfa_losfiltros_employees');
+      if (empData) Object.assign(EMPLOYEES, JSON.parse(empData));
+      const periodData = localStorage.getItem('cfa_losfiltros_periods');
+      if (periodData) Object.assign(IMPORTED_PERIODS, JSON.parse(periodData));
+      const reqData = localStorage.getItem('cfa_losfiltros_requests');
+      if (reqData) { TIME_OFF_REQUESTS.length = 0; TIME_OFF_REQUESTS.push(...JSON.parse(reqData)); }
+      const mp = localStorage.getItem('cfa_losfiltros_meals');
+      if (mp) { MEAL_PENALTIES.length = 0; MEAL_PENALTIES.push(...JSON.parse(mp)); }
+    } catch(e2) { console.warn('localStorage load also failed:', e2); }
+  }
+
+  // Restore UI state
+  const backupTime = localStorage.getItem('cfa_losfiltros_backup_time');
+  if (backupTime) { const sb = document.getElementById('sBackup'); if(sb) sb.textContent = backupTime; }
+
+  const allMonths = Object.keys(IMPORTED_PERIODS).sort();
+  if (allMonths.length) {
+    const first = IMPORTED_PERIODS[allMonths[0]];
+    const last  = IMPORTED_PERIODS[allMonths[allMonths.length - 1]];
+    const sr    = document.getElementById('sRange');
+    if (sr) sr.textContent = (first?.start || allMonths[0]) + ' → ' + (last?.end || allMonths[allMonths.length - 1]);
+  }
+
+  document.getElementById('sActive').textContent   = Object.values(EMPLOYEES).filter(e => e.status === 'active').length;
+  document.getElementById('sInactive').textContent = Object.values(EMPLOYEES).filter(e => e.status !== 'active').length;
+
+  populateEmployeeDropdowns();
+  recalculateAll();
+  migrateMealPenalties();
+}
+
+// ── Auto-save every 5 minutes ─────────────────────────────
+setInterval(() => { if (currentUser) saveToStorage(); }, 5 * 60 * 1000);
+window.addEventListener('load', initReconciliationUI);
+
+// ── Manual backup button ──────────────────────────────────
+async function doBackup() {
+  const btn = document.querySelector('[onclick="doBackup()"]');
+  if (btn) { btn.textContent = '⏳ Saving...'; btn.disabled = true; }
+  try {
+    await saveToStorage();
+    await writeAuditLog('MANUAL_BACKUP', 'User triggered manual backup');
+    showToast('✅ Backup saved to cloud!');
+  } catch(e) {
+    showToast('❌ Backup failed: ' + e.message);
+  } finally {
+    if (btn) { btn.textContent = '💾 Backup Now'; btn.disabled = false; }
+  }
+}
+
+// Team data loads in doLogin(), right after sign-in.
+
+
+// ══════════════════════════════════════════
+// TESTING HELPERS
+// ══════════════════════════════════════════
+function clearPeriodLock() {
+  IMPORTED_PERIODS = {};
+  try { localStorage.removeItem('cfa_losfiltros_periods'); } catch(e){}
+  const fi = document.getElementById('wageFile');
+  if (fi) fi.value = '';
+  const dz = document.getElementById('importDropzone');
+  if (dz) dz.style.borderColor = '';
+  const st = document.getElementById('importStatus');
+  if (st) st.style.display = 'none';
+  const out = document.getElementById('testOutput');
+  if (out) { out.style.display='block'; out.style.color='#16a34a'; out.style.whiteSpace='normal';
+    out.textContent='✅ Month lock cleared — you can now re-upload the same month to overwrite it.'; }
+}
+
+function clearAllData() {
+  if (!confirm('⚠️ This will delete ALL imported employee data and balances. Are you sure?')) return;
+  Object.keys(EMPLOYEES).forEach(k => delete EMPLOYEES[k]);
+  IMPORTED_PERIODS = {};
+  try {
+    localStorage.removeItem('cfa_losfiltros_employees');
+    localStorage.removeItem('cfa_losfiltros_periods');
+    localStorage.removeItem('cfa_losfiltros_backup_time');
+  } catch(e){}
+  recalculateAll();
+  const sr = document.getElementById('sRange'); if(sr) sr.textContent='No data yet';
+  const sb = document.getElementById('sBackup'); if(sb) sb.textContent='Never';
+  const out = document.getElementById('testOutput');
+  if (out) { out.style.display='block'; out.style.color='var(--red)'; out.style.whiteSpace='normal';
+    out.textContent='🗑 All data cleared.'; }
+}
+
+function showImportedPeriods() {
+  const out = document.getElementById('testOutput');
+  if (!out) return;
+  out.style.display = 'block';
+  out.style.whiteSpace = 'pre';
+  const months = Object.keys(IMPORTED_PERIODS).sort();
+  if (!months.length) {
+    out.style.color='var(--text-mid)'; out.textContent='No months imported yet.'; return;
+  }
+  const sampleEmp = Object.values(EMPLOYEES)[0];
+  let detail = '';
+  if (sampleEmp) {
+    detail = '\n\nSample: ' + sampleEmp.name;
+    for (const rec of (sampleEmp.monthlyRecords||[])) {
+      const qualified = rec.hoursWorked >= 130;
+      detail += '\n  '+rec.year+'-'+String(rec.month).padStart(2,'0')+
+        ': '+rec.hoursWorked.toFixed(1)+' hrs' +
+        ' → '+(qualified ? 'QUALIFIES ✅ (≥130 hrs)' : 'DOES NOT QUALIFY ❌ (<130 hrs)');
+    }
+  }
+  out.style.color='var(--navy)';
+  out.innerHTML='<strong>Imported months:</strong>\n'+months.join('\n')+detail;
+}
+
+// ══════════════════════════════════════════
+// ADD EMPLOYEE — saves to EMPLOYEES object
+// ══════════════════════════════════════════
+async function submitAddEmployee() {
+  const first  = document.getElementById('empFirst').value.trim();
+  const last   = document.getElementById('empLast').value.trim();
+  const pin    = document.getElementById('empPin').value.trim();
+  const type   = document.getElementById('empType').value;
+  const date   = document.getElementById('empDate').value;
+  const status = document.getElementById('empStatus').value;
+
+  if (!first || !last) { alert('Please enter first and last name.'); return; }
+
+  // Build key same way as importer: "Last, First" normalized
+  const fullName = last + ', ' + first;
+  const key = fullName.toLowerCase().replace(/\s+/g,'_');
+
+  EMPLOYEES[key] = {
+    name: fullName,
+    type: type.toLowerCase(),
+    status: status.toLowerCase(),
+    firstClockIn: date || new Date().toISOString().slice(0,10),
+    pin: pin || null,
+    vacTaken: 0,
+    sickTaken: 0,
+    monthlyRecords: [],
+    timeOffLog: []
+  };
+
+  (async () => {
+    try {
+      _setSaveStatus('saving');
+      await saveEmployee(EMPLOYEES[key]);
+      await writeAuditLog('EMPLOYEE_ADDED', `${fullName} — start date: ${date || 'today'}`);
+      _setSaveStatus('saved');
+    } catch(e) { console.warn('Add employee save error:', e); _setSaveStatus('error'); }
+  })();
+  _cacheToLocal();
+  recalculateAll();
+  populateEmployeeDropdowns();
+  updateEmployeesTab();
+
+  // Update stat cards
+  document.getElementById('sActive').textContent   = Object.values(EMPLOYEES).filter(e=>e.status==='active').length;
+  document.getElementById('sInactive').textContent = Object.values(EMPLOYEES).filter(e=>e.status!=='active').length;
+
+  cm('addEmpModal');
+  // Clear form
+  ['empFirst','empLast','empPin','empDate'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+
+  showToast('✅ Employee ' + fullName + ' added!');
+}
+
+// ══════════════════════════════════════════
+// EMPLOYEES TAB — live table from EMPLOYEES
+// ══════════════════════════════════════════
+
+
+
+// ══════════════════════════════════════════
+// TOAST NOTIFICATION
+// ══════════════════════════════════════════
+function showToast(msg) {
+  let toast = document.getElementById('toastMsg');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'toastMsg';
+    toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:var(--navy);color:#fff;' +
+      'padding:12px 20px;border-radius:10px;font-size:.87rem;font-weight:500;z-index:500;' +
+      'box-shadow:0 4px 20px rgba(0,0,0,.25);transition:opacity .3s;max-width:320px';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.style.opacity = '1';
+  toast.style.display = 'block';
+  clearTimeout(toast._timer);
+  toast._timer = setTimeout(() => { toast.style.opacity='0'; setTimeout(()=>toast.style.display='none',300); }, 3000);
+}
+
+// Startup hydration handled inside loadFromStorage (called by window load event above)
+
+// ══════════════════════════════════════════
+// EMPLOYEES TAB — search + filter + balance columns
+// ══════════════════════════════════════════
+function updateEmployeesTab() {
+  filterEmployeesTab();
+}
+
+function filterEmployeesTab() {
+  const search     = (document.getElementById('empSearch')?.value || '').toLowerCase();
+  const typeFilter = (document.getElementById('empTypeFilter')?.value || '').toLowerCase();
+  const statFilter = (document.getElementById('empStatusFilter')?.value || '').toLowerCase();
+  const tbody = document.getElementById('empTbody');
+  if (!tbody) return;
+
+  const emps = Object.entries(EMPLOYEES)
+    .filter(([k,e]) => {
+      if (typeFilter && (e.type||'hourly').toLowerCase() !== typeFilter) return false;
+      if (statFilter && (e.status||'active').toLowerCase() !== statFilter) return false;
+      if (search && !e.name.toLowerCase().includes(search)) return false;
+      return true;
+    })
+    .sort((a,b) => a[1].name.localeCompare(b[1].name));
+
+  if (!emps.length) {
+    tbody.innerHTML = '<tr><td colspan="8"><div class="empty"><div class="ei">👥</div><p>No employees match.</p></div></td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = emps.map(([key,emp]) => {
+    const accruals = calcEmployeeAccruals(emp.monthlyRecords||[], emp.firstClockIn, emp.vacTaken||0, emp.sickTaken||0);
+    const tenure   = getTenureString(emp.firstClockIn);
+    const sickBal  = accruals.sickBal;
+    const vacBal   = accruals.vacationBal;
+    return `<tr>
+      <td><a href="#" style="color:var(--navy);font-weight:600;text-decoration:none" onclick="showEmpDetail('${key}');return false">${emp.name}</a></td>
+      <td><span class="badge bg-teal">${emp.type||'hourly'}</span></td>
+      <td><span class="badge ${emp.status==='active'?'bg-green':'bg-gray'}">${emp.status||'active'}</span></td>
+      <td style="font-size:.8rem">${emp.firstClockIn||'—'}</td>
+      <td style="font-weight:600;color:${sickBal<=0?'var(--red)':'#0f766e'}">${daysToHrs(sickBal)} hrs</td>
+      <td style="font-weight:600;color:${vacBal<=0?'var(--red)':'var(--navy)'}">${daysToHrs(vacBal)} hrs${!accruals.vacationEligible?' <span style="font-size:.65rem;color:#d97706">⚠</span>':''}</td>
+      <td style="font-size:.78rem;color:var(--text-light)">${tenure}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm" onclick="showEmpDetail('${key}')">View</button>
+        <button class="btn btn-sm" title="${emp.status==='active'?'Mark inactive':'Reactivate'}" onclick="toggleEmployeeStatus('${key}')"
+          style="${emp.status==='active' ? 'color:#b45309;border-color:#b45309' : 'color:#16a34a;border-color:#16a34a'}">
+          ${emp.status==='active' ? '🚫' : '✅'}
+        </button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function editHireDate(empKey) {
+  const emp = EMPLOYEES[empKey];
+  if (!emp) return;
+  const current = emp.firstClockIn || '';
+  const input = prompt(
+    `Edit hire date for ${emp.name}\n\nEnter the correct hire date (YYYY-MM-DD format):\nCurrent: ${current || 'Not set'}`,
+    current
+  );
+  if (input === null) return; // cancelled
+  const trimmed = input.trim();
+  if (trimmed && !/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    alert('Invalid date format. Please use YYYY-MM-DD (e.g. 2022-08-15)');
+    return;
+  }
+  emp.firstClockIn = trimmed || null;
+  (async () => {
+    try {
+      _setSaveStatus('saving');
+      await saveEmployee(emp);
+      await writeAuditLog('HIRE_DATE_EDITED', `${emp.name} — new hire date: ${trimmed || 'cleared'}`);
+      _setSaveStatus('saved');
+    } catch(e) { console.warn('Hire date save error:', e); _setSaveStatus('error'); }
+  })();
+  _cacheToLocal();
+  recalculateAll();
+  showEmpDetail(empKey);
+  showToast(`✅ Hire date updated for ${emp.name}`);
+}
+
+// ══════════════════════════════════════════
+// REMOVE EMPLOYEE — mark inactive (soft, default) or delete permanently
+// ══════════════════════════════════════════
+async function toggleEmployeeStatus(key) {
+  const emp = EMPLOYEES[key];
+  if (!emp) return;
+  const goingInactive = (emp.status || 'active') === 'active';
+  if (goingInactive && !confirm(
+    `Mark ${emp.name} as inactive?\n\n` +
+    `They'll drop off active views and stop accruing sick/vacation, but all history ` +
+    `(hours, balances, time-off log) is kept for Act 180 compliance records. You can reactivate them later.`
+  )) return;
+
+  emp.status = goingInactive ? 'inactive' : 'active';
+  (async () => {
+    try {
+      _setSaveStatus('saving');
+      await saveEmployee(emp);
+      await writeAuditLog(goingInactive ? 'EMPLOYEE_DEACTIVATED' : 'EMPLOYEE_REACTIVATED', emp.name);
+      _setSaveStatus('saved');
+    } catch(e) { console.warn('Status toggle save error:', e); _setSaveStatus('error'); }
+  })();
+  _cacheToLocal();
+  recalculateAll();
+  populateEmployeeDropdowns();
+  updateEmployeesTab();
+  document.getElementById('sActive').textContent   = Object.values(EMPLOYEES).filter(e=>e.status==='active').length;
+  document.getElementById('sInactive').textContent = Object.values(EMPLOYEES).filter(e=>e.status!=='active').length;
+  showEmpDetail(key);
+  showToast(goingInactive ? `🚫 ${emp.name} marked inactive.` : `✅ ${emp.name} reactivated.`);
+}
+
+async function deleteEmployeeHard(key) {
+  const emp = EMPLOYEES[key];
+  if (!emp) return;
+  if (!confirm(
+    `⚠️ PERMANENTLY DELETE ${emp.name}?\n\n` +
+    `This erases their entire record — all hours, sick/vacation balances, and time-off history. ` +
+    `This cannot be undone and may affect Act 180 compliance records.\n\n` +
+    `Consider "Mark Inactive" instead if you just need them off active lists.`
+  )) return;
+  if (!confirm(`Last chance — permanently delete ${emp.name}? This cannot be undone.`)) return;
+
+  (async () => {
+    try {
+      _setSaveStatus('saving');
+      if (emp.supabase_id) {
+        await getSupa().from('time_off_log').delete().eq('employee_id', emp.supabase_id);
+        await getSupa().from('monthly_records').delete().eq('employee_id', emp.supabase_id);
+        await getSupa().from('employees').delete().eq('id', emp.supabase_id);
+      }
+      await writeAuditLog('EMPLOYEE_DELETED', `${emp.name} — permanently removed`);
+      _setSaveStatus('saved');
+    } catch(e) { console.warn('Delete employee error:', e); _setSaveStatus('error'); }
+  })();
+
+  delete EMPLOYEES[key];
+  _cacheToLocal();
+  recalculateAll();
+  populateEmployeeDropdowns();
+  updateEmployeesTab();
+  document.getElementById('sActive').textContent   = Object.values(EMPLOYEES).filter(e=>e.status==='active').length;
+  document.getElementById('sInactive').textContent = Object.values(EMPLOYEES).filter(e=>e.status!=='active').length;
+  cm('empDetailModal');
+  showToast(`🗑 ${emp.name} permanently deleted.`);
+}
+
+// Convert days to hours for display (1 day = 8 hours per PR Act 180)
+function daysToHrs(days) {
+  return (Math.round(days * 8 * 100) / 100);  // e.g. 0.5 → 4, 0.75 → 6, 1 → 8
+}
+
+function getTenureString(firstClockIn) {
+  if (!firstClockIn) return '—';
+  const months = Math.floor((Date.now() - new Date(firstClockIn)) / (1000*60*60*24*30.44));
+  if (months >= 12) return Math.floor(months/12) + 'y ' + (months%12) + 'm';
+  return months + ' mo';
+}
+
+// ══════════════════════════════════════════
+// EMPLOYEE DETAIL VIEW
+// ══════════════════════════════════════════
+function showEmpDetail(key) {
+  const emp = EMPLOYEES[key];
+  if (!emp) return;
+
+  const accruals = calcEmployeeAccruals(emp.monthlyRecords||[], emp.firstClockIn, emp.vacTaken||0, emp.sickTaken||0);
+
+  document.getElementById('empDetailName').textContent = emp.name;
+  document.getElementById('detSickE').textContent = daysToHrs(accruals.sickEarned) + ' hrs';
+  document.getElementById('detSickT').textContent = daysToHrs(emp.sickTaken||0) + ' hrs';
+  document.getElementById('detSickB').textContent = daysToHrs(accruals.sickBal) + ' hrs';
+  document.getElementById('detVacE').textContent  = daysToHrs(accruals.vacationEarned) + ' hrs';
+  document.getElementById('detVacT').textContent  = daysToHrs(emp.vacTaken||0) + ' hrs';
+  document.getElementById('detVacB').textContent  = daysToHrs(accruals.vacationBal) + ' hrs';
+
+  document.getElementById('detType').innerHTML    = `<span class="badge bg-teal">${emp.type||'hourly'}</span>`;
+  document.getElementById('detStatus').innerHTML  = `<span class="badge ${emp.status==='active'?'bg-green':'bg-gray'}">${emp.status||'active'}</span>`;
+  document.getElementById('detTenure').innerHTML =
+    '📅 Tenure: ' + getTenureString(emp.firstClockIn) +
+    ' &nbsp;<button onclick="editHireDate(\'' + key + '\')" ' +
+    'style="font-size:.65rem;padding:2px 7px;border:1px solid #94a3b8;border-radius:4px;cursor:pointer;background:#fff;color:#475569;margin-left:4px">' +
+    '✏️ Edit hire date</button>';
+  document.getElementById('detEligible').textContent = accruals.vacationEligible
+    ? '✅ Vacation eligible' : '⚠️ Vacation not usable until 1yr';
+
+  const isActive = (emp.status || 'active') === 'active';
+  document.getElementById('detActions').innerHTML = `
+    <button class="btn btn-sm" onclick="toggleEmployeeStatus('${key}')"
+      style="${isActive ? 'color:#b45309;border-color:#b45309' : 'color:#16a34a;border-color:#16a34a'}">
+      ${isActive ? '🚫 Mark Inactive' : '✅ Reactivate'}
+    </button>
+    <button class="btn btn-red2 btn-sm" onclick="deleteEmployeeHard('${key}')">🗑 Delete Permanently</button>
+  `;
+
+  // Monthly breakdown table
+  const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const tbody = document.getElementById('detMonthlyTbody');
+  if (!(emp.monthlyRecords||[]).length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="padding:12px;text-align:center;color:#888">No months imported yet.</td></tr>';
+  } else {
+    tbody.innerHTML = (emp.monthlyRecords||[])
+      .sort((a,b) => a.year!==b.year ? a.year-b.year : a.month-b.month)
+      .map(rec => {
+        const avg = (rec.hoursWorked/4.33).toFixed(1);
+        // Compute completed years of service at the start of this month
+        const startDate = emp.firstClockIn ? new Date(emp.firstClockIn) : null;
+        const monthStart = new Date(rec.year, rec.month - 1, 1);
+        const completedYears = startDate
+          ? Math.max(0, Math.floor((monthStart - startDate) / (1000*60*60*24*365.25)))
+          : 0;
+        const acr = calcMonthlyAccrual(rec.hoursWorked, completedYears);
+        const tierColor = acr.tier==='none'?'#888':'#166534';
+        const tierLabel = acr.tier==='none'?'None ❌'
+          : acr.tier==='year1'?'Yr1 (½/day) ✅'
+          : acr.tier==='year1to5'?'Yr1-5 (¾/day) ✅'
+          : acr.tier==='year5to15'?'Yr5-15 (1/day) ✅'
+          : 'Yr15+ (1¼/day) ✅';
+        const qualBg    = acr.qualified ? '#dcfce7' : '#fee2e2';
+        const qualColor = acr.qualified ? '#166534' : '#991b1b';
+        const qualLabel = acr.qualified ? '✓ Qualifies' : '✗ < 130 hrs';
+        return `<tr style="border-bottom:1px solid #f0f0f0">
+          <td style="padding:7px 10px">${monthNames[rec.month-1]} ${rec.year}</td>
+          <td style="padding:7px 10px;text-align:right">${rec.hoursWorked.toFixed(1)}</td>
+          <td style="padding:7px 10px;text-align:right">${avg}</td>
+          <td style="padding:7px 10px;text-align:center;color:${tierColor};font-weight:600;font-size:.75rem">${tierLabel}</td>
+          <td style="padding:7px 10px;text-align:right;color:#0f766e;font-weight:600">+${daysToHrs(acr.sickEarned)} hrs</td>
+          <td style="padding:7px 10px;text-align:right;color:var(--navy);font-weight:600">+${daysToHrs(acr.vacationEarned)} hrs</td>
+          <td style="padding:7px 10px;text-align:center">
+            <span style="font-size:.7rem;background:${qualBg};color:${qualColor};padding:2px 7px;border-radius:10px">${qualLabel}</span>
+          </td>
+        </tr>`;
+      }).join('');
+  }
+
+  // Time-off log
+  const logEl = document.getElementById('detTimeOffLog');
+  if (!(emp.timeOffLog||[]).length) {
+    logEl.textContent = 'No time-off recorded.';
+  } else {
+    logEl.innerHTML = '<table style="width:100%;font-size:.78rem;border-collapse:collapse">' +
+      '<thead><tr style="background:#f8f9fa">' +
+        '<th style="padding:6px 10px;text-align:left">Date</th>' +
+        '<th style="padding:6px 10px;text-align:left">Type</th>' +
+        '<th style="padding:6px 10px;text-align:right">Days</th>' +
+        '<th style="padding:6px 10px;text-align:right">Bal Before</th>' +
+        '<th style="padding:6px 10px;text-align:left">Source</th>' +
+        '<th style="padding:6px 10px;text-align:left">By</th>' +
+        '<th style="padding:6px 10px;text-align:left">Recorded At</th>' +
+        '<th style="padding:6px 10px;text-align:left">Notes</th>' +
+      '</tr></thead><tbody>' +
+      (emp.timeOffLog||[]).slice().reverse().map(log => {
+        const src = log.source === 'request_approval' ? '📋 Request' : log.source === 'manual_entry' ? '✏️ Manual' : '—';
+        const by  = log.recordedBy || '—';
+        const ts  = log.recordedAt ? new Date(log.recordedAt).toLocaleString() : '—';
+        const bal = log.balanceBefore != null ? log.balanceBefore.toFixed(2) : '—';
+        return `<tr style="border-bottom:1px solid #f0f0f0">
+          <td style="padding:6px 10px">${log.date||'—'}</td>
+          <td style="padding:6px 10px"><span class="badge bg-teal" style="font-size:.7rem">${log.type}</span></td>
+          <td style="padding:6px 10px;text-align:right;font-weight:600;color:var(--red)">-${daysToHrs(log.days)} hrs</td>
+          <td style="padding:6px 10px;text-align:right;color:#555">${bal}</td>
+          <td style="padding:6px 10px;font-size:.72rem">${src}</td>
+          <td style="padding:6px 10px;font-weight:600;color:var(--navy)">${by}</td>
+          <td style="padding:6px 10px;color:#888;font-size:.72rem">${ts}</td>
+          <td style="padding:6px 10px;color:#888">${log.notes||'—'}</td>
+        </tr>`;
+      }).join('') +
+      '</tbody></table>';
+  }
+
+  om('empDetailModal');
+}
+
+// ══════════════════════════════════════════
+// PAY PERIOD HISTORY
+// ══════════════════════════════════════════
+function showPeriodHistory() {
+  const list   = document.getElementById('periodHistoryList');
+  const months = Object.keys(IMPORTED_PERIODS).sort().reverse();
+
+  if (!months.length) {
+    list.innerHTML = '<div class="empty"><div class="ei">📭</div><p>No months imported yet.</p></div>';
+  } else {
+    list.innerHTML = months.map(monthKey => {
+      const pd        = IMPORTED_PERIODS[monthKey];
+      const label     = new Date(monthKey + '-02').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+      const dateRange = pd.start && pd.end ? `${pd.start} → ${pd.end}` : monthKey;
+      return `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px">
+          <div>
+            <div style="font-weight:600;font-size:.88rem">📅 ${label}</div>
+            <div style="font-size:.78rem;color:var(--text-light);margin-top:2px">
+              ${dateRange} · ${pd.empCount || '?'} employees · ${(pd.totalHours||0).toFixed(0)} hrs
+            </div>
+          </div>
+          <button class="btn btn-red2 btn-sm" onclick="deletePeriod('${monthKey}')">🗑 Delete</button>
+        </div>`;
+    }).join('');
+  }
+
+  om('periodHistoryModal');
+}
+
+async function deletePeriod(monthKey) {
+  const pd    = IMPORTED_PERIODS[monthKey];
+  const label = pd ? new Date(monthKey + '-02').toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : monthKey;
+  if (!confirm(`Delete ${label}? All hours for this month will be removed from every employee and accruals will be recalculated.`)) return;
+
+  // Parse year/month from key e.g. "2025-03"
+  const [y, mo] = monthKey.split('-').map(Number);
+
+  // Remove that month's record from every employee
+  for (const emp of Object.values(EMPLOYEES)) {
+    emp.monthlyRecords = (emp.monthlyRecords || []).filter(r => !(r.year === y && r.month === mo));
+  }
+
+  delete IMPORTED_PERIODS[monthKey];
+
+  // Delete from Supabase
+  (async () => {
+    try {
+      _setSaveStatus('saving');
+      // Delete monthly_records for this period
+      await getSupa().from('monthly_records').delete()
+        .eq('year', y).eq('month', mo);
+      // Delete the imported_period row
+      await getSupa().from('imported_periods').delete().eq('month_key', monthKey);
+      await writeAuditLog('PERIOD_DELETED', `Deleted pay period ${monthKey}`);
+      _setSaveStatus('saved');
+    } catch(e) { console.warn('Delete period error:', e); _setSaveStatus('error'); }
+  })();
+  _cacheToLocal();
+  recalculateAll();
+  showPeriodHistory();
+  showToast(`🗑 ${label} deleted — accruals recalculated.`);
+}
+
+// ══════════════════════════════════════════
+// EXPORT TO CSV
+// ══════════════════════════════════════════
+function exportAuditLog() {
+  const rows = [['Employee','Action','Type','Days','Date','Balance Before','Source','By','Timestamp','Notes']];
+
+  // Time-off log entries from all employees
+  for (const [key, emp] of Object.entries(EMPLOYEES)) {
+    for (const log of (emp.timeOffLog || [])) {
+      rows.push([
+        emp.name,
+        'Time Off Used',
+        log.type || '',
+        log.days ? daysToHrs(log.days) + ' hrs' : '',
+        log.date || '',
+        log.balanceBefore != null ? log.balanceBefore : '—',
+        log.source === 'request_approval' ? 'Request Approval' : log.source === 'manual_entry' ? 'Manual Entry' : '—',
+        log.recordedBy || '—',
+        log.recordedAt ? new Date(log.recordedAt).toLocaleString() : '—',
+        log.notes || ''
+      ]);
+    }
+  }
+
+  // Time-off request decisions
+  for (const req of TIME_OFF_REQUESTS) {
+    if (req.status === 'approved' || req.status === 'rejected') {
+      rows.push([
+        req.empName || req.empKey,
+        req.status === 'approved' ? 'Request Approved' : 'Request Rejected',
+        req.type || '',
+        req.days ? daysToHrs(req.days) + ' hrs' : '',
+        req.start || '',
+        '—',
+        'Request Decision',
+        req.reviewedBy || '—',
+        req.reviewedAt ? new Date(req.reviewedAt).toLocaleString() : '—',
+        req.notes || ''
+      ]);
+    }
+  }
+
+  rows.sort((a,b) => (a[8] || '').localeCompare(b[8] || ''));
+
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url;
+  a.download = `cfa_losfiltros_audit_log_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+
+// ══════════════════════════════════════════
+// MERGE DUPLICATE EMPLOYEES
+// ══════════════════════════════════════════
+
+function openMergeModal() {
+  const emps = Object.entries(EMPLOYEES).sort((a,b) => a[1].name.localeCompare(b[1].name));
+  const opts = `<option value="">— Select employee —</option>` +
+    emps.map(([k,e]) => `<option value="${k}">${e.name}${e.status!=='active'?' (inactive)':''}</option>`).join('');
+  document.getElementById('mergeKeep').innerHTML = opts;
+  document.getElementById('mergeDrop').innerHTML = opts;
+  document.getElementById('mergePreview').style.display = 'none';
+  const btn = document.getElementById('mergeConfirmBtn');
+  btn.disabled = true; btn.style.opacity = '.4'; btn.style.cursor = 'not-allowed';
+  om('mergeEmpModal');
+}
+
+function previewMerge() {
+  const keepKey = document.getElementById('mergeKeep').value;
+  const dropKey = document.getElementById('mergeDrop').value;
+  const preview = document.getElementById('mergePreview');
+  const btn     = document.getElementById('mergeConfirmBtn');
+
+  if (!keepKey || !dropKey || keepKey === dropKey) {
+    preview.style.display = 'none';
+    btn.disabled = true; btn.style.opacity = '.4'; btn.style.cursor = 'not-allowed';
+    return;
+  }
+
+  const keep = EMPLOYEES[keepKey];
+  const drop = EMPLOYEES[dropKey];
+
+  // Calculate merged values
+  const mergedMonths = mergeMonthlyRecords(keep.monthlyRecords || [], drop.monthlyRecords || []);
+  const mergedSickTaken = +((keep.sickTaken || 0) + (drop.sickTaken || 0)).toFixed(2);
+  const mergedVacTaken  = +((keep.vacTaken  || 0) + (drop.vacTaken  || 0)).toFixed(2);
+  const mergedLogs      = [...(keep.timeOffLog || []), ...(drop.timeOffLog || [])];
+  const keepAccr = calcEmployeeAccruals(keep.monthlyRecords||[], keep.firstClockIn, keep.sickTaken||0, keep.vacTaken||0);
+  const dropAccr = calcEmployeeAccruals(drop.monthlyRecords||[], drop.firstClockIn, drop.sickTaken||0, drop.vacTaken||0);
+  const newAccr  = calcEmployeeAccruals(mergedMonths, keep.firstClockIn, mergedSickTaken, mergedVacTaken);
+
+  document.getElementById('mergePreviewContent').innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+      <thead><tr style="background:#e2e8f0">
+        <th style="padding:6px 10px;text-align:left">Field</th>
+        <th style="padding:6px 10px;text-align:left">Keep: ${keep.name}</th>
+        <th style="padding:6px 10px;text-align:left">Duplicate: ${drop.name}</th>
+        <th style="padding:6px 10px;text-align:left;color:#b45309">After Merge</th>
+      </tr></thead>
+      <tbody>
+        <tr style="border-top:1px solid #e2e8f0"><td style="padding:5px 10px">Months of data</td><td>${(keep.monthlyRecords||[]).length}</td><td>${(drop.monthlyRecords||[]).length}</td><td style="font-weight:700;color:#b45309">${mergedMonths.length}</td></tr>
+        <tr style="border-top:1px solid #e2e8f0"><td style="padding:5px 10px">Sick Balance</td><td>${daysToHrs(keepAccr.sickBal)} hrs</td><td>${daysToHrs(dropAccr.sickBal)} hrs</td><td style="font-weight:700;color:#b45309">${daysToHrs(newAccr.sickBal)} hrs</td></tr>
+        <tr style="border-top:1px solid #e2e8f0"><td style="padding:5px 10px">Vac Balance</td><td>${daysToHrs(keepAccr.vacationBal)} hrs</td><td>${daysToHrs(dropAccr.vacationBal)} hrs</td><td style="font-weight:700;color:#b45309">${daysToHrs(newAccr.vacationBal)} hrs</td></tr>
+        <tr style="border-top:1px solid #e2e8f0"><td style="padding:5px 10px">Sick Taken</td><td>${daysToHrs(keep.sickTaken||0)} hrs</td><td>${daysToHrs(drop.sickTaken||0)} hrs</td><td style="font-weight:700;color:#b45309">${daysToHrs(mergedSickTaken)} hrs</td></tr>
+        <tr style="border-top:1px solid #e2e8f0"><td style="padding:5px 10px">Vac Taken</td><td>${daysToHrs(keep.vacTaken||0)} hrs</td><td>${daysToHrs(drop.vacTaken||0)} hrs</td><td style="font-weight:700;color:#b45309">${daysToHrs(mergedVacTaken)} hrs</td></tr>
+        <tr style="border-top:1px solid #e2e8f0"><td style="padding:5px 10px">Time-off log entries</td><td>${(keep.timeOffLog||[]).length}</td><td>${(drop.timeOffLog||[]).length}</td><td style="font-weight:700;color:#b45309">${mergedLogs.length}</td></tr>
+        <tr style="border-top:1px solid #e2e8f0"><td style="padding:5px 10px">First Clock-In</td><td>${keep.firstClockIn||'—'}</td><td>${drop.firstClockIn||'—'}</td><td style="font-weight:700;color:#b45309">${keep.firstClockIn||drop.firstClockIn||'—'}</td></tr>
+      </tbody>
+    </table>
+    <p style="margin:10px 0 0;color:#991b1b;font-size:.8rem">⚠ <strong>${drop.name}</strong> will be permanently deleted from the system after merge.</p>
+  `;
+  preview.style.display = 'block';
+  btn.disabled = false; btn.style.opacity = '1'; btn.style.cursor = 'pointer';
+}
+
+function mergeMonthlyRecords(a, b) {
+  // Combine two arrays of monthly records — if same month exists in both, keep higher hours
+  const map = {};
+  for (const r of a) {
+    const k = `${r.year}-${r.month}`;
+    map[k] = r;
+  }
+  for (const r of b) {
+    const k = `${r.year}-${r.month}`;
+    if (!map[k] || r.hoursWorked > map[k].hoursWorked) map[k] = r;
+  }
+  return Object.values(map).sort((a,b) => a.year !== b.year ? a.year-b.year : a.month-b.month);
+}
+
+async function confirmMerge() {
+  const keepKey = document.getElementById('mergeKeep').value;
+  const dropKey = document.getElementById('mergeDrop').value;
+  if (!keepKey || !dropKey || keepKey === dropKey) return;
+  // Merging deletes both people's saved hours/time-off and re-saves the combined copy from memory.
+  // Never do that unless every row was loaded.
+  if (window._hubHoursComplete === false || window._hubTimeOffComplete === false) {
+    alert('Merge is paused: not all hours or time-off records loaded from the database. Reload the page and try again. Nothing was changed.');
+    return;
+  }
+
+  const keep = EMPLOYEES[keepKey];
+  const drop = EMPLOYEES[dropKey];
+  if (!confirm(`Merge "${drop.name}" INTO "${keep.name}"?\n\nThis will permanently delete "${drop.name}". This cannot be undone.`)) return;
+
+  // Merge data into keep
+  keep.monthlyRecords = mergeMonthlyRecords(keep.monthlyRecords || [], drop.monthlyRecords || []);
+  keep.sickTaken  = +((keep.sickTaken  || 0) + (drop.sickTaken  || 0)).toFixed(2);
+  keep.vacTaken   = +((keep.vacTaken   || 0) + (drop.vacTaken   || 0)).toFixed(2);
+  keep.timeOffLog = [...(keep.timeOffLog || []), ...(drop.timeOffLog || [])];
+  // Keep earliest first clock-in
+  if (drop.firstClockIn && (!keep.firstClockIn || drop.firstClockIn < keep.firstClockIn)) {
+    keep.firstClockIn = drop.firstClockIn;
+  }
+
+  // Delete duplicate from memory
+  delete EMPLOYEES[dropKey];
+
+  // Persist to Supabase
+  _setSaveStatus('saving');
+  try {
+    // Update canonical employee
+    await saveEmployee(keep);
+
+    // Re-upsert all monthly records for canonical
+    if (keep.supabase_id) {
+      // Delete existing monthly records and re-insert merged set
+      await getSupa().from('monthly_records').delete().eq('employee_id', keep.supabase_id);
+      for (const rec of keep.monthlyRecords) {
+        await getSupa().from('monthly_records').insert({
+          employee_id:  keep.supabase_id,
+          year:         rec.year,
+          month:        rec.month,
+          hours_worked: rec.hoursWorked,
+          report_start: rec.reportStart || null,
+          report_end:   rec.reportEnd || null,
+        });
+      }
+    }
+
+    // Delete duplicate from Supabase
+    if (drop.supabase_id) {
+      await getSupa().from('monthly_records').delete().eq('employee_id', drop.supabase_id);
+      await getSupa().from('time_off_log').delete().eq('employee_id', drop.supabase_id);
+      await getSupa().from('employees').delete().eq('id', drop.supabase_id);
+    }
+
+    await writeAuditLog('EMPLOYEE_MERGED',
+      `Merged "${drop.name}" into "${keep.name}" — ${keep.monthlyRecords.length} months combined`);
+    _setSaveStatus('saved');
+    showToast(`✅ "${drop.name}" merged into "${keep.name}" and deleted.`);
+  } catch(e) {
+    console.error('Merge save error:', e);
+    _setSaveStatus('error');
+    showToast('❌ Merge failed — check console.');
+  }
+
+  cm('mergeEmpModal');
+  recalculateAll();
+  _cacheToLocal();
+}
+
+// ── Fuzzy name matching for import ───────────────────────
+function fuzzyMatchEmployee(pdfName) {
+  // 1. Exact match first
+  const exactKey = pdfName.toLowerCase().replace(/\s+/g,'_');
+  if (EMPLOYEES[exactKey]) return exactKey;
+
+  // 2. Clean the PDF name — strip known suffixes like " Villa)", " (Antonio)", " (Jeral)", etc.
+  const cleaned = pdfName
+    .replace(/\s+Villa\)$/i, '')
+    .replace(/\s+\([^)]+\)$/i, '')
+    .replace(/-/g, ' ')
+    .trim();
+  const cleanedKey = cleaned.toLowerCase().replace(/\s+/g,'_');
+  if (EMPLOYEES[cleanedKey]) return cleanedKey;
+
+  // 3. Token overlap — split both names into parts and check if one contains the other
+  const pdfParts = cleaned.toLowerCase().split(/[\s,]+/).filter(Boolean);
+  for (const [key, emp] of Object.entries(EMPLOYEES)) {
+    const empParts = emp.name.toLowerCase().split(/[\s,]+/).filter(Boolean);
+    // Count how many parts match
+    const matches = pdfParts.filter(p => empParts.includes(p)).length;
+    const minLen  = Math.min(pdfParts.length, empParts.length);
+    // If 80%+ of the shorter name's parts match, consider it the same person
+    if (minLen >= 2 && matches / minLen >= 0.8) return key;
+  }
+
+  return null; // No match — new employee
+}
+
+function exportToCSV() {
+  const rows = [['Name','Type','Status','First Clock-In','Tenure','Sick Earned','Sick Taken','Sick Balance','Vac Earned','Vac Taken','Vac Balance','Vac Eligible']];
+
+  for (const [key, emp] of Object.entries(EMPLOYEES)) {
+    const accruals = calcEmployeeAccruals(emp.monthlyRecords||[], emp.firstClockIn, emp.vacTaken||0, emp.sickTaken||0);
+    rows.push([
+      emp.name,
+      emp.type||'hourly',
+      emp.status||'active',
+      emp.firstClockIn||'',
+      getTenureString(emp.firstClockIn),
+      daysToHrs(accruals.sickEarned),
+      daysToHrs(emp.sickTaken||0),
+      daysToHrs(accruals.sickBal),
+      daysToHrs(accruals.vacationEarned),
+      daysToHrs(emp.vacTaken||0),
+      daysToHrs(accruals.vacationBal),
+      accruals.vacationEligible ? 'Yes' : 'No'
+    ]);
+  }
+
+  const csv = rows.map(r => r.map(v => `"${v}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = 'los_filtros_balances_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('✅ CSV exported!');
+}
+
+// ══════════════════════════════════════════
+// PRINT-FRIENDLY VIEW
+// ══════════════════════════════════════════
+function exportToPrint() {
+  const rows = Object.entries(EMPLOYEES).sort((a,b)=>a[1].name.localeCompare(b[1].name)).map(([key,emp]) => {
+    const accruals = calcEmployeeAccruals(emp.monthlyRecords||[], emp.firstClockIn, emp.vacTaken||0, emp.sickTaken||0);
+    return `<tr>
+      <td>${emp.name}</td>
+      <td>${emp.type||'hourly'}</td>
+      <td>${emp.status||'active'}</td>
+      <td>${getTenureString(emp.firstClockIn)}</td>
+      <td>${daysToHrs(accruals.sickEarned)} hrs</td><td>${daysToHrs(emp.sickTaken||0)} hrs</td><td><strong>${daysToHrs(accruals.sickBal)} hrs</strong></td>
+      <td>${daysToHrs(accruals.vacationEarned)} hrs</td><td>${daysToHrs(emp.vacTaken||0)} hrs</td><td><strong>${daysToHrs(accruals.vacationBal)} hrs</strong></td>
+    </tr>`;
+  }).join('');
+
+  const win = window.open('','_blank');
+  win.document.write(`<!DOCTYPE html><html><head><title>Los Filtros — Balance Report</title>
+  <style>
+    body{font-family:Arial,sans-serif;font-size:11px;margin:20px}
+    h1{font-size:16px;margin-bottom:4px}
+    p{color:#666;font-size:11px;margin-bottom:12px}
+    table{width:100%;border-collapse:collapse}
+    th{background:#004F71;color:#fff;padding:6px 8px;text-align:left;font-size:10px}
+    td{padding:5px 8px;border-bottom:1px solid #eee}
+    tr:nth-child(even) td{background:#f9f9f9}
+    @media print{body{margin:10px}}
+  </style></head><body>
+  <h1>🐔 Chick-fil-A Los Filtros — Leave Balance Report</h1>
+  <p>Generated: ${new Date().toLocaleString()} &nbsp;|&nbsp; ${Object.keys(EMPLOYEES).length} employees</p>
+  <table>
+    <thead><tr>
+      <th>Name</th><th>Type</th><th>Status</th><th>Tenure</th>
+      <th>Sick Earned</th><th>Sick Taken</th><th>Sick Bal</th>
+      <th>Vac Earned</th><th>Vac Taken</th><th>Vac Bal</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <script>window.onload=()=>window.print()<\/script>
+
+
+</body></html>`);
+  win.document.close();
+}
+
+// ══════════════════════════════════════════
+// DATA STORES
+// ══════════════════════════════════════════
+let MEAL_PENALTIES = [];
+
+// ══════════════════════════════════════════
+// MEAL PENALTY MIGRATION
+// Fixes records saved with old formula (rate × 1.5 only, missing × 0.5 hr).
+// Correct formula: rate × 1.5 × 0.5  (30 min = 0.5 hr of meal period)
+// ══════════════════════════════════════════
+function migrateMealPenalties() {
+  let fixed = 0;
+  for (const p of MEAL_PENALTIES) {
+    if (!p.rate || !p.penaltyAmount) continue;
+    const correct = +(p.rate * 1.5 * 0.5).toFixed(2);
+    const old     = +(p.rate * 1.5).toFixed(2);
+    // If stored value matches old wrong formula (and not already correct)
+    if (Math.abs(p.penaltyAmount - old) < 0.01 && Math.abs(p.penaltyAmount - correct) > 0.01) {
+      p.penaltyAmount = correct;
+      fixed++;
+    }
+  }
+  if (fixed > 0) {
+    saveMealData();
+    console.log(`✅ Migrated ${fixed} meal penalty record(s) to correct 30-min formula.`);
+  }
+  return fixed;
+}
+
+// ══════════════════════════════════════════
+// MEAL PENALTIES — PR Act 379 engine
+// ══════════════════════════════════════════
+function timeToMin(t) {
+  if (!t) return null;
+  const parts = t.split(':').map(Number);
+  if (parts.length < 2 || parts.some(isNaN)) return null;
+  return parts[0] * 60 + parts[1];
+}
+
+function autoFillMealRate(empKey) {
+  if (!empKey) return;
+  const emp = EMPLOYEES[empKey];
+  if (emp?.hourlyRate) {
+    const rateEl = document.getElementById('mealRate');
+    if (rateEl && !rateEl.value) rateEl.value = emp.hourlyRate;
+  }
+}
+
+function checkMealViolation() {
+  const shiftStart  = document.getElementById('mealShiftStart').value;
+  const shiftEnd    = document.getElementById('mealShiftEnd').value;
+  const breakStart  = document.getElementById('mealBreakStart').value;
+  const breakEnd    = document.getElementById('mealBreakEnd').value;
+  const banner      = document.getElementById('mealViolationBanner');
+  const calcResult  = document.getElementById('mealCalcResult');
+  const rate        = parseFloat(document.getElementById('mealRate').value || 0);
+
+  if (!shiftStart || !shiftEnd) { banner.style.display='none'; calcResult.style.display='none'; return; }
+
+  const ssMin = timeToMin(shiftStart);
+  const seMin = timeToMin(shiftEnd);
+  const shiftHours = (seMin - ssMin) / 60;
+
+  const violations = [];
+  let penaltyMinutes = 0;
+
+  // Rule: ≤6 hrs → no break required. >6 hrs → 30-min break must START before hour 6.
+  if (shiftHours <= 6) {
+    // No break required — compliant by rule
+    banner.style.display = 'none';
+    calcResult.innerHTML = `✅ Shift is ${shiftHours.toFixed(1)} hrs — no meal break required (≤ 6 hours).`;
+    calcResult.style.display = 'block';
+    return;
+  }
+
+  // Shift > 6 hours: break required
+  if (!breakStart || !breakEnd) {
+    // No break entered
+    violations.push(`❌ No meal break recorded — shift is ${shiftHours.toFixed(1)} hrs. A 30-min break must start before hour 6.`);
+    penaltyMinutes = 30;
+  } else {
+    const bsMin = timeToMin(breakStart);
+    const beMin = timeToMin(breakEnd);
+    const breakDuration = beMin - bsMin;
+    const breakStartHour = (bsMin - ssMin) / 60;
+
+    if (breakDuration < 30)
+      violations.push(`❌ Break too short: ${breakDuration} min (minimum 30 min required)`);
+    if (breakStartHour < 2)
+      violations.push(`❌ Break too early: ${breakStartHour.toFixed(1)} hrs into shift (must start at or after hour 2)`);
+    if (breakStartHour >= 6)
+      violations.push(`❌ Break too late: ${breakStartHour.toFixed(1)} hrs into shift (must start before hour 6)`);
+
+    // Penalty = 30 min (the required break period not properly taken)
+    penaltyMinutes = 30;
+  }
+
+  // Second meal period check (>10 hrs)
+  if (shiftHours > 10) {
+    violations.push(`⚠️ Shift is ${shiftHours.toFixed(1)} hrs — second meal period required (unless < 12 hrs and first break was taken).`);
+    if (penaltyMinutes === 0) penaltyMinutes = 30;
+  }
+
+  if (violations.length) {
+    banner.style.display = 'block';
+    banner.innerHTML = '<strong>Violations detected:</strong><br>' + violations.join('<br>');
+    // Penalty = actual meal period not properly taken (30 min = 0.5 hr × 1.5×)
+    const penaltyHours = penaltyMinutes / 60;
+    const penalty = rate > 0 ? (rate * 1.5 * penaltyHours).toFixed(2) : '—';
+    calcResult.style.display = 'block';
+    calcResult.innerHTML = `<strong>Penalty calculation (PR Act 379 — post-Jan 26, 2017 hire):</strong><br>
+      ${penaltyMinutes} min (${penaltyHours.toFixed(2)} hr) × 1.5× rate${rate>0?' = <strong>$'+penalty+'</strong> owed':''}<br>
+      <span style="font-size:.75rem;color:#888">Time and a half for meal period worked. Pre-2017 hires would owe 2× (double time).</span>`;
+  } else {
+    banner.style.display = 'none';
+    calcResult.style.display = 'block';
+    calcResult.innerHTML = '✅ No violations detected for this shift.';
+  }
+}
+
+function submitMealPenalty() {
+  const empKey     = document.getElementById('mealEmpSel').value;
+  const date       = document.getElementById('mealDate').value;
+  const rate       = parseFloat(document.getElementById('mealRate').value || 0);
+  const shiftStart = document.getElementById('mealShiftStart').value;
+  const shiftEnd   = document.getElementById('mealShiftEnd').value;
+  const breakStart = document.getElementById('mealBreakStart').value;
+  const breakEnd   = document.getElementById('mealBreakEnd').value;
+  const notes      = document.getElementById('mealNotes').value;
+  const errEl      = document.getElementById('mealErr');
+
+  if (!empKey) { errEl.textContent='Please select an employee.'; errEl.style.display='block'; return; }
+  if (!date || !shiftStart || !shiftEnd) { errEl.textContent='Please fill in date and shift times.'; errEl.style.display='block'; return; }
+  errEl.style.display = 'none';
+
+  // Calculate violation details
+  const ssMin = timeToMin(shiftStart), seMin = timeToMin(shiftEnd);
+  const shiftHours = (seMin - ssMin) / 60;
+  const bsMin = breakStart ? timeToMin(breakStart) : null;
+  const beMin = breakEnd   ? timeToMin(breakEnd)   : null;
+  const breakDuration = (bsMin !== null && beMin !== null) ? beMin - bsMin : 0;
+  const breakStartHour = bsMin !== null ? (bsMin - ssMin)/60 : null;
+
+  const violationTypes = [];
+  if (shiftHours <= 6) {
+    // No break required — log as informational if somehow submitted
+  } else if (!breakStart) {
+    violationTypes.push('No break taken');
+  } else {
+    if (breakDuration < 30)                             violationTypes.push('Break too short');
+    if (breakStartHour !== null && breakStartHour < 2)  violationTypes.push('Break too early');
+    if (breakStartHour !== null && breakStartHour >= 6)  violationTypes.push('Break too late');
+  }
+  // Second meal period: required if >10 hrs. Can be waived if <12 hrs AND first break was taken.
+  if (shiftHours > 10) {
+    const secondBreakWaivable = shiftHours < 12 && breakStart;
+    if (!secondBreakWaivable) violationTypes.push('Second meal period required');
+  }
+
+  // Penalty: actual time not properly rested (30 min = 0.5 hr) × 1.5×
+  // Note: pre-Jan 26 2017 hires = 2× but all CFA PR employees are post-2017
+  const penaltyMinutes = 30;
+  const penaltyHours   = penaltyMinutes / 60;
+  const penaltyAmount  = rate > 0 ? +(rate * 1.5 * penaltyHours).toFixed(2) : 0;
+
+  const emp = EMPLOYEES[empKey];
+  MEAL_PENALTIES.push({
+    id: Date.now(), empKey, empName: emp?.name || empKey,
+    date, rate, shiftStart, shiftEnd, breakStart, breakEnd,
+    shiftHours: +shiftHours.toFixed(2), breakDuration,
+    violationTypes, penaltyAmount, notes,
+    loggedAt: new Date().toISOString()
+  });
+
+  saveMealData();
+  renderMealPenalties();
+  cm('addMealModal');
+  ['mealEmpSel','mealDate','mealRate','mealShiftStart','mealShiftEnd','mealBreakStart','mealBreakEnd','mealNotes'].forEach(id=>{
+    const el=document.getElementById(id); if(el) el.value='';
+  });
+  document.getElementById('mealViolationBanner').style.display='none';
+  document.getElementById('mealCalcResult').style.display='none';
+  showToast(`✅ Meal penalty logged for ${emp?.name || empKey}${penaltyAmount>0?' — $'+penaltyAmount+' owed':''}`);
+}
+
+function renderMealPenalties() {
+  const tbody = document.getElementById('mealTbody');
+  // Update stats cards (kept for dashboard use)
+  // Cards reflect all violations currently in the log (matches whatever report was uploaded)
+  const allItems = MEAL_PENALTIES;
+  if (document.getElementById('mealMonthCount')) document.getElementById('mealMonthCount').textContent = allItems.length;
+  if (document.getElementById('mealEmpCount')) document.getElementById('mealEmpCount').textContent = new Set(allItems.map(p=>p.empKey)).size;
+  if (document.getElementById('mealLiability')) document.getElementById('mealLiability').textContent = '$'+allItems.reduce((s,p)=>s+(p.penaltyAmount||0),0).toFixed(2);
+  if (document.getElementById('mealTotalCount')) document.getElementById('mealTotalCount').textContent = MEAL_PENALTIES.length;
+
+  // Populate week selector
+  mealPopulateWeekSelector();
+  renderMealPayrollView();
+  mealUpdateAllWeeksTotal();
+}
+
+function mealGetWeekEnding(dateStr) {
+  // Returns the Saturday on or after the given date
+  // dateStr may be MM/DD/YYYY or YYYY-MM-DD — normalize to YYYY-MM-DD
+  let iso = dateStr;
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr)) {
+    const [mo, da, yr] = dateStr.split('/');
+    iso = `${yr}-${mo}-${da}`;
+  }
+  const d = new Date(iso + 'T12:00:00');
+  const day = d.getDay(); // 0=Sun, 6=Sat
+  const diff = day === 6 ? 0 : 6 - day;
+  d.setDate(d.getDate() + diff);
+  return d.toISOString().split('T')[0];
+}
+
+function mealUpdateAllWeeksTotal() {
+  const el = document.getElementById('mealAllWeeksTotal');
+  if (!el) return;
+  const totalMins = MEAL_PENALTIES.length * 30;
+  const h = Math.floor(totalMins / 60).toString().padStart(2, '0');
+  const m = (totalMins % 60).toString().padStart(2, '0');
+  el.textContent = totalMins > 0 ? `${h}:${m}` : '—';
+}
+
+function mealPopulateWeekSelector() {
+  const sel = document.getElementById('mealWeekSel');
+  if (!sel) return;
+  const weeks = [...new Set(MEAL_PENALTIES.map(p => mealGetWeekEnding(p.date)))].sort((a,b)=>b.localeCompare(a));
+  const current = sel.value;
+  sel.innerHTML = weeks.length
+    ? weeks.map(w => {
+        const d = new Date(w + 'T12:00:00');
+        const label = d.toLocaleDateString('en-US', {month:'2-digit', day:'2-digit', year:'numeric'});
+        return `<option value="${w}" ${w===current?'selected':''}>Week ending ${label}</option>`;
+      }).join('')
+    : '<option value="">— Upload a Time Detail Report first —</option>';
+  // Auto-select most recent if nothing selected
+  if (!sel.value && weeks.length) sel.value = weeks[0];
+
+  // Update all-weeks total
+  mealUpdateAllWeeksTotal();
+}
+
+function renderMealPayrollView() {
+  const sel = document.getElementById('mealWeekSel');
+  const rowsEl = document.getElementById('mealPayrollRows');
+  if (!sel || !rowsEl) return;
+
+  const weekEnd = sel.value;
+  if (!weekEnd) {
+    rowsEl.innerHTML = '<div style="padding:32px;text-align:center;color:var(--text-light)"><div style="font-size:2rem;margin-bottom:8px">🍽</div><div style="font-size:.88rem">Upload a Time Detail Report to see payroll entries</div></div>';
+    return;
+  }
+
+  // Get violations for this week
+  const weekStart = new Date(weekEnd + 'T12:00:00');
+  weekStart.setDate(weekStart.getDate() - 6);
+  const weekStartStr = weekStart.toISOString().split('T')[0];
+
+  const weekViolations = MEAL_PENALTIES.filter(p => {
+    return p.date >= weekStartStr && p.date <= weekEnd;
+  });
+
+  if (!weekViolations.length) {
+    rowsEl.innerHTML = '<div style="padding:24px;text-align:center;color:#16a34a;font-size:.88rem">✅ No meal premium violations for this week.</div>';
+    document.getElementById('mealWeekEmpCount').textContent = '0';
+    document.getElementById('mealWeekHours').textContent = '00:00';
+    document.getElementById('mealWeekLiability').textContent = '$0.00';
+    return;
+  }
+
+  // Group by employee
+  const byEmp = {};
+  weekViolations.forEach(p => {
+    const key = p.empKey || p.empName;
+    if (!byEmp[key]) byEmp[key] = { empName: p.empName, violations: [], totalMins: 0, totalAmt: 0 };
+    byEmp[key].violations.push(p);
+    byEmp[key].totalMins += 30;
+    byEmp[key].totalAmt += p.penaltyAmount || 0;
+  });
+
+  const empList = Object.values(byEmp).sort((a,b) => a.empName.localeCompare(b.empName));
+  const totalEmps = empList.length;
+  const totalMins = empList.reduce((s,e) => s + e.totalMins, 0);
+  const totalAmt = empList.reduce((s,e) => s + e.totalAmt, 0);
+
+  const fmtTime = mins => {
+    const h = Math.floor(mins/60).toString().padStart(2,'0');
+    const m = (mins%60).toString().padStart(2,'0');
+    return `${h}:${m}`;
+  };
+
+  rowsEl.innerHTML = empList.map((e, i) => {
+    const violationRows = e.violations.map(v => {
+      const dateLabel = v.date || '';
+      const types = Array.isArray(v.violationTypes) ? v.violationTypes.join('; ') : (v.violationTypes || 'No break taken');
+      const shiftLabel = (v.shiftStart && v.shiftEnd) ? `${v.shiftStart} – ${v.shiftEnd}` : '';
+      return `<div style="display:grid;grid-template-columns:100px 1fr;gap:8px;padding:5px 16px 5px 24px;background:#fafafa;border-top:1px solid #f3f4f6;align-items:start">
+        <div style="font-size:.75rem;color:#6b7280;font-family:monospace;padding-top:1px">${dateLabel}</div>
+        <div>
+          <div style="font-size:.78rem;color:#dc2626;font-weight:600">${types}</div>
+          ${shiftLabel ? `<div style="font-size:.72rem;color:#9ca3af;margin-top:1px">Shift: ${shiftLabel}</div>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+
+    return `<div style="${i < empList.length-1 ? 'border-bottom:1px solid var(--border)' : ''}">
+      <div style="display:grid;grid-template-columns:1fr 130px 110px 130px 48px;padding:13px 16px;align-items:center;">
+        <div style="font-weight:600;font-size:.9rem;color:var(--navy)">${e.empName}</div>
+        <div style="font-size:.82rem;color:var(--text-light)">${e.violations.length} violation${e.violations.length>1?'s':''}</div>
+        <div style="font-size:.95rem;font-weight:700;color:var(--navy);text-align:center;font-family:monospace">${fmtTime(e.totalMins)}</div>
+        <div style="font-size:.95rem;font-weight:700;color:#dc2626;text-align:right">$${e.totalAmt.toFixed(2)}</div>
+        <div style="text-align:center">
+          <button class="btn btn-sm" onclick="mealDeleteWeekEmp('${e.empKey||e.empName}','${weekStartStr}','${weekEnd}')" style="border-color:#dc2626;color:#dc2626;padding:3px 8px;font-size:.72rem">✕</button>
+        </div>
+      </div>
+      ${violationRows}
+    </div>`;
+  }).join('');
+
+  document.getElementById('mealWeekEmpCount').textContent = totalEmps;
+  document.getElementById('mealWeekHours').textContent = fmtTime(totalMins);
+  document.getElementById('mealWeekLiability').textContent = '$' + totalAmt.toFixed(2);
+}
+
+function mealDeleteWeekEmp(empKey, weekStart, weekEnd) {
+  if (!confirm('Delete all meal penalty violations for this employee for this week?')) return;
+  MEAL_PENALTIES = MEAL_PENALTIES.filter(p => {
+    const key = p.empKey || p.empName;
+    return !(key === empKey && p.date >= weekStart && p.date <= weekEnd);
+  });
+  saveMealData();
+  renderMealPenalties();
+  showToast('🗑 Violations deleted.');
+}
+
+
+function clearAllMealPenalties() {
+  if (!confirm('⚠️ This will delete ALL meal penalty records. Are you sure?')) return;
+  MEAL_PENALTIES.length = 0;
+  saveMealData();
+  renderMealPenalties();
+  showToast('🗑 All meal penalty records cleared.');
+}
+
+function exportMealsCSV() {
+  const rows = [['Employee','Date','Shift Start','Shift End','Break Start','Break End','Break Duration (min)','Violations','Hourly Rate','Time Owed','Penalty Amount']];
+  MEAL_PENALTIES.forEach(p => rows.push([p.empName,p.date,p.shiftStart,p.shiftEnd,p.breakStart||'',p.breakEnd||'',p.breakDuration,(p.violationTypes || (p.violation ? [p.violation] : [])).join('; '),'$'+(p.rate||0),p.penaltyAmount>0?'30 min @ 1.5x':'—','$'+p.penaltyAmount]));
+  const csv = rows.map(r=>r.map(v=>`"${v}"`).join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download = 'meal_penalties_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+}
+
+// ══════════════════════════════════════════
+// PERSISTENCE — meals
+// ══════════════════════════════════════════
+function saveMealData() {
+  try { localStorage.setItem('cfa_losfiltros_meals', JSON.stringify(MEAL_PENALTIES)); } catch(e){}
+  saveToStorage();
+}
+
+
+
+// ══════════════════════════════════════════
+// POPULATE employee dropdowns for new tabs
+// ══════════════════════════════════════════
+// Tab-switch side effects for meals + recon are handled
+// directly inside goTab (see goTab function above).
+
+
+
+
+// ══════════════════════════════════════════════════════
+// MEAL PREMIUM PDF PARSER — PR Act 379
+// ══════════════════════════════════════════════════════
+
+// ── Core parser ──────────────────────────────────────────
+
+// ── Helper: build candidate lines from pdf.js token stream ─
+
+// ── Helper: detect employee name lines ──────────────────────
+
+// ── Helper: merge overlapping/touching shifts ───────────────
+
+// ── Helper: parse time string to minutes ───────────────────
+
+// ── Helper: parse time out (handle overnight) ──────────────
+
+// ── Helper: convert minutes to HH:MM ──────────────────────
+
+
+// ══════════════════════════════════════════════════════════
+// MEAL PENALTY PDF PARSER — PR Act 379
+// Parses CFA Employee Time Detail Report
+// ══════════════════════════════════════════════════════════
+
+async function handleMealPdfImport(file) {
+  const status   = document.getElementById('mealImportStatus');
+  const progress = document.getElementById('mealImportProgress');
+  const dropzone = document.getElementById('mealDropzone');
+
+  status.style.display  = 'block';
+  progress.style.display = 'block';
+  dropzone.style.borderColor = 'var(--navy)';
+  status.innerHTML = '<span style="color:var(--navy)">⏳ Reading PDF...</span>';
+
+  try {
+    // Load pdf.js if not already loaded
+    if (typeof pdfjsLib === 'undefined') {
+      await new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+        s.onload = res; s.onerror = rej;
+        document.head.appendChild(s);
+      });
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+
+    status.innerHTML = '<span style="color:var(--navy)">⏳ Extracting text from PDF...</span>';
+
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+    let allLines = [];
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+
+      // Group items by Y position (same line = same Y ± 3)
+      const byY = {};
+      for (const item of content.items) {
+        const y = Math.round(item.transform[5] / 3) * 3;
+        if (!byY[y]) byY[y] = [];
+        byY[y].push({ x: item.transform[4], text: item.str });
+      }
+      // Sort lines top-to-bottom (higher Y = higher on page in PDF coords)
+      const ys = Object.keys(byY).map(Number).sort((a, b) => b - a);
+      for (const y of ys) {
+        const lineItems = byY[y].sort((a, b) => a.x - b.x);
+        const lineText = lineItems.map(i => i.text).join(' ').replace(/\s+/g, ' ').trim();
+        if (lineText) allLines.push(lineText);
+      }
+    }
+
+    status.innerHTML = '<span style="color:var(--navy)">⚙️ Analyzing shifts...</span>';
+
+    const results = parseMealTimeDetail(allLines);
+    progress.style.display = 'none';
+
+    if (!results.violations.length && !results.compliant.length) {
+      status.innerHTML = `<div style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:12px;font-size:.83rem;color:#92400e">
+        ⚠️ Could not parse any shifts from this file. Make sure it's an Employee Time Detail Report.
+      </div>`;
+      return;
+    }
+
+    // Add new violations to MEAL_PENALTIES (avoid duplicates by emp+date)
+    let added = 0, skipped = 0;
+    for (const v of results.violations) {
+      const exists = MEAL_PENALTIES.some(p => p.empName === v.empName && p.date === v.date && p.shiftStart === v.shiftStart);
+      if (!exists) {
+        MEAL_PENALTIES.push(v);
+        added++;
+      } else { skipped++; }
+    }
+
+    saveMealData();
+    renderMealPenalties();
+    populateEmployeeDropdowns();
+
+    const vCount = results.violations.length;
+    const totalShifts = results.compliant.length + vCount;
+    const pct = totalShifts > 0 ? Math.round((vCount/totalShifts)*100) : 0;
+
+    status.innerHTML = `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:14px;font-size:.83rem;color:#166534">
+      <strong>✅ Import complete!</strong><br>
+      Analyzed <strong>${totalShifts}</strong> shifts across <strong>${results.employees}</strong> employees<br>
+      Found <strong style="color:${vCount>0?'#dc2626':'#16a34a'}">${vCount} violations</strong> (${pct}% of shifts)<br>
+      ${added} added, ${skipped} already in log
+      ${vCount > 0 ? '<br><br><strong>Violations breakdown:</strong><br>' + results.violationSummary.map(s=>`• ${s}`).join('<br>') : ''}
+    </div>`;
+
+    dropzone.style.borderColor = vCount > 0 ? 'var(--red)' : '#16a34a';
+    document.getElementById('mealPdfFile').value = '';
+
+    if (vCount > 0) showToast(`✅ Found ${vCount} meal penalty violations!`);
+    else showToast('✅ No meal penalty violations found.');
+
+  } catch(e) {
+    progress.style.display = 'none';
+    console.error('Meal PDF parse error:', e);
+    status.innerHTML = `<div style="background:#fee2e2;border:1px solid #fecaca;border-radius:8px;padding:12px;font-size:.83rem;color:#991b1b">
+      ❌ Error reading PDF: ${e.message || e}<br>
+      Make sure this is an Employee Time Detail Report PDF.
+    </div>`;
+  }
+}
+
+function parseMealTimeDetail(lines) {
+  // ── helpers ──────────────────────────────────────────────
+  const toMin = (t) => {
+    if (!t) return null;
+    const m = t.match(/(\d+):(\d+)\s*([ap])/i);
+    if (!m) return null;
+    let h = parseInt(m[1]), min = parseInt(m[2]);
+    if (isNaN(h) || isNaN(min)) return null;
+    const ap = m[3].toLowerCase();
+    if (ap === 'p' && h !== 12) h += 12;
+    else if (ap === 'a' && h === 12) h = 0;
+    return h * 60 + min;
+  };
+
+  const fmtTime = (t) => {
+    if (!t) return '—';
+    const m = t.match(/(\d+):(\d+)\s*([ap])/i);
+    return m ? `${m[1]}:${m[2]} ${m[3].toLowerCase()}` : t;
+  };
+
+  const fmtMin = (m) => {
+    if (m === null) return '—';
+    const h = Math.floor(m / 60) % 24, mins = m % 60;
+    const ampm = h < 12 ? 'am' : 'pm';
+    return `${h%12||12}:${String(mins).padStart(2,'0')}${ampm}`;
+  };
+
+  // ── state ────────────────────────────────────────────────
+  let currentEmp = null;
+  let currentWage = 0;
+  let employees = new Set();
+  const empWages = {};
+  const shifts = [];
+
+  // Date pattern: "Mon, 02/16/2026"
+  const dateRe   = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+(\d{2}\/\d{2}\/\d{4})/i;
+  // Time row pattern: captures TimeIn TimeOut Total Pay Type
+  // Now includes "Unpaid" — this is how meal breaks appear in CFA Time Detail Reports
+  const timeRe   = /(\d{1,2}:\d{2}\s*[ap])\s+(\d{1,2}:\d{2}\s*[ap])\s+[\d:]+\s+(Regular|Unpaid|Break|Break \(Conv to Paid\))/i;
+  // Employee name: "Lastname Firstname" — line with no date, no time, typically has comma
+  const empRe    = /^([A-Z][a-záéíóúñüA-ZÁÉÍÓÚÑÜ\s\-]+,\s+[A-Za-záéíóúñüÁÉÍÓÚÑÜ\s\.\(\)]+)$/;
+  // Skip lines
+  const skipRe   = /Employee Totals|Grand Total|Punch types|clock-in time|Page \d|From |Los Filtros|Employee Time Detail|Wage Rate|Pay Type/i;
+
+  let currentDate = null;
+  let currentShift = null;
+
+  for (const line of lines) {
+    if (skipRe.test(line)) continue;
+
+    // Extract wage rate from Regular punch lines (first $ amount after "Regular")
+    const wageLineMatch = line.match(/Regular\s+\$(\d+\.\d{2})/i);
+    if (wageLineMatch && currentEmp) {
+      const w = parseFloat(wageLineMatch[1]);
+      if (w > 0) { currentWage = w; empWages[currentEmp] = w; }
+    }
+
+    // Check for date line
+    const dateMatch = line.match(dateRe);
+    if (dateMatch) {
+      currentDate = dateMatch[2]; // "02/16/2026"
+      // Try to extract time row from same line
+      const timeMatch = line.match(timeRe);
+      if (timeMatch && currentEmp) {
+        const type = timeMatch[3].toLowerCase();
+        if (type.startsWith('regular')) {
+          const lineWage = wageLineMatch ? parseFloat(wageLineMatch[1]) : currentWage;
+          if (lineWage > 0) { currentWage = lineWage; empWages[currentEmp] = lineWage; }
+          currentShift = {
+            empName: currentEmp, date: currentDate,
+            shiftIn: fmtTime(timeMatch[1]), shiftOut: fmtTime(timeMatch[2]),
+            breaks: [], wage: currentWage
+          };
+          shifts.push(currentShift);
+        } else if ((type === 'unpaid' || type.startsWith('break')) && currentShift && currentShift.date === currentDate) {
+          // "Unpaid" is how CFA reports meal breaks — treat same as Break
+          currentShift.breaks.push({ in: fmtTime(timeMatch[1]), out: fmtTime(timeMatch[2]) });
+        }
+      }
+      continue;
+    }
+
+    // Check for time row (without date, continuation line)
+    const timeMatch = line.match(timeRe);
+    if (timeMatch && currentEmp && currentDate) {
+      const type = timeMatch[3].toLowerCase();
+      if (type.startsWith('regular')) {
+        const lineWage = wageLineMatch ? parseFloat(wageLineMatch[1]) : currentWage;
+        if (lineWage > 0) { currentWage = lineWage; empWages[currentEmp] = lineWage; }
+        currentShift = {
+          empName: currentEmp, date: currentDate,
+          shiftIn: fmtTime(timeMatch[1]), shiftOut: fmtTime(timeMatch[2]),
+          breaks: [], wage: currentWage
+        };
+        shifts.push(currentShift);
+      } else if ((type === 'unpaid' || type.startsWith('break')) && currentShift && currentShift.date === currentDate) {
+        // "Unpaid" is how CFA reports meal breaks — treat same as Break
+        currentShift.breaks.push({ in: fmtTime(timeMatch[1]), out: fmtTime(timeMatch[2]) });
+      }
+      continue;
+    }
+
+    // Check for employee name
+    if (empRe.test(line.trim()) && !timeRe.test(line) && !dateRe.test(line)) {
+      const candidate = line.trim();
+      // Must look like "Lastname, Firstname" or "Last First, Middle"
+      if (candidate.includes(',') && candidate.length > 5 && candidate.length < 60) {
+        currentEmp = candidate;
+        employees.add(candidate);
+        currentDate = null;
+        currentShift = null;
+        currentWage = empWages[candidate] || 0;
+      }
+    }
+  }
+
+  // ── Merge consecutive same-day shifts split by unpaid breaks ──────────────
+  // The PDF parser creates a new shift entry for every Regular punch line.
+  // An unpaid break appears as a gap between two Regular entries — neither
+  // segment may individually exceed 6 hrs, so we must stitch them back into
+  // one continuous shift before running the meal-penalty check.
+  // Strategy: group by emp+date, sort by start time, merge segments that are
+  // within 90 min of each other (covers any reasonable unpaid break), carrying
+  // all break punches from merged segments into the surviving record.
+  const mergedShifts = [];
+  const dayMap = {}; // key: "empName|date"
+  for (const s of shifts) {
+    const key = `${s.empName}|${s.date}`;
+    if (!dayMap[key]) dayMap[key] = [];
+    dayMap[key].push(s);
+  }
+  for (const segs of Object.values(dayMap)) {
+    segs.sort((a, b) => toMin(a.shiftIn) - toMin(b.shiftIn));
+    const stack = [{ ...segs[0], breaks: [...segs[0].breaks] }];
+    for (let i = 1; i < segs.length; i++) {
+      const top  = stack[stack.length - 1];
+      const topOut = toMin(top.shiftOut);
+      const segIn  = toMin(segs[i].shiftIn);
+      // Gap ≤ 90 min → same continuous shift (unpaid break in between)
+      if (segIn - topOut <= 90) {
+        // Extend the window and absorb this segment's breaks
+        top.shiftOut = segs[i].shiftOut;
+        top.breaks.push(...segs[i].breaks);
+      } else {
+        stack.push({ ...segs[i], breaks: [...segs[i].breaks] });
+      }
+    }
+    mergedShifts.push(...stack);
+  }
+
+  // ── Apply PR Act 379 violation logic ─────────────────────
+  const violations = [];
+  const compliant  = [];
+  const violTypeCounts = {};
+
+  for (const s of mergedShifts) {
+    const ssMin = toMin(s.shiftIn);
+    const seMin_raw = toMin(s.shiftOut);
+    if (ssMin === null || seMin_raw === null || isNaN(ssMin) || isNaN(seMin_raw)) continue;
+
+    let seMin = seMin_raw < ssMin ? seMin_raw + 24*60 : seMin_raw; // overnight
+    const shiftHours = (seMin - ssMin) / 60;
+
+    if (shiftHours <= 6) { compliant.push(s); continue; } // No meal period required (≤6 hrs)
+
+    // Find qualifying breaks: duration >= 30min AND starts between hr3 and hr6
+    let hasQualifyingBreak = false;
+    let bestBreak = null;
+    let violationDetails = [];
+
+    const allBreaks = s.breaks.map(b => {
+      const bi = toMin(b.in);
+      const bo_raw = toMin(b.out);
+      if (bi === null || bo_raw === null) return null;
+      const bo = bo_raw < bi ? bo_raw + 24*60 : bo_raw;
+      const dur = bo - bi;
+      // Adjust break start relative to shift
+      let biAdj = bi < ssMin ? bi + 24*60 : bi;
+      const startHour = (biAdj - ssMin) / 60;
+      return { in: b.in, out: b.out, dur, startHour };
+    }).filter(Boolean);
+
+    for (const br of allBreaks) {
+      const inWindow = br.startHour >= 2 && br.startHour < 6;
+      const longEnough = br.dur >= 30;
+      if (inWindow && longEnough) { hasQualifyingBreak = true; bestBreak = br; break; }
+    }
+
+    if (!hasQualifyingBreak) {
+      // Determine specific violation reason
+      let reason = 'No break taken';
+      let breakInfo = { in: '', out: '', dur: 0 };
+
+      if (allBreaks.length > 0) {
+        // Breaks exist but none qualify
+        const issues = [];
+        for (const br of allBreaks) {
+          if (br.dur < 30) issues.push(`break too short (${br.dur}min)`);
+          else if (br.startHour < 2) issues.push(`break too early (${br.startHour.toFixed(1)}h in — must start at or after hour 2)`);
+          else if (br.startHour >= 6) issues.push(`break too late (${br.startHour.toFixed(1)}h in)`);
+        }
+        reason = issues.join('; ') || 'Break does not meet requirements';
+        breakInfo = allBreaks[0];
+      }
+
+      violTypeCounts[reason.split('(')[0].trim()] = (violTypeCounts[reason.split('(')[0].trim()]||0) + 1;
+
+      const _rate1 = s.wage || 0;
+      // Correct formula: rate × 1.5 × 0.5 hr (30-min meal period)
+      const _penalty1 = _rate1 > 0 ? +(_rate1 * 1.5 * 0.5).toFixed(2) : 0;
+      violations.push({
+        id: Date.now() + Math.random(),
+        empKey: s.empName.replace(/[^a-z0-9]/gi,'_').toLowerCase(),
+        empName: s.empName,
+        date: (()=>{ const d=s.date; if(/^\d{2}\/\d{2}\/\d{4}$/.test(d)){const[mo,da,yr]=d.split('/');return `${yr}-${mo}-${da}`;}return d; })(),
+        rate: _rate1,
+        shiftStart: s.shiftIn,
+        shiftEnd: s.shiftOut,
+        breakStart: breakInfo.in || '',
+        breakEnd:   breakInfo.out || '',
+        shiftHours: +shiftHours.toFixed(2),
+        breakDuration: breakInfo.dur || 0,
+        violationTypes: [reason],
+        penaltyAmount: _penalty1,
+        notes: `Auto-detected from Time Detail Report`,
+        loggedAt: new Date().toISOString()
+      });
+    } else {
+      // Check if 2nd meal period needed (shift > 10h)
+      if (shiftHours > 10) {
+        const qualifyingBreaks = allBreaks.filter(br => br.startHour >= 3 && br.startHour < 6 && br.dur >= 30);
+        if (qualifyingBreaks.length < 2) {
+          const _rate2 = s.wage || 0;
+          // Correct formula: rate × 1.5 × 0.5 hr (30-min meal period)
+          const _penalty2 = _rate2 > 0 ? +(_rate2 * 1.5 * 0.5).toFixed(2) : 0;
+          violations.push({
+            id: Date.now() + Math.random(),
+            empKey: s.empName.replace(/[^a-z0-9]/gi,'_').toLowerCase(),
+            empName: s.empName,
+            date: (()=>{ const d=s.date; if(/^\d{2}\/\d{2}\/\d{4}$/.test(d)){const[mo,da,yr]=d.split('/');return `${yr}-${mo}-${da}`;}return d; })(),
+            rate: _rate2,
+            shiftStart: s.shiftIn,
+            shiftEnd: s.shiftOut,
+            breakStart: bestBreak?.in || '',
+            breakEnd:   bestBreak?.out || '',
+            shiftHours: +shiftHours.toFixed(2),
+            breakDuration: bestBreak?.dur || 0,
+            violationTypes: [`Shift over 10h — 2nd meal period required`],
+            penaltyAmount: _penalty2,
+            notes: 'Auto-detected from Time Detail Report',
+            loggedAt: new Date().toISOString()
+          });
+          continue;
+        }
+      }
+      compliant.push(s);
+    }
+  }
+
+  // Build violation type summary
+  const violationSummary = Object.entries(violTypeCounts)
+    .sort((a,b) => b[1]-a[1])
+    .map(([t,c]) => `${t}: ${c}`);
+
+  return {
+    violations, compliant,
+    employees: employees.size,
+    violationSummary
+  };
+}
+
+
+// ══════════════════════════════════════════════════════════════════
+// GASTOS AUTOFILL MODULE
+// ══════════════════════════════════════════════════════════════════
+
+const GASTOS_PROXY = `${SUPABASE_URL}/functions/v1/claude-proxy`;
+
+const GASTOS_CATEGORIES = [
+  "Auto Liability Insurance","Bank Charges","Business Interruption Insrnc","CFA Kiosk",
+  "Catering Expense","Catering Mileage - Team Member","Cell Phone - Team Members",
+  "Change Fund","Cleaning Supplies","Commissions Paid on Sales",
+  "Contents and Inventory Insrnc","Crime Insurance","Cyber Insurance",
+  "Distributor - Fuel Surcharge","Drive-Thru TM Experience","Dues & Subscriptions",
+  "Electric Salad Spinners","Electric Utility - Utility Co.","Floor Scrubbers",
+  "Food - Beverages","Food - Bread","Food - Breakfast","Food - Chicken - Breakfast",
+  "Food - Chicken - Filets","Food - Chicken - Grld Filet","Food - Chicken - Grld Nggts",
+  "Food - Chicken - Nuggets","Food - Chicken - Spicy","Food - Chicken - Strips",
+  "Food - Coater","Food - Condiments","Food - Dessert","Food - Distributor",
+  "Food - Miscellaneous","Food - Oil","Food - Other Food","Food - Produce",
+  "Food - Test Ingredients","Food - Waffle Potato Fries","Food Giveaways",
+  "General Liability","General Miscellaneous","Health Insurance - Team Member",
+  "Health Insurance Administrative Fees","Kitchen Supplies","Legal Fees - Restaurant Ops",
+  "License","Life Insurance-Team Member","Linen","Maint Bldg - Door/Glass/HW",
+  "Maint Bldg - Electrical","Maint Bldg - Exhaust","Maint Bldg - Finishes/Paint",
+  "Maint Bldg - HVAC","Maint Bldg - Lighting","Maint Bldg - Lndscp/Lawn/Irrig",
+  "Maint Bldg - Miscellaneous","Maint Bldg - Playground","Maint Bldg - Plumbing",
+  "Maint Bldg - Prev/Sched Maint","Maint Bldg - Seating","Maint Bldg - Signage",
+  "Maint Equip- Beverage","Maint Equip- DriveThru Equip","Maint Equip- Food Prep/Hold",
+  "Maint Equip- Frig/Freezer/Thaw","Maint Equip- Grill","Maint Equip- I.T.",
+  "Maint Equip- Ice Cream","Maint Equip- Ice Machine","Maint Equip- Miscellaneous",
+  "Maint Equip- Open Fryer","Maint Equip- Other","Maint Equip- Pressure Fryer",
+  "Maint Equip- Prev/Sched Maint","Maint Equip- Shelving","Maint Equip- Walkin Frig/Frzr",
+  "Maint Equip- Water Filtration","Maintenance","Marketing - Fundraisers",
+  "Marketing - Rest. Advertising","Marketing - Services","Marketing - Sponsorships",
+  "Meals - Operator","Meals - Team Member","Music Expense","NSF Check Collection",
+  "Office Supplies","Offsite Office Space","Offsite Space/Storage",
+  "Operator Business Mileage","Operator Development Expense","Operator EPLI",
+  "Operator cell phone","Other Business Insurance","Other Team Member Benefits",
+  "Paper","Paper Giveaways","Party/Outing Expense",
+  "Payroll - Wages - bonus/vacation/sick time","Payroll - Workers Comp Insurance",
+  "Payroll- Wages","Pension - Team Member","Pest Control",
+  "Phone-Landline/Internet/Wifi","Products and Premise Liability Insurance",
+  "Profit Sharing - Team Member","Property Tax Expense","Property Tax-Opr/Entity Owned",
+  "R&M Equip - Music","R&M Equip - Security","Recruiting Expense",
+  "Repair Bldg - Door/Glass/HW","Repair Bldg - Electrical","Repair Bldg - Exhaust",
+  "Repair Bldg - Finishes/Paint","Repair Bldg - HVAC","Repair Bldg - Lighting",
+  "Repair Bldg - Miscellaneous","Repair Bldg - Playground","Repair Bldg - Plumbing",
+  "Repair Bldg - Prev/Sched Maint","Repair Bldg - Seating","Repair Bldg - Signage",
+  "Repair Bldg -Land/Lawn/Irrig","Repair Equip - Beverage","Repair Equip - Drive-Thr Equip",
+  "Repair Equip - Food Prep/Hold","Repair Equip - Frig/Frzer/Thaw","Repair Equip - Grill",
+  "Repair Equip - I.T.","Repair Equip - Ice Cream","Repair Equip - Ice Machine",
+  "Repair Equip - Miscellaneous","Repair Equip - Open Fryer","Repair Equip - Other",
+  "Repair Equip - Pressure Fryer","Repair Equip - Prev/Sch Maint","Repair Equip - Shelving",
+  "Repair Equip - Water Filtr.","Repair Equip - Wlk-in Frig/Frz","Repair General - Other",
+  "Repairs","Replacement Check","Retirement Admin Fees","Security Expense",
+  "Service Amenities","Swiped Credit Card Fees","TM Bus. Mileage(Non-Delivery)",
+  "Team Member Retirement","Team Member Training Expense","Theft Liability Insurance",
+  "Third Party Staffing","Trailers","Trash Compactors","Travel - Operators",
+  "Travel - Team Member","Uniforms","Utilities - Deposit Paid","Utilities - Gas",
+  "Utilities - Trash Service","Water & Sewage - Utility Co.","Fuel Surcharge"
+  // NOTE: "Withholding Tax- COR Only" intentionally excluded per spec
+];
+
+// ── Module State ───────────────────────────────────────────────
+const G = {
+  mode: 'single',        // 'single' | 'batch'
+  batch: [],             // [{file, index, status, extracted, blob, dupFound}]
+  sameVendor: false,
+  sameVendorName: '',
+  currentEntry: null,    // data being reviewed in step 2
+  currentBlob: null,     // compressed image blob for current entry
+  historyFilter: 'all',
+  dupFound: null,
+  forceOverride: false,
+};
+let _gastosFiles = [];
+
+// ── Category Lookup ────────────────────────────────────────────
+function getCategoryForVendor(vendorName) {
+  const name = (vendorName || '').toUpperCase().trim();
+
+  const tier1 = {
+    "FRESHPOINT PUERTO RICO":"Food - Produce","COCA-COLA PR":"Food - Beverages",
+    "HOLSUM PR":"Food - Bread","TRES MONJITAS":"Food - Beverages",
+    "PR COFFEE":"Food - Beverages","ERS GRAPHICS":"Marketing - Rest. Advertising",
+    "PARTS TOWN":"Kitchen Supplies","DANNY DETAILING":"Maint Bldg - Prev/Sched Maint",
+    "META":"Marketing - Rest. Advertising",
+    "MICHAELANGELO PEREZ BURGOS":"Maint Bldg - Lndscp/Lawn/Irrig",
+    "RENTOKIL":"Pest Control","HALO":"Marketing - Rest. Advertising",
+    "ANGEL BERRIOS GARCIA OSO":"Offsite Space/Storage","LOOMIS":"Change Fund",
+    "LUMA":"Electric Utility - Utility Co.","ACUEDUCTOS":"Water & Sewage - Utility Co.",
+    "YCS":"Maint Equip- I.T.","EC WASTE":"Trash Compactors",
+    "CANVA":"Dues & Subscriptions","OFFICE DEPOT":"Office Supplies",
+    "EL COQUI":"Food - Beverages","SAMS CLUB":"Meals - Team Member",
+    "WALGREENS":"General Miscellaneous","DATE LABEL":"Kitchen Supplies",
+    "PLI":"Marketing - Rest. Advertising","ECOLAB":"Cleaning Supplies",
+    "STARBUCKS":"Meals - Team Member","SHRM":"Team Member Training Expense",
+    "MOOD MEDIA":"Music Expense","SIGNATURE CONTRACTOR":"Maint Bldg - Lndscp/Lawn/Irrig",
+    "OFFICE MAX":"Paper","INDEED":"Recruiting Expense",
+    "SSP AMERICA THE KITCHEN":"Meals - Team Member","SHOES FOR CREWS":"Uniforms",
+    "JW MARRIOTT":"Team Member Training Expense","ABBYS PIZZA":"Party/Outing Expense",
+    "OOBE":"Uniforms","AMBITEK FURNITURE":"Offsite Space/Storage",
+    "THE APPROACH":"Team Member Training Expense","QDOBA":"Meals - Team Member",
+    "CLARK":"Kitchen Supplies","KINGS UNIFORMS":"Linen",
+    "T-MOBILE":"Phone-Landline/Internet/Wifi","CASA DE TORNILLOS":"Maintenance",
+  };
+  const tier2 = {
+    "AMAZON":"General Miscellaneous","COSTCO":"General Miscellaneous",
+    "WALMART":"General Miscellaneous","SUPERMAX":"General Miscellaneous",
+    "HOME DEPOT":"General Miscellaneous","SPECTRUM INDUSTRIAL":"Dues & Subscriptions",
+    "PROGRESSIVE":"Maintenance","ME SALVE":"General Miscellaneous",
+    "NIETO REFRIGERATION":"Maint Bldg - Prev/Sched Maint",
+    "RET":"Maint Bldg - Prev/Sched Maint",
+    "INTERNATIONAL MASCOT":"Marketing - Rest. Advertising",
+    "ALBER RAMOS ROMERO":"Maintenance",
+    "ELECTRIC SERVICE CORPORATION":"Maint Equip- Prev/Sched Maint",
+    "LLUCH":"Maint Equip- Prev/Sched Maint","BEST BUY":"Office Supplies",
+    "KRISPY KREME":"Meals - Team Member","IKEA":"Office Supplies",
+    "CHARTER HOUSE":"General Miscellaneous",
+    "VA ELECTRICAL CONTRACTORS":"Maint Bldg - Electrical",
+    "ASORE":"Team Member Training Expense",
+    "TAYLOR SALES AND SERVICES":"Maint Equip- Ice Cream",
+    "UNITED AIRLINES":"Travel - Team Member","HORNOFINO":"Meals - Team Member",
+    "GOOD CENTS R&M":"Kitchen Supplies",
+  };
+
+  if (tier1[name]) return { category: tier1[name], tier: 'locked', confidence: 100 };
+  if (tier2[name]) return { category: tier2[name], tier: 'ai', confidence: 60 };
+  for (const [k, v] of Object.entries(tier1)) {
+    if (name.includes(k) || k.includes(name)) return { category: v, tier: 'locked', confidence: 90 };
+  }
+  for (const [k, v] of Object.entries(tier2)) {
+    if (name.includes(k) || k.includes(name)) return { category: v, tier: 'ai', confidence: 50 };
+  }
+  return { category: '', tier: 'human', confidence: 0 };
+}
+
+function gastosCategoryBadge(tier) {
+  if (tier === 'locked') return '<span class="badge" style="background:#d1fae5;color:#065f46;font-size:.72rem">Auto-fill ✓</span>';
+  if (tier === 'ai')     return '<span class="badge" style="background:#fef3c7;color:#92400e;font-size:.72rem">Sugerido por IA</span>';
+  return                        '<span class="badge" style="background:#fee2e2;color:#991b1b;font-size:.72rem">Requiere revisión</span>';
+}
+
+function gastosStatusBadge(status) {
+  if (status === 'pending')  return '<span class="badge" style="background:#fef3c7;color:#92400e">Pendiente</span>';
+  if (status === 'approved') return '<span class="badge" style="background:#dbeafe;color:#1e40af">Aprobado</span>';
+  if (status === 'entered')  return '<span class="badge" style="background:#dcfce7;color:#166534">Ingresado ✓</span>';
+  return '<span class="badge">—</span>';
+}
+
+// ── Date helpers ───────────────────────────────────────────────
+function gastosParseDate(str) {
+  // MM/DD/YYYY → YYYY-MM-DD
+  if (!str) return null;
+  const p = str.split('/');
+  if (p.length === 3) return `${p[2]}-${p[0].padStart(2,'0')}-${p[1].padStart(2,'0')}`;
+  return str;
+}
+function gastosFormatDate(dbDate) {
+  // YYYY-MM-DD → MM/DD/YYYY
+  if (!dbDate) return '—';
+  try {
+    const d = new Date(dbDate + 'T12:00:00');
+    return `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`;
+  } catch { return dbDate; }
+}
+
+// ── Image helpers ──────────────────────────────────────────────
+async function gastosCompressImage(file) {
+  return new Promise(resolve => {
+    const canvas = document.createElement('canvas');
+    const img = new Image();
+    img.onload = () => {
+      const maxW = 1200;
+      const scale = Math.min(1, maxW / img.width);
+      canvas.width  = img.width  * scale;
+      canvas.height = img.height * scale;
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(blob => resolve(blob), 'image/jpeg', 0.85);
+    };
+    img.src = URL.createObjectURL(file);
+  });
+}
+async function gastosToBase64(blob) {
+  return new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.readAsDataURL(blob);
+  });
+}
+
+// ── Duplicate check ────────────────────────────────────────────
+async function gastosCheckDuplicate(vendor, invoiceNumber) {
+  if (!invoiceNumber) return null;
+  try {
+    const { data } = await getSupa()
+      .from('gastos_entries')
+      .select('id,vendor,invoice_number,invoice_date,amount,status')
+      .ilike('vendor', `%${vendor}%`)
+      .eq('invoice_number', invoiceNumber)
+      .limit(1);
+    return data?.length > 0 ? data[0] : null;
+  } catch { return null; }
+}
+
+// ── Sorting ────────────────────────────────────────────────────
+function sortForGastosEntry(entries) {
+  return entries
+    .filter(e => e.status === 'approved')
+    .sort((a, b) => {
+      if (a.vendor < b.vendor) return -1;
+      if (a.vendor > b.vendor) return 1;
+      return new Date(a.invoice_date) - new Date(b.invoice_date);
+    });
+}
+
+// ── AI calls ───────────────────────────────────────────────────
+async function gastosExtractReceipt(base64Img) {
+  const res = await fetch(GASTOS_PROXY, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON}` },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 600,
+      system: `You are an expense entry assistant for a Chick-fil-A restaurant in Puerto Rico. You will be given a photo of a receipt or invoice. Extract the following fields and return ONLY valid JSON with no markdown, no backticks, no preamble. Return this exact structure: {"vendor":"supplier name in ALL CAPS. Use canonical names: FRESHPOINT PUERTO RICO, COCA-COLA PR, HOLSUM PR, LUMA, ACUEDUCTOS, RENTOKIL, etc. Otherwise return as printed in ALL CAPS.","invoice_number":"invoice/receipt number or null","invoice_date":"MM/DD/YYYY or null","amount":total as number or null,"description":"1 sentence describing what was purchased","raw_vendor":"vendor name exactly as printed"}`,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64Img } },
+          { type: 'text', text: 'Extract the expense data from this receipt.' }
+        ]
+      }]
+    })
+  });
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
+  return JSON.parse(text);
+}
+
+async function gastosExtractSameVendor(base64Img, vendorName) {
+  const res = await fetch(GASTOS_PROXY, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON}` },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 200,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64Img } },
+          { type: 'text', text: `The vendor is already known: ${vendorName}. Extract only: invoice_number, invoice_date (MM/DD/YYYY), and amount (number only). Return ONLY valid JSON: {"invoice_number":"...","invoice_date":"...","amount":0.00}` }
+        ]
+      }]
+    })
+  });
+  if (!res.ok) throw new Error(`API error ${res.status}`);
+  const data = await res.json();
+  const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
+  return JSON.parse(text);
+}
+
+async function gastosAiCategory(vendor, description) {
+  const catList = GASTOS_CATEGORIES.join(', ');
+  const res = await fetch(GASTOS_PROXY, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON}` },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 200,
+      messages: [{
+        role: 'user',
+        content: `You are an expense categorization assistant for a Chick-fil-A restaurant in Puerto Rico. Vendor: "${vendor}". Description: "${description}". Return ONLY valid JSON: {"category":"exact name from the list","reasoning":"one sentence"}. NEVER suggest "Withholding Tax- COR Only". Choose ONLY from this list: ${catList}`
+      }]
+    })
+  });
+  if (!res.ok) throw new Error(`API error ${res.status}`);
+  const data = await res.json();
+  const text = (data.content?.[0]?.text || '').replace(/```json|```/g, '').trim();
+  return JSON.parse(text);
+}
+
+// ── Supabase CRUD ──────────────────────────────────────────────
+async function gastosSaveEntry(entry) {
+  const { data: { user } } = await getSupa().auth.getUser();
+  const { data, error } = await getSupa()
+    .from('gastos_entries')
+    .insert({ ...entry, created_by: user?.id })
+    .select().single();
+  if (error) throw error;
+  return data;
+}
+
+async function gastosDeleteEntry(id) {
+  const { error } = await getSupa().from('gastos_entries').delete().eq('id', id);
+  if (error) throw new Error(error.message);
+}
+
+async function gastosUpdateStatus(id, status) {
+  const { error } = await getSupa().from('gastos_entries').update({ status }).eq('id', id);
+  if (error) throw error;
+}
+
+async function gastosLoadHistory(filterStatus = 'all') {
+  let q = getSupa().from('gastos_entries').select('*').order('created_at', { ascending: false }).limit(150);
+  if (filterStatus !== 'all') q = q.eq('status', filterStatus);
+  const { data, error } = await q;
+  if (error) throw error;
+  return data || [];
+}
+
+async function gastosUploadImage(blob, entryId) {
+  try {
+    const { data: { user } } = await getSupa().auth.getUser();
+    const path = `gastos/${user?.id || 'anon'}/${entryId}.jpg`;
+    await getSupa().storage.from('receipts').upload(path, blob, { contentType: 'image/jpeg', upsert: true });
+    const { data } = getSupa().storage.from('receipts').getPublicUrl(path);
+    return data?.publicUrl || null;
+  } catch (e) { console.warn('Image upload failed:', e); return null; }
+}
+
+// ── MAIN INIT ──────────────────────────────────────────────────
+function gastosInit() {
+  const app = document.getElementById('gastosApp');
+  if (!app || app.dataset.init === '1') {
+    // Already initialized — just refresh queue and history
+    gastosRenderQueue();
+    gastosRenderHistory();
+    return;
+  }
+  app.dataset.init = '1';
+  app.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+      <h2 style="margin:0;font-size:1.2rem;color:var(--navy)">💰 Gastos Autofill</h2>
+      <span style="font-size:.78rem;color:var(--text-mid)">Extrae datos de recibos con IA · Prepara entradas para Gastos</span>
+    </div>
+    <div id="gastosStep1"></div>
+    <div id="gastosStep2" style="display:none"></div>
+    <div id="gastosQueueArea" style="margin-top:20px"></div>
+    <div id="gastosHistoryArea" style="margin-top:20px"></div>`;
+
+  gastosRenderUpload();
+  gastosRenderQueue();
+  gastosRenderHistory();
+}
+
+// ── STEP 1: Upload UI ──────────────────────────────────────────
+function gastosRenderUpload() {
+  document.getElementById('gastosStep1').innerHTML = `
+  <div class="ccard">
+    <div style="font-weight:700;color:var(--navy);font-size:.9rem;margin-bottom:14px">📤 Paso 1 — Subir Recibo(s)</div>
+
+    <div id="gDropZone"
+      style="border:2px dashed #94a3b8;border-radius:10px;padding:36px 20px;text-align:center;cursor:pointer;transition:border-color .2s;margin-bottom:14px"
+      onclick="document.getElementById('gFileInput').click()"
+      ondragover="event.preventDefault();this.style.borderColor='var(--navy)'"
+      ondragleave="this.style.borderColor='#94a3b8'"
+      ondrop="event.preventDefault();this.style.borderColor='#94a3b8';gastosHandleFiles(event.dataTransfer.files)">
+      <div style="font-size:2.2rem;margin-bottom:8px">📷</div>
+      <div style="font-weight:600;color:var(--navy);margin-bottom:4px">Arrastra fotos aquí o haz clic para seleccionar</div>
+      <div style="font-size:.78rem;color:var(--text-mid)">Máximo 15 recibos · JPG / PNG / HEIC · Cámara o galería</div>
+    </div>
+    <input type="file" id="gFileInput" accept="image/*" capture="environment" multiple
+      style="display:none" onchange="gastosHandleFiles(this.files)"/>
+
+    <!-- Same-vendor toggle — shown only in batch mode -->
+    <div id="gSameVendorRow" style="display:none;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:12px 14px;margin-bottom:14px">
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:.875rem;font-weight:600;color:#0369a1">
+        <input type="checkbox" id="gSameVendorChk" onchange="gastosToggleSameVendor()"
+          style="width:18px;height:18px;accent-color:var(--navy)"/>
+        ¿Todos los recibos son del mismo proveedor?
+      </label>
+      <div id="gSameVendorInput" style="display:none;margin-top:10px">
+        <input type="text" id="gVendorNamePreset" class="sinput" style="width:100%"
+          placeholder="Nombre del proveedor (ej. FRESHPOINT PUERTO RICO)"
+          oninput="G.sameVendorName=this.value.trim().toUpperCase()"/>
+      </div>
+    </div>
+
+    <!-- Single preview -->
+    <div id="gSinglePreview" style="display:none;margin-bottom:14px;text-align:center">
+      <img id="gPreviewImg" style="max-width:100%;max-height:280px;border-radius:8px;border:1px solid #e2e8f0;object-fit:contain"/>
+    </div>
+
+    <!-- Batch thumbnail grid -->
+    <div id="gBatchGrid" style="display:none;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:10px;margin-bottom:14px"></div>
+
+    <!-- Progress bar -->
+    <div id="gProgressWrap" style="display:none;margin-bottom:14px">
+      <div style="font-size:.82rem;font-weight:600;color:var(--navy);margin-bottom:6px" id="gProgressLabel">Procesando...</div>
+      <div style="background:#e5e7eb;border-radius:10px;height:8px;overflow:hidden">
+        <div id="gProgressBar" style="height:100%;background:var(--navy);border-radius:10px;transition:width .3s;width:0%"></div>
+      </div>
+    </div>
+
+    <!-- Batch summary (shown after processing) -->
+    <div id="gBatchSummary" style="display:none"></div>
+
+    <!-- Extract button -->
+    <div id="gExtractRow" style="display:none">
+      <button class="btn btn-navy" id="gExtractBtn" onclick="gastosExtract()" style="width:100%;padding:12px;font-size:.95rem">
+        ✨ Extraer datos con IA
+      </button>
+    </div>
+  </div>`;
+}
+
+function gastosHandleFiles(fileList) {
+  const files = Array.from(fileList);
+  if (!files.length) return;
+  if (files.length > 15) {
+    alert('Por favor selecciona máximo 15 recibos a la vez.');
+    return;
+  }
+  _gastosFiles = files;
+  G.mode = files.length > 1 ? 'batch' : 'single';
+  G.batch = [];
+  document.getElementById('gBatchSummary').style.display = 'none';
+
+  if (G.mode === 'single') {
+    document.getElementById('gSameVendorRow').style.display = 'none';
+    document.getElementById('gBatchGrid').style.display = 'none';
+    document.getElementById('gSinglePreview').style.display = 'block';
+    document.getElementById('gPreviewImg').src = URL.createObjectURL(files[0]);
+  } else {
+    document.getElementById('gSameVendorRow').style.display = 'block';
+    document.getElementById('gSinglePreview').style.display = 'none';
+    gastosRenderBatchGrid(files);
+  }
+  document.getElementById('gDropZone').style.borderColor = 'var(--navy)';
+  document.getElementById('gExtractRow').style.display = 'block';
+}
+
+function gastosRenderBatchGrid(files) {
+  const grid = document.getElementById('gBatchGrid');
+  grid.style.display = 'grid';
+  grid.innerHTML = files.map((f, i) => `
+    <div id="gThumb_${i}" style="border:2px solid #e2e8f0;border-radius:8px;overflow:hidden">
+      <img src="${URL.createObjectURL(f)}" style="width:100%;height:86px;object-fit:cover;display:block"/>
+      <div id="gThumbLbl_${i}" style="padding:3px 6px;font-size:.68rem;font-weight:600;text-align:center;background:#f8fafc;color:#64748b">
+        En espera
+      </div>
+    </div>`).join('');
+}
+
+function gastosSetThumbStatus(i, text, bg, color) {
+  const lbl  = document.getElementById(`gThumbLbl_${i}`);
+  const card = document.getElementById(`gThumb_${i}`);
+  if (lbl)  { lbl.textContent = text; lbl.style.background = bg; lbl.style.color = color; }
+  if (card) { card.style.borderColor = color; }
+}
+
+function gastosToggleSameVendor() {
+  G.sameVendor = document.getElementById('gSameVendorChk').checked;
+  document.getElementById('gSameVendorInput').style.display = G.sameVendor ? 'block' : 'none';
+}
+
+// ── EXTRACT dispatcher ─────────────────────────────────────────
+async function gastosExtract() {
+  if (!_gastosFiles.length) return;
+  document.getElementById('gExtractBtn').disabled = true;
+  document.getElementById('gExtractBtn').textContent = '⏳ Procesando...';
+  document.getElementById('gProgressWrap').style.display = 'block';
+
+  if (G.mode === 'single') {
+    await gastosExtractSingleFlow(_gastosFiles[0]);
+  } else {
+    await gastosExtractBatchFlow(_gastosFiles);
+  }
+}
+
+async function gastosExtractSingleFlow(file) {
+  try {
+    gastosSetProgress(20, 'Comprimiendo imagen...');
+    const blob = await gastosCompressImage(file);
+    G.currentBlob = blob;
+    gastosSetProgress(55, 'Extrayendo datos con IA...');
+    const b64  = await gastosToBase64(blob);
+    const data = await gastosExtractReceipt(b64);
+    gastosSetProgress(100, 'Listo ✓');
+    setTimeout(() => {
+      document.getElementById('gProgressWrap').style.display = 'none';
+      gastosShowStep2(data, blob);
+    }, 400);
+  } catch(err) {
+    alert('Error al procesar el recibo: ' + err.message);
+    gastosResetExtractBtn();
+  }
+}
+
+async function gastosExtractBatchFlow(files) {
+  G.batch = files.map((f, i) => ({ file: f, index: i, status: 'pending', extracted: null, blob: null, dupFound: null }));
+  const total = files.length;
+
+  for (let i = 0; i < total; i++) {
+    const item = G.batch[i];
+    gastosSetProgress(Math.round(((i) / total) * 100), `Procesando ${i+1} de ${total}...`);
+    gastosSetThumbStatus(i, '⏳ Procesando...', '#fef3c7', '#92400e');
+    try {
+      item.blob = await gastosCompressImage(item.file);
+      const b64 = await gastosToBase64(item.blob);
+
+      if (G.sameVendor && G.sameVendorName) {
+        const partial = await gastosExtractSameVendor(b64, G.sameVendorName);
+        item.extracted = { vendor: G.sameVendorName, description: '', ...partial };
+      } else {
+        item.extracted = await gastosExtractReceipt(b64);
+      }
+
+      // Duplicate check
+      if (item.extracted.invoice_number && item.extracted.vendor) {
+        item.dupFound = await gastosCheckDuplicate(item.extracted.vendor, item.extracted.invoice_number);
+      }
+
+      const missingCritical = !item.extracted.vendor || item.extracted.amount == null;
+      item.status = item.dupFound ? 'duplicate' : missingCritical ? 'review' : 'ready';
+
+      const statusMap = {
+        ready:     ['Listo ✓',      '#dcfce7', '#166534'],
+        review:    ['Revisar ⚠',   '#fef9c3', '#92400e'],
+        duplicate: ['Duplicado ✗', '#fee2e2', '#991b1b'],
+      };
+      const [t, bg, c] = statusMap[item.status] || ['?', '#f1f5f9', '#64748b'];
+      gastosSetThumbStatus(i, t, bg, c);
+    } catch(err) {
+      item.status = 'error';
+      gastosSetThumbStatus(i, 'Error ✗', '#fee2e2', '#dc2626');
+    }
+    if (i < total - 1) await new Promise(r => setTimeout(r, 500));
+  }
+
+  gastosSetProgress(100, 'Procesamiento completado');
+  gastosRenderBatchSummary();
+}
+
+function gastosSetProgress(pct, label) {
+  const bar = document.getElementById('gProgressBar');
+  const lbl = document.getElementById('gProgressLabel');
+  if (bar) bar.style.width = pct + '%';
+  if (lbl) lbl.textContent = label;
+}
+
+function gastosResetExtractBtn() {
+  const btn = document.getElementById('gExtractBtn');
+  if (btn) { btn.disabled = false; btn.textContent = '✨ Extraer datos con IA'; }
+  document.getElementById('gProgressWrap').style.display = 'none';
+}
+
+function gastosRenderBatchSummary() {
+  const ready = G.batch.filter(b => b.status === 'ready').length;
+  const review = G.batch.filter(b => b.status === 'review').length;
+  const dups   = G.batch.filter(b => b.status === 'duplicate').length;
+  const errors = G.batch.filter(b => b.status === 'error').length;
+
+  const el = document.getElementById('gBatchSummary');
+  el.style.display = 'block';
+  el.innerHTML = `
+    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-top:10px">
+      <div style="font-weight:700;color:var(--navy);margin-bottom:10px">📊 Resultado del procesamiento</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+        <span style="background:#dcfce7;color:#166534;padding:3px 10px;border-radius:20px;font-size:.8rem;font-weight:700">✅ ${ready} listos</span>
+        ${review > 0 ? `<span style="background:#fef9c3;color:#92400e;padding:3px 10px;border-radius:20px;font-size:.8rem;font-weight:700">⚠️ ${review} requieren revisión</span>` : ''}
+        ${dups   > 0 ? `<span style="background:#fee2e2;color:#991b1b;padding:3px 10px;border-radius:20px;font-size:.8rem;font-weight:700">✗ ${dups} duplicados</span>` : ''}
+        ${errors > 0 ? `<span style="background:#f1f5f9;color:#64748b;padding:3px 10px;border-radius:20px;font-size:.8rem;font-weight:700">✗ ${errors} errores</span>` : ''}
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        ${ready > 0 ? `<button class="btn btn-navy" onclick="gastosApproveAllReady()">✅ Aprobar todos los listos (${ready})</button>` : ''}
+        <button class="btn" onclick="gastosReviewOneByOne(0)">Revisar uno por uno →</button>
+      </div>
+    </div>`;
+
+  gastosResetExtractBtn();
+}
+
+// ── STEP 2: Review form ────────────────────────────────────────
+function gastosShowStep2(extracted, blob, batchIndex = null) {
+  G.currentEntry = { ...extracted, _batchIndex: batchIndex };
+  G.currentBlob  = blob;
+  G.dupFound     = null;
+  G.forceOverride = false;
+
+  const catResult = getCategoryForVendor(extracted.vendor || '');
+  G.currentEntry._catResult = catResult;
+
+  const step1 = document.getElementById('gastosStep1');
+  const step2 = document.getElementById('gastosStep2');
+  step1.style.display = 'none';
+  step2.style.display = 'block';
+
+  const hasWarning = !extracted.vendor || extracted.amount == null;
+  const catOpts = GASTOS_CATEGORIES.map(c =>
+    `<option value="${c}" ${c === catResult.category ? 'selected' : ''}>${c}</option>`
+  ).join('');
+  const catBorderColor = catResult.tier === 'locked' ? '#16a34a' : catResult.tier === 'ai' ? '#d97706' : '#dc2626';
+
+  step2.innerHTML = `
+  <div class="ccard">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+      <div style="font-weight:700;color:var(--navy);font-size:.9rem">📝 Paso 2 — Revisar y Confirmar</div>
+      <button class="btn" style="font-size:.78rem" onclick="gastosBackToUpload()">← Nuevo recibo</button>
+    </div>
+
+    ${hasWarning ? `<div style="background:#fef9c3;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;font-size:.82rem;color:#92400e;margin-bottom:12px">
+      ⚠️ No pudimos leer todos los datos. Por favor verifica la foto o ingresa los datos manualmente.</div>` : ''}
+
+    <div id="gDupAlert"></div>
+
+    <div class="frow" style="margin-bottom:12px">
+      <div class="field" style="flex:2">
+        <label style="font-size:.8rem;font-weight:600;color:var(--text-mid)">Proveedor *</label>
+        <input type="text" id="gVendor" value="${extracted.vendor || ''}" class="sinput"
+          style="border-color:${!extracted.vendor ? '#d97706' : '#d1d5db'}"
+          oninput="gastosOnVendorInput(this.value)"/>
+      </div>
+      <div class="field" style="flex:1">
+        <label style="font-size:.8rem;font-weight:600;color:var(--text-mid)">Número de factura</label>
+        <input type="text" id="gInvNum" value="${extracted.invoice_number || ''}" class="sinput"/>
+      </div>
+    </div>
+
+    <div class="frow" style="margin-bottom:12px">
+      <div class="field" style="flex:1">
+        <label style="font-size:.8rem;font-weight:600;color:var(--text-mid)">Fecha de factura</label>
+        <input type="text" id="gInvDate" value="${extracted.invoice_date || ''}" class="sinput" placeholder="MM/DD/YYYY"/>
+      </div>
+      <div class="field" style="flex:1">
+        <label style="font-size:.8rem;font-weight:600;color:var(--text-mid)">Fecha de pago <span style="font-weight:400;color:#94a3b8">(opcional)</span></label>
+        <input type="text" id="gPayDate" value="" class="sinput" placeholder="MM/DD/YYYY"/>
+      </div>
+    </div>
+
+    <div class="frow" style="margin-bottom:12px">
+      <div class="field" style="flex:1">
+        <label style="font-size:.8rem;font-weight:600;color:var(--text-mid)">Monto *</label>
+        <input type="number" id="gAmount" value="${extracted.amount ?? ''}" class="sinput" step="0.01" min="0"
+          style="border-color:${extracted.amount == null ? '#d97706' : '#d1d5db'}"/>
+      </div>
+      <div class="field" style="flex:1">
+        <label style="font-size:.8rem;font-weight:600;color:var(--text-mid)">Divisa</label>
+        <select id="gCurrency" class="sinput">
+          <option value="USD" selected>USD</option>
+          <option value="EUR">EUR</option>
+        </select>
+      </div>
+    </div>
+
+    <div style="margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <label style="font-size:.8rem;font-weight:600;color:var(--text-mid);margin:0">Categoría de gasto *</label>
+        <span id="gCatBadge">${gastosCategoryBadge(catResult.tier)}</span>
+      </div>
+      <select id="gCat" onchange="gastosOnCatChange()"
+        style="width:100%;padding:9px 10px;border:2px solid ${catBorderColor};border-radius:7px;font-size:.875rem;background:#fff">
+        <option value="">-- Seleccionar categoría --</option>
+        ${catOpts}
+      </select>
+    </div>
+
+    <div style="margin-bottom:14px">
+      <label style="font-size:.8rem;font-weight:600;color:var(--text-mid);display:block;margin-bottom:4px">Descripción</label>
+      <textarea id="gDesc" class="sinput" rows="2" style="width:100%;resize:vertical">${extracted.description || ''}</textarea>
+    </div>
+
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn btn-navy" id="gApproveBtn" onclick="gastosApproveEntry()"
+        ${catResult.tier === 'human' && !catResult.category ? 'disabled' : ''}>
+        ✅ Aprobar y guardar
+      </button>
+      <button class="btn" onclick="gastosBackToUpload()">🗑 Limpiar</button>
+    </div>
+  </div>`;
+
+  // Async: duplicate check + AI category fallback
+  const v = extracted.vendor, n = extracted.invoice_number;
+  if (v && n) gastosCheckAndShowDup(v, n);
+  if (catResult.tier === 'human' && extracted.description) {
+    gastosAiCategory(v, extracted.description).then(r => {
+      if (!r?.category) return;
+      const sel = document.getElementById('gCat');
+      if (sel) {
+        sel.value = r.category;
+        sel.style.borderColor = '#d97706';
+        document.getElementById('gCatBadge').innerHTML = gastosCategoryBadge('ai');
+        gastosOnCatChange();
+      }
+    }).catch(() => {});
+  }
+}
+
+function gastosOnVendorInput(val) {
+  const cat = getCategoryForVendor(val);
+  const sel = document.getElementById('gCat');
+  const badge = document.getElementById('gCatBadge');
+  if (sel && cat.category) {
+    sel.value = cat.category;
+    sel.style.borderColor = cat.tier === 'locked' ? '#16a34a' : cat.tier === 'ai' ? '#d97706' : '#dc2626';
+  }
+  if (badge) badge.innerHTML = gastosCategoryBadge(cat.tier);
+  gastosOnCatChange();
+}
+
+function gastosOnCatChange() {
+  const val = document.getElementById('gCat')?.value;
+  const btn = document.getElementById('gApproveBtn');
+  if (btn) btn.disabled = !val || (G.dupFound && !G.forceOverride);
+}
+
+async function gastosCheckAndShowDup(vendor, invoiceNumber) {
+  const dup = await gastosCheckDuplicate(vendor, invoiceNumber);
+  G.dupFound = dup;
+  const el = document.getElementById('gDupAlert');
+  if (!el) return;
+  if (!dup) { el.innerHTML = ''; return; }
+
+  el.innerHTML = `
+    <div style="background:#fee2e2;border:1px solid #fecaca;border-radius:8px;padding:12px 14px;margin-bottom:12px">
+      <div style="font-weight:700;color:#dc2626;margin-bottom:6px">⚠️ Esta factura ya fue ingresada</div>
+      <div style="font-size:.82rem;color:#7f1d1d;margin-bottom:10px">
+        Proveedor: ${dup.vendor} · Fecha: ${gastosFormatDate(dup.invoice_date)} · Monto: $${parseFloat(dup.amount||0).toFixed(2)} · Estado: ${dup.status}
+      </div>
+      <button class="btn" style="font-size:.78rem;border-color:#dc2626;color:#dc2626" onclick="gastosForceOverride()">
+        Ignorar y guardar de todas formas
+      </button>
+    </div>`;
+  const btn = document.getElementById('gApproveBtn');
+  if (btn) btn.disabled = true;
+}
+
+function gastosForceOverride() {
+  G.forceOverride = true;
+  G.dupFound = null;
+  document.getElementById('gDupAlert').innerHTML = `
+    <div style="background:#fef9c3;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:.82rem;color:#92400e">
+      ⚠️ Guardando como duplicado confirmado — haz clic en "Aprobar y guardar" para confirmar.
+    </div>`;
+  gastosOnCatChange();
+}
+
+async function gastosApproveEntry() {
+  const vendor   = document.getElementById('gVendor')?.value.trim();
+  const invNum   = document.getElementById('gInvNum')?.value.trim();
+  const invDate  = document.getElementById('gInvDate')?.value.trim();
+  const payDate  = document.getElementById('gPayDate')?.value.trim();
+  const amount   = parseFloat(document.getElementById('gAmount')?.value || '');
+  const currency = document.getElementById('gCurrency')?.value || 'USD';
+  const category = document.getElementById('gCat')?.value;
+  const desc     = document.getElementById('gDesc')?.value.trim();
+
+  if (!vendor)   { alert('Por favor ingresa el nombre del proveedor.'); return; }
+  if (!category) { alert('Por favor selecciona una categoría de gasto.'); return; }
+  if (!amount || isNaN(amount)) { alert('Por favor ingresa un monto válido.'); return; }
+
+  const btn = document.getElementById('gApproveBtn');
+  btn.disabled = true; btn.textContent = 'Guardando...';
+
+  try {
+    const catResult = getCategoryForVendor(vendor);
+    const entry = {
+      vendor, invoice_number: invNum || null,
+      invoice_date: invDate ? gastosParseDate(invDate) : null,
+      payment_date: payDate ? gastosParseDate(payDate) : null,
+      currency, amount, expense_category: category,
+      description: desc || null,
+      category_tier: G.currentEntry._catResult?.tier || catResult.tier,
+      category_confidence: G.currentEntry._catResult?.confidence || catResult.confidence,
+      status: 'approved'
+    };
+
+    const saved = await gastosSaveEntry(entry);
+
+    // Upload image async (non-blocking)
+    if (G.currentBlob) {
+      gastosUploadImage(G.currentBlob, saved.id).then(url => {
+        if (url) getSupa().from('gastos_entries').update({ receipt_image_url: url }).eq('id', saved.id);
+      });
+    }
+
+    gastosShowStep3Single(saved);
+    gastosRenderQueue();
+    gastosRenderHistory();
+  } catch(err) {
+    alert('Error al guardar: ' + err.message);
+    btn.disabled = false; btn.textContent = '✅ Aprobar y guardar';
+  }
+}
+
+function gastosBackToUpload() {
+  document.getElementById('gastosStep2').style.display = 'none';
+  document.getElementById('gastosStep1').style.display = 'block';
+  _gastosFiles = [];
+  G.currentEntry = null; G.currentBlob = null; G.dupFound = null; G.forceOverride = false;
+  gastosRenderUpload();
+}
+
+// ── STEP 3: Single entry ready panel ──────────────────────────
+function gastosShowStep3Single(entry) {
+  const step2 = document.getElementById('gastosStep2');
+  step2.innerHTML = `
+  <div class="ccard">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+      <div style="font-weight:700;color:var(--navy);font-size:.9rem">✅ Listo para ingresar en Gastos</div>
+      <button class="btn" style="font-size:.78rem" onclick="gastosBackToUpload()">+ Nuevo recibo</button>
+    </div>
+
+    <!-- Status pill row -->
+    <div style="display:flex;margin-bottom:18px;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0">
+      ${['Pendiente','Aprobado','Ingresado'].map((s,i) => `
+        <div style="flex:1;padding:10px 8px;text-align:center;font-size:.75rem;font-weight:700;
+          background:${i===1?'var(--navy)':'#f8fafc'};color:${i===1?'#fff':'var(--text-mid)'};
+          border-right:${i<2?'1px solid #e2e8f0':'none'}">
+          ${['○','★','✓'][i]} ${s}
+        </div>`).join('')}
+    </div>
+
+    <div style="font-size:.72rem;font-weight:700;color:var(--text-mid);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Página 1 — Add Invoice</div>
+    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:10px">
+      ${gastosRORow('Supplier', entry.vendor)}
+      ${gastosRORow('Invoice Number', entry.invoice_number || '—')}
+      ${gastosRORow('Invoice Date', gastosFormatDate(entry.invoice_date))}
+      ${gastosRORow('Currency', entry.currency || 'USD')}
+    </div>
+    <div style="font-size:.72rem;font-weight:700;color:var(--text-mid);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Página 2 — Add Invoice Detail</div>
+    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:10px">
+      ${gastosRORow('Expense Category', entry.expense_category || '—')}
+      ${gastosRORow('Amount', `$${parseFloat(entry.amount||0).toFixed(2)}`)}
+      ${gastosRORow('Description', entry.description || '—')}
+    </div>
+    <div style="font-size:.72rem;font-weight:700;color:var(--text-mid);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Página 3 — Edit Invoice</div>
+    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:16px">
+      ${gastosRORow('Payment Date', gastosFormatDate(entry.payment_date))}
+    </div>
+
+    <button class="btn btn-navy" id="gMarkEnteredBtn_${entry.id}"
+      onclick="gastosMarkEntered('${entry.id}', this)" style="width:100%;padding:12px">
+      ✅ Marcar como ingresado en Gastos
+    </button>
+  </div>`;
+}
+
+function gastosRORow(label, value) {
+  return `<div style="display:flex;align-items:baseline;gap:12px;padding:5px 0;border-bottom:1px solid #f1f5f9">
+    <span style="font-size:.75rem;font-weight:700;color:var(--text-mid);min-width:140px;flex-shrink:0">${label}</span>
+    <span style="font-size:.9rem;font-weight:600;color:var(--navy)">${value}</span>
+  </div>`;
+}
+
+async function gastosMarkEntered(id, btn) {
+  btn.disabled = true; btn.textContent = 'Actualizando...';
+  try {
+    await gastosUpdateStatus(id, 'entered');
+    btn.textContent = '✓ Ingresado en Gastos';
+    btn.style.background = '#16a34a';
+    btn.style.borderColor = '#16a34a';
+    gastosRenderQueue();
+    gastosRenderHistory();
+  } catch(err) {
+    alert('Error: ' + err.message);
+    btn.disabled = false; btn.textContent = '✅ Marcar como ingresado en Gastos';
+  }
+}
+
+// ── Batch approve all ready ────────────────────────────────────
+async function gastosApproveAllReady() {
+  const readyItems = G.batch.filter(b => b.status === 'ready');
+  if (!readyItems.length) return;
+  const btn = event.currentTarget;
+  btn.disabled = true; btn.textContent = `Guardando ${readyItems.length}...`;
+  let saved = 0;
+  for (const item of readyItems) {
+    try {
+      const catResult = getCategoryForVendor(item.extracted.vendor || '');
+      const entry = {
+        vendor: item.extracted.vendor,
+        invoice_number: item.extracted.invoice_number || null,
+        invoice_date: item.extracted.invoice_date ? gastosParseDate(item.extracted.invoice_date) : null,
+        amount: item.extracted.amount,
+        expense_category: catResult.category,
+        description: item.extracted.description || null,
+        category_tier: catResult.tier,
+        category_confidence: catResult.confidence,
+        currency: 'USD', status: 'approved'
+      };
+      const rec = await gastosSaveEntry(entry);
+      if (item.blob) {
+        gastosUploadImage(item.blob, rec.id).then(url => {
+          if (url) getSupa().from('gastos_entries').update({ receipt_image_url: url }).eq('id', rec.id);
+        });
+      }
+      item.status = 'saved';
+      saved++;
+    } catch(e) { console.error('Batch save error:', e); }
+  }
+  alert(`✅ ${saved} entrada(s) guardadas exitosamente.`);
+  gastosRenderQueue();
+  gastosRenderHistory();
+  gastosBackToUpload();
+}
+
+// ── Batch review one by one ────────────────────────────────────
+function gastosReviewOneByOne(startIndex) {
+  const pending = G.batch.filter(b => b.status !== 'saved' && b.status !== 'error');
+  if (!pending.length || startIndex >= G.batch.length) {
+    gastosBackToUpload();
+    gastosRenderHistory();
+    return;
+  }
+  // Find next non-saved item from startIndex
+  let idx = startIndex;
+  while (idx < G.batch.length && (G.batch[idx].status === 'saved' || G.batch[idx].status === 'error')) idx++;
+  if (idx >= G.batch.length) { gastosBackToUpload(); return; }
+
+  const item = G.batch[idx];
+  const origApprove = window.gastosApproveEntry;
+
+  // Show step 2 for this item
+  gastosShowStep2(item.extracted, item.blob, idx);
+
+  // Patch approve to advance to next after saving
+  const nextIdx = idx + 1;
+  const approveBtn = document.getElementById('gApproveBtn');
+  if (approveBtn) {
+    approveBtn.onclick = async () => {
+      await gastosApproveEntry();
+      item.status = 'saved';
+      gastosReviewOneByOne(nextIdx);
+    };
+  }
+}
+
+// ── Entry Queue (grouped, sorted) ─────────────────────────────
+async function gastosRenderQueue() {
+  const el = document.getElementById('gastosQueueArea');
+  if (!el) return;
+  try {
+    const all = await gastosLoadHistory('approved');
+    const sorted = sortForGastosEntry(all);
+    if (!sorted.length) { el.innerHTML = ''; return; }
+
+    // Group by vendor
+    const groups = {};
+    sorted.forEach(e => { if (!groups[e.vendor]) groups[e.vendor] = []; groups[e.vendor].push(e); });
+
+    el.innerHTML = `
+      <div class="ccard">
+        <div style="font-weight:700;color:var(--navy);font-size:.9rem;margin-bottom:14px">
+          📋 Cola de entrada en Gastos
+          <span style="font-weight:400;font-size:.78rem;color:var(--text-mid)"> — agrupado por proveedor</span>
+        </div>
+        ${Object.entries(groups).map(([vendor, items]) => `
+          <div style="margin-bottom:18px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+              <span style="font-weight:700;color:var(--navy)">${vendor}</span>
+              <span style="background:#e0f2fe;color:#0369a1;padding:2px 8px;border-radius:10px;font-size:.72rem;font-weight:700">${items.length} factura(s)</span>
+            </div>
+            ${items.map(e => `
+              <div id="qRow_${e.id}" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:6px;flex-wrap:wrap">
+                <span style="font-size:.82rem;color:var(--text-mid);min-width:92px">${gastosFormatDate(e.invoice_date)}</span>
+                <span style="font-size:.82rem;color:#374151;flex:1">Inv #${e.invoice_number || '—'}</span>
+                <span style="font-size:.9rem;font-weight:700;color:var(--navy)">$${parseFloat(e.amount||0).toFixed(2)}</span>
+                <button class="btn" style="font-size:.75rem;padding:4px 10px;border-color:#16a34a;color:#16a34a;white-space:nowrap"
+                  onclick="gastosMarkEnteredFromQueue('${e.id}', this)">Ingresar ✓</button>
+              </div>`).join('')}
+          </div>`).join('')}
+      </div>`;
+  } catch(err) { console.error('Queue render error:', err); }
+}
+
+async function gastosMarkEnteredFromQueue(id, btn) {
+  btn.disabled = true; btn.textContent = '✓';
+  try {
+    await gastosUpdateStatus(id, 'entered');
+    const row = document.getElementById(`qRow_${id}`);
+    if (row) { row.style.opacity = '0.4'; row.style.textDecoration = 'line-through'; btn.style.background = '#dcfce7'; }
+    gastosRenderHistory();
+  } catch(err) { alert('Error: ' + err.message); btn.disabled = false; btn.textContent = 'Ingresar ✓'; }
+}
+
+// ── History table ──────────────────────────────────────────────
+async function gastosRenderHistory() {
+  const el = document.getElementById('gastosHistoryArea');
+  if (!el) return;
+  try {
+    const entries = await gastosLoadHistory(G.historyFilter);
+    const filters = ['all','pending','approved','entered'];
+    const filterLabels = { all:'Todos', pending:'Pendientes', approved:'Aprobados', entered:'Ingresados' };
+    const filterBtns = filters.map(f =>
+      `<button class="btn ${G.historyFilter === f ? 'btn-navy' : ''}" style="font-size:.75rem;padding:4px 12px"
+        onclick="G.historyFilter='${f}';gastosRenderHistory()">
+        ${filterLabels[f]}
+      </button>`).join('');
+
+    if (!entries.length) {
+      el.innerHTML = `<div class="ccard">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">${filterBtns}</div>
+        <div style="color:var(--text-mid);text-align:center;padding:24px;font-style:italic">No hay entradas registradas.</div>
+      </div>`;
+      return;
+    }
+
+    const rows = entries.map(e => `
+      <tr id="histRow_${e.id}" style="transition:background .15s" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background=''">
+        <td style="padding:8px 10px;font-size:.82rem;cursor:pointer" onclick="gastosOpenFromHistory(${JSON.stringify(e).replace(/"/g,'&quot;')})">${gastosFormatDate(e.invoice_date)}</td>
+        <td style="padding:8px 10px;font-size:.82rem;font-weight:600;cursor:pointer" onclick="gastosOpenFromHistory(${JSON.stringify(e).replace(/"/g,'&quot;')})">${e.vendor}</td>
+        <td style="padding:8px 10px;font-size:.82rem;cursor:pointer" onclick="gastosOpenFromHistory(${JSON.stringify(e).replace(/"/g,'&quot;')})">${e.invoice_number || '—'}</td>
+        <td style="padding:8px 10px;font-size:.85rem;font-weight:700;color:var(--navy);cursor:pointer" onclick="gastosOpenFromHistory(${JSON.stringify(e).replace(/"/g,'&quot;')})">$${parseFloat(e.amount||0).toFixed(2)}</td>
+        <td style="padding:8px 10px;font-size:.78rem;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer" title="${e.expense_category||''}" onclick="gastosOpenFromHistory(${JSON.stringify(e).replace(/"/g,'&quot;')})">${e.expense_category||'—'}</td>
+        <td style="padding:8px 10px;cursor:pointer" onclick="gastosOpenFromHistory(${JSON.stringify(e).replace(/"/g,'&quot;')})">${gastosStatusBadge(e.status)}</td>
+        <td style="padding:8px 10px;text-align:center" onclick="event.stopPropagation()">
+          <button onclick="gastosConfirmDelete('${e.id}')"
+            style="background:none;border:1px solid #fca5a5;border-radius:6px;color:#dc2626;font-size:.75rem;padding:3px 8px;cursor:pointer;line-height:1.4"
+            title="Eliminar esta entrada">🗑</button>
+        </td>
+      </tr>`).join('');
+
+    el.innerHTML = `
+      <div class="ccard">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+          <div style="font-weight:700;color:var(--navy);font-size:.9rem">📂 Historial de Entradas</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">${filterBtns}</div>
+        </div>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr style="background:#f8fafc;border-bottom:2px solid #e2e8f0">
+              <th style="padding:8px 10px;text-align:left;font-size:.75rem;color:var(--text-mid);white-space:nowrap">Fecha</th>
+              <th style="padding:8px 10px;text-align:left;font-size:.75rem;color:var(--text-mid)">Proveedor</th>
+              <th style="padding:8px 10px;text-align:left;font-size:.75rem;color:var(--text-mid)">Factura #</th>
+              <th style="padding:8px 10px;text-align:left;font-size:.75rem;color:var(--text-mid)">Monto</th>
+              <th style="padding:8px 10px;text-align:left;font-size:.75rem;color:var(--text-mid)">Categoría</th>
+              <th style="padding:8px 10px;text-align:left;font-size:.75rem;color:var(--text-mid)">Estado</th>
+              <th style="padding:8px 10px;text-align:center;font-size:.75rem;color:var(--text-mid)"></th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>`;
+  } catch(err) {
+    el.innerHTML = `<div class="ccard" style="color:#dc2626;font-size:.85rem">Error al cargar historial: ${err.message}</div>`;
+  }
+}
+
+async function gastosConfirmDelete(id) {
+  if (!confirm('¿Eliminar esta entrada?\n\nEsta acción no se puede deshacer.')) return;
+  const row = document.getElementById('histRow_' + id);
+  if (row) { row.style.opacity = '0.4'; row.style.pointerEvents = 'none'; }
+  try {
+    await gastosDeleteEntry(id);
+    if (row) { row.style.transition = 'opacity .3s'; row.style.opacity = '0'; setTimeout(() => row.remove(), 320); }
+    gastosRenderQueue();
+    gastosRenderHistory();
+    showToast('🗑 Entrada eliminada.');
+  } catch(err) {
+    if (row) { row.style.opacity = '1'; row.style.pointerEvents = ''; }
+    alert('Error al eliminar: ' + err.message);
+  }
+}
+
+function gastosOpenFromHistory(entry) {
+  document.getElementById('gastosStep1')?.scrollIntoView({ behavior: 'smooth' });
+  if (entry.status === 'approved') {
+    gastosShowStep3Single(entry);
+  } else {
+    gastosShowStep2(
+      { vendor: entry.vendor, invoice_number: entry.invoice_number,
+        invoice_date: gastosFormatDate(entry.invoice_date),
+        amount: entry.amount, description: entry.description },
+      null
+    );
+  }
+}
+
+// ── SQL to run in Supabase ─────────────────────────────────────
+// create table gastos_entries (
+//   id uuid default gen_random_uuid() primary key,
+//   created_at timestamp with time zone default now(),
+//   created_by uuid references auth.users(id),
+//   vendor text not null,
+//   invoice_number text,
+//   invoice_date date,
+//   payment_date date,
+//   currency text default 'USD',
+//   amount numeric(10,2),
+//   expense_category text,
+//   description text,
+//   category_tier text,
+//   category_confidence integer,
+//   status text default 'pending',
+//   receipt_image_url text,
+//   notes text
+// );
+
+// ══════════════════════════════════════════════════════════════════
+// WRITE-UPS MODULE — Sistema de Amonestaciones Disciplinarias
+// Fixed legal templates — consistent language every time
+// ══════════════════════════════════════════════════════════════════
+
+const WU_PROXY_URL = `${SUPABASE_URL}/functions/v1/claude-proxy`;
+
+const WU = {
+  currentEmpKey: null, currentEmpName: null, currentRecords: [],
+  LEVELS: { verbal:'Amonestación Verbal', escrita:'Amonestación Escrita', final:'Amonestación Final Escrita', terminacion:'Terminación' },
+  FALTA_MAP: { verbal:'Amonestación Escrita', escrita:'Amonestación Final Escrita', final:'Terminación', terminacion:'N/A — Nivel máximo' },
+  suggestLevel(records, category) {
+    if (!records || !records.length || !category) return 'verbal';
+    const prog = { verbal:'escrita', escrita:'final', final:'terminacion', terminacion:'terminacion' };
+    const cat = records.filter(r => r.category === category).sort((a,b) => new Date(b.created_at)-new Date(a.created_at));
+    return cat.length ? (prog[cat[0].level] || 'verbal') : 'verbal';
+  },
+  getShiftString() {
+    const v = id => document.getElementById(id)?.value || '';
+    const sh=String(v('wuShiftStartH')).padStart(2,'0'), sm=String(v('wuShiftStartM')).padStart(2,'0'), sap=v('wuShiftStartAMPM');
+    const eh=String(v('wuShiftEndH')).padStart(2,'0'),   em=String(v('wuShiftEndM')).padStart(2,'0'),   eap=v('wuShiftEndAMPM');
+    return `${sh}:${sm} ${sap} – ${eh}:${em} ${eap}`;
+  },
+  async fetchRecords(k) {
+    try { const {data,error}=await getSupa().from('wu_records').select('*').eq('emp_id',k).order('created_at',{ascending:false}); if(error)throw error; return data||[]; }
+    catch { return(JSON.parse(localStorage.getItem('wu_records')||'[]')).filter(r=>r.emp_id===k).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)); }
+  },
+  async saveRecord(r) {
+    try { const {data,error}=await getSupa().from('wu_records').insert(r).select().single(); if(error)throw error; return data; }
+    catch { const all=JSON.parse(localStorage.getItem('wu_records')||'[]'); const rec={...r,id:'local_'+Date.now()}; all.push(rec); localStorage.setItem('wu_records',JSON.stringify(all)); return rec; }
+  },
+  async deleteAllRecords(k) {
+    try { const {error}=await getSupa().from('wu_records').delete().eq('emp_id',k); if(error)throw error; }
+    catch { const all=JSON.parse(localStorage.getItem('wu_records')||'[]'); localStorage.setItem('wu_records',JSON.stringify(all.filter(r=>r.emp_id!==k))); }
+  }
+};
+
+// ══════════════════════════════════════════
+// WRITE-UP PENDING REVIEW QUEUE
+// ══════════════════════════════════════════
+async function wuLoadPendingQueue() {
+  const container = document.getElementById('wuPendingQueue');
+  if (!container) return;
+  try {
+    const { data, error } = await getSupa()
+      .from('wu_submissions')
+      .select('*')
+      .order('submitted_at', { ascending: false });
+    if (error) throw error;
+    const pending = (data || []).filter(s => s.status === 'pending');
+    const reviewed = (data || []).filter(s => s.status !== 'pending');
+    wuRenderQueue(pending, reviewed);
+  } catch(e) {
+    const container = document.getElementById('wuPendingQueue');
+    if (container) container.innerHTML = '<p style="color:#888;font-size:.85rem">Error cargando cola. Verifique conexión.</p>';
+  }
+}
+
+function wuRenderQueue(pending, reviewed) {
+  const container = document.getElementById('wuPendingQueue');
+  if (!container) return;
+
+  const pendingHtml = pending.length ? pending.map(s => `
+    <div style="border:2px solid #fbbf24;border-radius:10px;padding:16px;margin-bottom:12px;background:#fffbeb">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <div>
+          <div style="font-weight:700;font-size:.95rem;color:var(--navy)">${s.emp_name}</div>
+          <div style="font-size:.78rem;color:#6b7280;margin-top:2px">
+            Reportado por: <strong>${s.leader_name}</strong> · ${s.category} · ${s.inc_date}
+          </div>
+          <div style="font-size:.75rem;color:#9ca3af;margin-top:2px">Enviado: ${new Date(s.submitted_at).toLocaleString('es-PR')}</div>
+        </div>
+        <span class="badge" style="background:#fef3c7;color:#92400e;font-size:.72rem">⏳ Pendiente</span>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-navy btn-sm" onclick="wuReviewSubmission('${s.id}')">📋 Revisar y Generar</button>
+        <button class="btn btn-sm" onclick="wuDeleteSubmission('${s.id}')" style="border-color:#dc2626;color:#dc2626;font-size:.75rem;padding:4px 10px">🗑 Eliminar</button>
+      </div>
+    </div>`).join('')
+    : '<div style="color:#16a34a;font-size:.85rem;padding:12px 0">✅ No hay amonestaciones pendientes de revisión.</div>';
+
+  const reviewedHtml = reviewed.length ? `
+    <div style="margin-top:20px">
+      <div style="font-size:.85rem;font-weight:700;color:var(--navy);margin-bottom:10px">Historial</div>
+      ${reviewed.slice(0,10).map(s => `
+        <div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:8px;background:#fff;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <div>
+            <div style="font-weight:600;font-size:.88rem">${s.emp_name} — ${s.category}</div>
+            <div style="font-size:.75rem;color:#6b7280">${s.inc_date} · Por: ${s.leader_name}</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="badge" style="background:${s.status==='approved'?'#dcfce7':'#fee2e2'};color:${s.status==='approved'?'#16a34a':'#991b1b'};font-size:.7rem">
+              ${s.status==='approved'?'✅ Aprobado':'✗ Rechazado'}
+            </span>
+            ${s.status==='approved' ? `<button class="btn btn-sm" onclick="wuPrintApproved('${s.id}')" style="border-color:#7c3aed;color:#7c3aed;font-size:.75rem;padding:4px 10px">🖨 Imprimir</button>` : ''}
+            <button class="btn btn-sm" onclick="wuDeleteSubmission('${s.id}')" style="border-color:#dc2626;color:#dc2626;font-size:.75rem;padding:4px 10px">🗑</button>
+          </div>
+        </div>`).join('')}
+    </div>` : '';
+
+  container.innerHTML = `
+    <div style="font-size:.85rem;font-weight:700;color:var(--navy);margin-bottom:12px">
+      Reportes Pendientes (${pending.length})
+    </div>
+    ${pendingHtml}
+    ${reviewedHtml}`;
+}
+
+async function wuReviewSubmission(id) {
+  try {
+    const { data, error } = await getSupa().from('wu_submissions').select('*').eq('id', id).single();
+    if (error) throw error;
+    showWuReviewModal(data);
+  } catch(e) {
+    alert('Error cargando el reporte. Intente nuevamente.');
+  }
+}
+
+function showWuReviewModal(s) {
+  // Build field summary
+  const fieldLines = Object.entries(s.fields || {}).map(([k, v]) => v ? `<li><strong>${k}:</strong> ${v}</li>` : '').filter(Boolean).join('');
+
+  const modal = document.createElement('div');
+  modal.id = 'wuReviewModal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto';
+  modal.innerHTML = `
+    <div style="background:#fff;border-radius:14px;max-width:620px;width:100%;padding:28px;margin:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+        <h3 style="margin:0;color:var(--navy);font-size:1.1rem">📋 Revisar Reporte de Amonestación</h3>
+        <button onclick="document.getElementById('wuReviewModal').remove()" style="background:none;border:none;font-size:1.2rem;cursor:pointer;color:#6b7280">✕</button>
+      </div>
+
+      <div style="background:#f8fafc;border-radius:10px;padding:16px;margin-bottom:16px;font-size:.85rem">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div><span style="color:#6b7280">Empleado:</span> <strong>${s.emp_name}</strong></div>
+          <div><span style="color:#6b7280">Categoría:</span> <strong>${s.category}</strong></div>
+          <div><span style="color:#6b7280">Fecha:</span> <strong>${s.inc_date}</strong></div>
+          <div><span style="color:#6b7280">Turno:</span> <strong>${s.shift_start||'—'} a ${s.shift_end||'—'}</strong></div>
+          <div><span style="color:#6b7280">Reportado por:</span> <strong>${s.leader_name}</strong></div>
+          <div><span style="color:#6b7280">Hora incidente:</span> <strong>${s.inc_time||'—'}</strong></div>
+        </div>
+      </div>
+
+      <div style="margin-bottom:14px">
+        <div style="font-size:.78rem;font-weight:700;color:#6b7280;margin-bottom:6px;text-transform:uppercase">Información del Incidente</div>
+        <ul style="font-size:.82rem;line-height:1.8;padding-left:16px;color:#374151">${fieldLines}</ul>
+        ${s.extra_notes ? `<div style="margin-top:8px;font-size:.82rem;color:#374151"><strong>Notas adicionales:</strong> ${s.extra_notes}</div>` : ''}
+      </div>
+
+      <div style="margin-bottom:16px">
+        <div style="font-size:.78rem;font-weight:700;color:#6b7280;margin-bottom:6px;text-transform:uppercase">Verificación del Director</div>
+        <label style="font-size:.82rem;font-weight:600;color:#374151;display:block;margin-bottom:4px">Confirme el nombre exacto del empleado <span style="color:#dc2626">*</span></label>
+        <input type="text" id="wuReviewEmpName" placeholder="Escriba el nombre completo del empleado" style="width:100%;padding:10px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.88rem"/>
+        <label style="font-size:.82rem;font-weight:600;color:#374151;display:block;margin:12px 0 4px">Observaciones del director (opcional)</label>
+        <textarea id="wuReviewNotes" rows="2" placeholder="Notas internas del director..." style="width:100%;padding:10px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.88rem;resize:vertical"></textarea>
+      </div>
+
+      <div id="wuReviewErr" style="display:none;background:#fee2e2;color:#991b1b;border-radius:8px;padding:10px;font-size:.83rem;margin-bottom:12px"></div>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-navy" style="flex:1" onclick="wuApproveSubmission('${s.id}', '${s.emp_name}')">✅ Aprobar y Generar</button>
+        <button class="btn btn-red2" style="flex:1" onclick="wuRejectSubmission('${s.id}')">✗ Rechazar</button>
+      </div>
+    </div>`;
+
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+}
+
+async function wuApproveSubmission(id, originalEmpName) {
+  const confirmedName = document.getElementById('wuReviewEmpName').value.trim();
+  const reviewNotes = document.getElementById('wuReviewNotes').value.trim();
+  const errEl = document.getElementById('wuReviewErr');
+
+  if (!confirmedName) {
+    errEl.textContent = 'Debe confirmar el nombre del empleado para aprobar.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  try {
+    // Get submission details to generate the write-up
+    const { data: s, error } = await getSupa().from('wu_submissions').select('*').eq('id', id).single();
+    if (error) throw error;
+
+    // Generate the write-up text using existing build functions
+    const f = s.fields || {};
+    const shiftStr = `${s.shift_start||''} a ${s.shift_end||''}`;
+    const dateFormatted = s.inc_date ? new Date(s.inc_date + 'T12:00:00').toLocaleDateString('es-PR', {year:'numeric',month:'long',day:'numeric'}) : s.inc_date;
+
+    // Determine level based on history
+    const empKey = s.emp_key;
+    let existingRecords = [];
+    if (empKey) {
+      const { data: recs } = await getSupa().from('wu_records').select('*').eq('emp_id', empKey);
+      existingRecords = recs || [];
+    }
+    const level = WU.suggestLevel(existingRecords, s.category);
+
+    const doc = wuBuildDocument({ empName: confirmedName, cat: s.category, level, sup: s.leader_name, dateFormatted, shift: shiftStr, fields: f });
+
+    // Save as approved wu_record
+    const record = {
+      emp_id: empKey || confirmedName.toLowerCase().replace(/\s+/g,'_'),
+      emp_name: confirmedName,
+      date: s.inc_date,
+      level,
+      category: s.category,
+      supervisor: s.leader_name,
+      shift: shiftStr,
+      incident: doc.incidente,
+      corrective: doc.correctiva,
+      consequence: doc.consecuencia,
+      director_notes: reviewNotes,
+      submission_id: id,
+      created_at: new Date().toISOString()
+    };
+
+    await WU.saveRecord(record);
+
+    // Update submission status
+    await getSupa().from('wu_submissions').update({ status: 'approved', reviewed_at: new Date().toISOString(), reviewed_emp_name: confirmedName, director_notes: reviewNotes }).eq('id', id);
+
+    document.getElementById('wuReviewModal').remove();
+    wuLoadPendingQueue();
+
+    // Also refresh the employee history if this employee is open
+    if (WU.currentEmpKey === empKey) {
+      WU.currentRecords = await WU.fetchRecords(empKey);
+      wuRenderHistory(WU.currentRecords);
+    }
+
+    showToast('✅ Amonestación aprobada y guardada en el expediente de ' + confirmedName);
+
+    // Open print immediately
+    setTimeout(() => wuPrintFromRecord(record), 500);
+
+  } catch(e) {
+    document.getElementById('wuReviewErr').textContent = 'Error al aprobar: ' + e.message;
+    document.getElementById('wuReviewErr').style.display = 'block';
+  }
+}
+
+async function wuRejectSubmission(id) {
+  if (!confirm('¿Está seguro que desea rechazar este reporte? Se mantendrá en el historial como rechazado.')) return;
+  try {
+    await getSupa().from('wu_submissions').update({ status: 'rejected', reviewed_at: new Date().toISOString() }).eq('id', id);
+    document.getElementById('wuReviewModal').remove();
+    wuLoadPendingQueue();
+    showToast('✗ Reporte rechazado.');
+  } catch(e) {
+    alert('Error al rechazar: ' + e.message);
+  }
+}
+
+async function wuDeleteSubmission(id) {
+  if (!confirm('¿Está seguro que desea eliminar este reporte? Esta acción no se puede deshacer.')) return;
+  try {
+    // Also delete associated wu_record if exists
+    await getSupa().from('wu_records').delete().eq('submission_id', id);
+    await getSupa().from('wu_submissions').delete().eq('id', id);
+    wuLoadPendingQueue();
+    showToast('🗑 Reporte eliminado.');
+  } catch(e) {
+    alert('Error al eliminar: ' + e.message);
+  }
+}
+
+async function wuPrintApproved(submissionId) {
+  try {
+    const { data } = await getSupa().from('wu_records').select('*').eq('submission_id', submissionId).single();
+    if (data) wuPrintFromRecord(data);
+  } catch(e) {
+    alert('No se encontró el expediente para imprimir.');
+  }
+}
+
+function wuPrintFromRecord(record) {
+  // Use existing wuPrintRecord logic but with record data directly
+  const WUcopy = { currentEmpName: record.emp_name };
+  const level = record.level;
+  const cat = record.category;
+  const sup = record.supervisor;
+  const date = record.date;
+  const shift = record.shift;
+  // Pre-process newlines before embedding in template literal
+  const incident = (record.incident||'').split('\n').join('<br/>');
+  const corrective = (record.corrective||'').split('\n').join('<br/>');
+  const consequence = (record.consequence||'').split('\n').join('<br/>');
+  const today = new Date().toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'});
+  const incDateFmt = date ? new Date(date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'}) : '';
+
+  const allCats=[['Política de Salud','Funciones, Responsabilidades y Requisitos de Liderazgo','Asistencia y Puntualidad','Ausencia Injustificada','Pausas y Comidas de Empleados','Deberes y Responsabilidades del Puesto','Normas de Conducta','Ambiente de Trabajo Civil y Respetuoso','Inocuidad de Alimentos / Seguridad Alimentaria'],['Apariencia y Aseo Personal','Igualdad de Oportunidad de Empleo y Política de No Acoso','Seguridad en el Lugar de Trabajo','Comunicaciones Telefónicas','Responsabilidad de Efectivo y Cupones','Política de Uniformes']];
+  const catItem=c=>{const chk=c===cat||( cat==='Asistencia y Puntualidad' && c==='Asistencia y Puntualidad');return`<div style="display:flex;align-items:center;gap:6px;padding:1.5px 0;font-size:9pt;${chk?'font-weight:700;color:#004f71;':''}"><div style="width:13px;height:13px;border:1.5px solid #004f71;border-radius:2px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:9pt;${chk?'background:#e0f2fe;color:#c1121f;font-weight:900;':''}">${chk?'✓':''}</div><span>${c}</span></div>`;};
+  const faltaMap={verbal:'escrita',escrita:'final',final:'terminacion',terminacion:'terminacion'};const faltaKey=faltaMap[level];
+  const levelRows=[{key:'verbal',label:'Amonestación Verbal'},{key:'escrita',label:'Amonestación Escrita'},{key:'final',label:'Amonestación Final Escrita'}];
+  const faltaRows=[{key:'escrita',label:'Amonestación Escrita'},{key:'final',label:'Amonestación Final Escrita'},{key:'terminacion',label:'Terminación'}];
+  const chkRow=(rows,active)=>rows.map(r=>`<div style="display:flex;align-items:center;gap:7px;font-size:9pt;${r.key===active?'font-weight:700;':''}"><div style="width:14px;height:14px;border:1.5px solid #004f71;border-radius:2px;flex-shrink:0;display:flex;align-items:center;justify-content:center;${r.key===active?'background:#fff0f0;color:#c1121f;font-size:10pt;font-weight:900;':''}">${r.key===active?'✓':''}</div><span>${r.label}</span></div>`).join('');
+  const win=window.open('','_blank');
+  win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/><title>Amonestación — ${record.emp_name}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:10pt;color:#1a1a2e;padding:22px 26px}.hdr{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px}.title{font-size:20pt;font-weight:900;color:#004f71;line-height:1.1}.logo{text-align:right;font-size:10pt;font-weight:700;color:#004f71}.logo span{display:block;font-size:8pt;color:#c1121f;font-weight:600}.meta{display:grid;grid-template-columns:1fr 1fr;gap:3px 20px;border-top:2px solid #004f71;border-bottom:1px solid #e5e7eb;padding:7px 0;margin-bottom:9px}.mf{display:flex;align-items:baseline;gap:5px;font-size:9.5pt}.ml{font-weight:700;white-space:nowrap;color:#004f71}.mv{border-bottom:1px solid #94a3b8;flex:1;padding-bottom:1px;font-weight:600}.sec{background:#004f71;color:#fff;font-weight:700;font-size:8.5pt;padding:3px 9px;border-radius:3px;margin:8px 0 5px;display:inline-block}.cats{display:grid;grid-template-columns:1fr 1fr;gap:1px 14px;margin-bottom:3px}.tbox{border:1px solid #cbd5e1;border-radius:4px;padding:9px 11px;min-height:65px;font-size:9.5pt;line-height:1.65;margin-bottom:3px;font-weight:500}.chks{display:flex;gap:20px;margin:5px 0 3px;flex-wrap:wrap}.signotice{font-size:8pt;color:#374151;line-height:1.5;border:1px solid #e5e7eb;border-radius:4px;padding:7px 9px;margin:9px 0 7px;background:#f8fafc}.sigs{display:grid;grid-template-columns:1fr 1fr;gap:12px 28px;margin-bottom:9px}.sigs label{font-size:8pt;font-weight:700;color:#004f71;display:block;margin-bottom:2px}.sl{border-bottom:1.5px solid #374151;height:20px}.neg{border:1.5px solid #004f71;border-radius:4px;padding:7px 10px;margin-top:7px}.negtitle{background:#004f71;color:#fff;font-weight:700;font-size:8pt;padding:2px 7px;border-radius:2px;display:inline-block;margin-bottom:5px}.footer{font-size:7.5pt;color:#94a3b8;text-align:right;margin-top:8px;border-top:1px solid #e5e7eb;padding-top:5px}@media print{body{padding:14px}}</style></head><body><div class="hdr"><div class="title">FORMULARIO DE ACCIÓN<br>DISCIPLINARIA</div><div class="logo">🐔 Los Filtros FSU<span>Chick-fil-A</span></div></div><div class="meta"><div class="mf"><span class="ml">Nombre del Miembro del Equipo:</span><span class="mv">${record.emp_name}</span></div><div class="mf"><span class="ml">Fecha del Incidente:</span><span class="mv">${incDateFmt}</span></div><div class="mf"><span class="ml">Fecha:</span><span class="mv">${today}</span></div><div class="mf"><span class="ml">Supervisor:</span><span class="mv">${sup}</span></div></div><div class="sec">VIOLACIÓN DE POLÍTICA</div><div class="cats"><div>${allCats[0].map(catItem).join('')}</div><div>${allCats[1].map(catItem).join('')}</div></div><div class="sec">DESCRIBA EL INCIDENTE</div><div class="tbox">${incident}</div><div class="sec">ACCIÓN DISCIPLINARIA</div><div class="chks">${chkRow(levelRows,level)}</div><div class="sec">ACCIÓN CORRECTIVA</div><div class="tbox">${corrective}</div><div class="sec">FALTA DE MEJORA</div><div class="chks">${chkRow(faltaRows,faltaKey)}</div><div class="tbox" style="min-height:48px">${consequence}</div><div class="signotice">Al firmar este documento reconozco que este informe ha sido completamente discutido y explicado por mi supervisor y entiendo que se me ha brindado la oportunidad de corregir mis acciones. Confirmo que se me brindó la oportunidad de explicar mi versión de los hechos.</div><div class="sigs"><div><label>Firma del Miembro del Equipo</label><div class="sl"></div></div><div><label>Fecha</label><div class="sl"></div></div><div><label>Firma del Supervisor</label><div class="sl"></div></div><div><label>Fecha</label><div class="sl"></div></div><div><label>Firma del Testigo</label><div class="sl"></div></div><div><label>Fecha</label><div class="sl"></div></div></div><div class="neg"><div class="negtitle">NEGATIVA DE FIRMA (si aplica)</div><div style="display:flex;align-items:center;gap:7px;font-size:8.5pt;margin-bottom:8px"><div style="width:13px;height:13px;border:1.5px solid #004f71;border-radius:2px;flex-shrink:0"></div><span>El Miembro del Equipo se negó a firmar después de que este documento le fue explicado completamente.</span></div><div class="sigs" style="margin-bottom:0"><div><label>Firma del Testigo</label><div class="sl"></div></div><div><label>Fecha</label><div class="sl"></div></div></div></div><div class="footer">Los Filtros FSU — Generado: ${today} — Revisado y aprobado por director</div><script>window.onload=()=>window.print();<\/script></body></html>`);
+  win.document.close();
+}
+
+function wuRefreshEmpList() {
+  const sel=document.getElementById('wuEmpSelect'); if(!sel)return;
+  const prev=sel.value; sel.innerHTML='<option value="">— Seleccionar empleado —</option>';
+  Object.entries(EMPLOYEES).filter(([,e])=>e.status==='active').sort((a,b)=>(a[1].name||'').localeCompare(b[1].name||'')).forEach(([key,emp])=>{const opt=document.createElement('option');opt.value=key;opt.textContent=emp.name;sel.appendChild(opt);});
+  if(prev) sel.value=prev;
+}
+async function wuSelectFromDropdown(sel) {
+  const key=sel.value; if(!key){wuCloseHistory();return;} const emp=EMPLOYEES[key]; if(!emp)return;
+  WU.currentEmpKey=key; WU.currentEmpName=emp.name;
+  document.getElementById('wuFormPanel').style.display='none'; document.getElementById('wuAIOutput').style.display='none';
+  const records=await WU.fetchRecords(key); WU.currentRecords=records;
+  document.getElementById('wuEmpNameDisplay').textContent=emp.name;
+  wuRenderHistory(records); document.getElementById('wuHistoryPanel').style.display='block';
+}
+function wuRenderHistory(records) {
+  const listEl=document.getElementById('wuHistoryList'), statusEl=document.getElementById('wuEmpStatus');
+  const LC={verbal:{bg:'#fef9c3',color:'#854d0e'},escrita:{bg:'#ffedd5',color:'#9a3412'},final:{bg:'#fee2e2',color:'#991b1b'},terminacion:{bg:'#1e293b',color:'#f8fafc'}};
+  if(!records||!records.length){listEl.innerHTML='<div style="color:var(--text-mid);padding:12px 0;font-style:italic">Sin amonestaciones previas.</div>';statusEl.innerHTML='<span class="badge" style="background:#dcfce7;color:#16a34a">Sin historial disciplinario</span>';return;}
+  const lc0=LC[records[0].level]||LC.verbal; statusEl.innerHTML=`<span class="badge" style="background:${lc0.bg};color:${lc0.color}">Última: ${WU.LEVELS[records[0].level]||records[0].level}</span>`;
+  listEl.innerHTML='<div style="display:flex;flex-direction:column;gap:8px">'+records.map(r=>{const lc=LC[r.level]||LC.verbal;const d=r.date?new Date(r.date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'short',day:'numeric'}):'';return`<div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden"><div style="display:flex;align-items:center;gap:10px;padding:9px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;flex-wrap:wrap"><span class="badge" style="background:${lc.bg};color:${lc.color}">${WU.LEVELS[r.level]||r.level}</span><span style="font-size:.82rem;color:var(--text-mid)">${d}</span>${r.shift?`<span style="font-size:.82rem;color:var(--text-mid)">🕐 ${r.shift}</span>`:''}<span style="font-size:.82rem;color:var(--text-mid);margin-left:auto">${r.category||''}</span></div><div style="padding:10px 14px;font-size:.82rem;line-height:1.5;color:#374151">${(r.incident||'').substring(0,200)}${(r.incident||'').length>200?'…':''}</div></div>`;}).join('')+'</div>';
+}
+function wuOpenNewForm() {
+  // If employee not set via dropdown change, try reading it directly now
+  if(!WU.currentEmpKey) {
+    const sel = document.getElementById('wuEmpSelect');
+    if (sel && sel.value) {
+      const emp = EMPLOYEES[sel.value];
+      if (emp) { WU.currentEmpKey = sel.value; WU.currentEmpName = emp.name; }
+    }
+  }
+  if(!WU.currentEmpKey){alert('Por favor, seleccione un empleado primero.');return;}
+  // Reset form fields — matched to current HTML structure
+  const setVal = (id, v) => { const el=document.getElementById(id); if(el) el.value=v; };
+  setVal('wuLevel', 'verbal');
+  setVal('wuCategory', '');
+  setVal('wuSupervisor', '');
+  setVal('wuDate', new Date().toISOString().split('T')[0]);
+  setVal('wuShiftStartH', '8');
+  setVal('wuShiftStartM', '0');
+  setVal('wuShiftStartAMPM', 'AM');
+  setVal('wuShiftEndH', '4');
+  setVal('wuShiftEndM', '0');
+  setVal('wuShiftEndAMPM', 'PM');
+  setVal('wuRawDescription', '');
+
+  // Clear generated output areas
+  const aiOut = document.getElementById('wuAIOutput');
+  if (aiOut) aiOut.style.display = 'none';
+  const catFields = document.getElementById('wuCategoryFields');
+  if (catFields) catFields.innerHTML = '';
+  const hint = document.getElementById('wuCategoryHint');
+  if (hint) hint.style.display = 'none';
+  const genBtn = document.getElementById('wuGenerateBtn');
+  if (genBtn) { genBtn.textContent = '✨ Generar con IA'; genBtn.disabled = false; }
+
+  // Set employee name and show form
+  const nameEl = document.getElementById('wuFormEmpName');
+  if (nameEl) nameEl.textContent = WU.currentEmpName;
+  wuUpdateFaltaMejora();
+
+  const panel = document.getElementById('wuFormPanel');
+  if (panel) {
+    panel.style.display = 'block';
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+function wuOnCategoryChange() {
+  const cat=document.getElementById('wuCategory').value; document.getElementById('wuAIOutput').style.display='none';
+  if(!cat){document.getElementById('wuCategoryFields').innerHTML='';return;}
+  document.getElementById('wuLevel').value=WU.suggestLevel(WU.currentRecords,cat);
+  const catRecs=(WU.currentRecords||[]).filter(r=>r.category===cat);
+  const hintEl=document.getElementById('wuCategoryHint');
+  if(hintEl){
+    if(!catRecs.length){hintEl.textContent='Sin historial en esta categoría — nivel sugerido: Amonestación Verbal';hintEl.style.color='#16a34a';}
+    else{const last=[...catRecs].sort((a,b)=>new Date(b.created_at)-new Date(a.created_at))[0];const d=last.date?new Date(last.date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'short',day:'numeric'}):'';hintEl.textContent=`${catRecs.length} amonestación(es) en esta categoría. Última: ${WU.LEVELS[last.level]} (${d})`;hintEl.style.color='#92400e';}
+    hintEl.style.display='block';
+  }
+  wuUpdateFaltaMejora(); wuRenderCategoryFields(cat);
+}
+function wuUpdateFaltaMejora(){document.getElementById('wuFaltaMejora').value=WU.FALTA_MAP[document.getElementById('wuLevel').value]||'';}
+function wuCancelForm(){document.getElementById('wuFormPanel').style.display='none';document.getElementById('wuAIOutput').style.display='none';}
+function wuCloseHistory(){WU.currentEmpKey=null;WU.currentEmpName=null;WU.currentRecords=[];['wuHistoryPanel','wuFormPanel','wuAIOutput'].forEach(id=>document.getElementById(id).style.display='none');}
+
+const WU_FIELDS={
+  'Asistencia y Puntualidad':[{id:'tipo_ausencia',label:'Tipo de incidente',type:'select',options:['Tardanza','Ausencia injustificada'],required:true},{id:'horaProgram',label:'Hora exacta programada de entrada',type:'time',required:true},{id:'horaLlegada',label:'Hora exacta de llegada (solo para tardanza)',type:'time',required:false,showIf:{id:'tipo_ausencia',val:'Tardanza'}},{id:'minutosT',label:'Minutos totales de tardanza (mínimo 1 minuto = violación)',type:'number',required:false,showIf:{id:'tipo_ausencia',val:'Tardanza'}},{id:'reloj',label:'¿El sistema de reloj registró la entrada/ausencia?',type:'yesno',required:true},{id:'llamo',label:'¿Llamó para avisar antes de su turno?',type:'yesno',required:true},{id:'horaLlamo',label:'Si llamó — ¿a qué hora?',type:'time',required:false,showIf:{id:'llamo',val:'Sí'}},{id:'quienAtendio',label:'Si llamó — ¿a quién?',type:'text',required:false,showIf:{id:'llamo',val:'Sí'}},{id:'ocasiones_previas',label:'¿Ha tenido incidentes de asistencia previos en los últimos 90 días?',type:'yesno',required:true}],
+  'Normas de Conducta':[{id:'descripcion',label:'Descripción exacta (palabras textuales si aplica)',type:'textarea',required:true},{id:'area',label:'Área específica donde ocurrió',type:'text',required:true},{id:'horaInc',label:'Hora exacta del incidente',type:'time',required:true},{id:'clientes',label:'¿Hubo clientes presentes?',type:'yesno',required:true},{id:'testigos',label:'Nombre(s) de testigo(s)',type:'text',required:false},{id:'testigoDecl',label:'¿El testigo está dispuesto a declarar?',type:'yesno',required:false,showIf:{id:'testigos',notEmpty:true}},{id:'dano',label:'¿Hubo daño a la operación o persona? Describa',type:'text',required:false}],
+  'Inocuidad de Alimentos / Seguridad Alimentaria':[{id:'regulacion',label:'Regulación específica violada (citar la regla)',type:'textarea',required:true},{id:'productoArea',label:'Producto, equipo o área involucrada',type:'text',required:true},{id:'riesgo',label:'¿Hubo riesgo de contaminación o daño al cliente?',type:'yesno',required:true},{id:'temperatura',label:'Temperatura del producto (si aplica)',type:'text',required:false},{id:'descarto',label:'¿Se descartó el producto?',type:'yesno',required:false},{id:'entrenado',label:'¿El empleado había recibido entrenamiento en esta regla?',type:'yesno',required:true},{id:'corrigioMom',label:'¿Fue corregido en el momento?',type:'yesno',required:true}],
+  'Deberes y Responsabilidades del Puesto':[{id:'tarea',label:'Tarea o responsabilidad específica no cumplida',type:'textarea',required:true},{id:'enDescripcion',label:'¿Estaba en la descripción oficial del puesto?',type:'yesno',required:true},{id:'instruccionDir',label:'¿Se le dio instrucción directa ese día?',type:'yesno',required:true},{id:'quienInstruyo',label:'¿Por quién se le instruyó?',type:'text',required:false,showIf:{id:'instruccionDir',val:'Sí'}},{id:'impacto',label:'Impacto directo en la operación',type:'textarea',required:true},{id:'quejaCliente',label:'¿Hubo queja de cliente o incidente relacionado?',type:'yesno',required:true}],
+  'Ambiente de Trabajo Civil y Respetuoso':[{id:'descripcion',label:'¿Qué dijo o hizo exactamente? (palabras textuales)',type:'textarea',required:true},{id:'dirigidoA',label:'¿Fue dirigido a compañero, supervisor, o cliente?',type:'select',options:['Compañero de trabajo','Supervisor','Cliente','Varios'],required:true},{id:'area',label:'Área donde ocurrió',type:'text',required:true},{id:'horaInc',label:'Hora del incidente',type:'time',required:true},{id:'testigos',label:'Nombre(s) de testigo(s)',type:'text',required:false},{id:'testigoDecl',label:'¿El testigo está dispuesto a declarar?',type:'yesno',required:false,showIf:{id:'testigos',notEmpty:true}},{id:'contactoFisico',label:'¿Hubo contacto físico?',type:'yesno',required:true},{id:'tipoContacto',label:'Si hubo contacto físico — ¿de qué tipo?',type:'text',required:false,showIf:{id:'contactoFisico',val:'Sí'}},{id:'quejaFormal',label:'¿La otra persona presentó queja formal?',type:'yesno',required:true},{id:'hostigamiento',label:'¿Constituyó hostigamiento, discriminación o acoso?',type:'yesno',required:true}],
+  'Apariencia y Aseo Personal':[{id:'articulo',label:'Artículo o requisito específico no cumplido',type:'text',required:true},{id:'tenia',label:'¿Tenía el empleado el artículo ese día?',type:'yesno',required:true},{id:'oportunidad',label:'¿Se le dio oportunidad de corregirlo?',type:'yesno',required:true},{id:'corrigio',label:'¿Lo corrigió cuando se le indicó?',type:'yesno',required:true},{id:'impactoCliente',label:'¿Hubo impacto en la interacción con clientes?',type:'yesno',required:true}],
+  'Seguridad en el Lugar de Trabajo':[{id:'regla',label:'Regla de seguridad violada (citar específicamente)',type:'textarea',required:true},{id:'lugar',label:'Lugar exacto donde ocurrió',type:'text',required:true},{id:'horaInc',label:'Hora del incidente',type:'time',required:true},{id:'riesgoLesion',label:'¿Hubo riesgo de lesión?',type:'yesno',required:true},{id:'entrenado',label:'¿El empleado había recibido entrenamiento en este procedimiento?',type:'yesno',required:true},{id:'fechaEntren',label:'¿Cuándo recibió el entrenamiento?',type:'date',required:false,showIf:{id:'entrenado',val:'Sí'}},{id:'camara',label:'¿Hay registro en cámara?',type:'yesno',required:true},{id:'reportoGerente',label:'¿Se reportó al gerente inmediatamente?',type:'yesno',required:true}],
+  'Responsabilidad de Efectivo y Cupones':[{id:'discrepancia',label:'Discrepancia exacta en dólares y centavos ($)',type:'number',required:true},{id:'tipoDisc',label:'Tipo de discrepancia',type:'select',options:['Faltante','Sobrante'],required:true},{id:'caja',label:'Caja o terminal donde ocurrió',type:'text',required:true},{id:'horaConteo',label:'Hora en que se hizo el conteo',type:'time',required:true},{id:'soloEnCaja',label:'¿Estuvo el empleado solo/a en esa caja?',type:'yesno',required:true},{id:'reviso',label:'¿Se revisó el conteo con el empleado presente?',type:'yesno',required:true},{id:'firmoConteo',label:'¿El empleado firmó el conteo?',type:'yesno',required:true},{id:'registroPOS',label:'¿Hay registro del sistema POS?',type:'yesno',required:true}],
+  'Política de Uniformes':[{id:'articulo',label:'Artículo específico faltante o incorrecto',type:'text',required:true},{id:'orientado',label:'¿Se le notificó la política en su orientación?',type:'yesno',required:true},{id:'tenia',label:'¿Tenía el artículo disponible ese día?',type:'yesno',required:true},{id:'oportunidad',label:'¿Se le dio oportunidad de corregirlo?',type:'yesno',required:true},{id:'corrigio',label:'¿Lo corrigió?',type:'yesno',required:true}],
+  'Comunicaciones Telefónicas':[{id:'politica',label:'Política específica de uso de teléfono violada',type:'textarea',required:true},{id:'area',label:'Área donde estaba el empleado',type:'text',required:true},{id:'horasTrabajo',label:'¿Estaba en horas activas o en descanso?',type:'select',options:['Horas activas de trabajo','Período de descanso'],required:true},{id:'afectoServicio',label:'¿Afectó el servicio al cliente?',type:'yesno',required:true},{id:'clienteTestigo',label:'¿Hubo un cliente afectado o testigo?',type:'yesno',required:true},{id:'camara',label:'¿Hay registro en cámara?',type:'yesno',required:true}],
+};
+
+function wuRenderCategoryFields(cat){const container=document.getElementById('wuCategoryFields');const fields=WU_FIELDS[cat]||[];if(!fields.length){container.innerHTML='';return;}container.innerHTML=`<div style="margin-top:16px;border-top:1px solid #e5e7eb;padding-top:16px"><div style="font-size:.8rem;font-weight:700;color:var(--navy);margin-bottom:12px">📋 Información Requerida — ${cat}<span style="font-weight:400;color:#6b7280;font-size:.75rem"> (* obligatorios)</span></div>${fields.map(wuFieldHtml).join('')}</div>`;}
+function wuFieldHtml(f){const req=f.required?'<span style="color:#dc2626"> *</span>':'';const showStyle=f.showIf?'display:none;':'';const showAttr=f.showIf?`data-showif='${JSON.stringify(f.showIf)}'`:'';let input='';if(f.type==='yesno')input=`<div style="display:flex;gap:16px;margin-top:4px"><label style="display:flex;align-items:center;gap:6px;font-size:.875rem;cursor:pointer"><input type="radio" name="wuf_${f.id}" value="Sí" onchange="wuCheckConditionals()" style="accent-color:var(--navy)"> Sí</label><label style="display:flex;align-items:center;gap:6px;font-size:.875rem;cursor:pointer"><input type="radio" name="wuf_${f.id}" value="No" onchange="wuCheckConditionals()" style="accent-color:var(--navy)"> No</label></div>`;else if(f.type==='select')input=`<select id="wuf_${f.id}" onchange="wuCheckConditionals()" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-top:4px"><option value="">Seleccionar...</option>${(f.options||[]).map(o=>`<option>${o}</option>`).join('')}</select>`;else if(f.type==='textarea')input=`<textarea id="wuf_${f.id}" rows="3" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;resize:vertical;margin-top:4px" placeholder="Ingrese detalles..."></textarea>`;else if(f.type==='time')input=`<input type="time" id="wuf_${f.id}" style="padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-top:4px"/>`;else if(f.type==='date')input=`<input type="date" id="wuf_${f.id}" style="padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-top:4px"/>`;else if(f.type==='number')input=`<input type="number" id="wuf_${f.id}" min="0" step="0.01" style="width:160px;padding:7px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-top:4px" placeholder="0"/>`;else input=`<input type="text" id="wuf_${f.id}" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-top:4px" placeholder="Ingrese información..."/>`;return`<div id="wuf_wrap_${f.id}" ${showAttr} style="${showStyle}margin-bottom:12px"><label style="font-size:.8rem;font-weight:600;color:var(--text-mid);display:block">${f.label}${req}</label>${input}</div>`;}
+function wuCheckConditionals(){const cat=document.getElementById('wuCategory').value;(WU_FIELDS[cat]||[]).forEach(f=>{if(!f.showIf)return;const wrap=document.getElementById(`wuf_wrap_${f.id}`);if(!wrap)return;let show=false;const si=f.showIf;if(si.val!==undefined){document.querySelectorAll(`[name="wuf_${si.id}"]`).forEach(r=>{if(r.checked&&r.value===si.val)show=true;});const sel=document.getElementById(`wuf_${si.id}`);if(sel&&sel.value===si.val)show=true;}else if(si.notEmpty){const el=document.getElementById(`wuf_${si.id}`);if(el&&el.value.trim())show=true;}wrap.style.display=show?'block':'none';});}
+function wuGetFieldVals(){const cat=document.getElementById('wuCategory').value;const vals={};(WU_FIELDS[cat]||[]).forEach(f=>{if(f.type==='yesno'){const c=document.querySelector(`[name="wuf_${f.id}"]:checked`);vals[f.id]=c?c.value:'';}else{const el=document.getElementById(`wuf_${f.id}`);vals[f.id]=el?el.value.trim():'';} });return vals;}
+function wuValidateFields(){const cat=document.getElementById('wuCategory').value;const vals=wuGetFieldVals();const missing=[];(WU_FIELDS[cat]||[]).forEach(f=>{if(!f.required)return;const wrap=document.getElementById(`wuf_wrap_${f.id}`);if(wrap&&wrap.style.display==='none')return;if(!vals[f.id]||vals[f.id]==='')missing.push(f.label);});return missing;}
+function wuGenerateDocument(){const cat=document.getElementById('wuCategory').value,sup=document.getElementById('wuSupervisor').value.trim(),date=document.getElementById('wuDate').value;if(!cat){alert('Por favor seleccione una categoría.');return;}if(!sup){alert('Por favor ingrese el nombre del supervisor.');return;}if(!date){alert('Por favor seleccione la fecha del incidente.');return;}const missing=wuValidateFields();if(missing.length){alert('Por favor complete los campos obligatorios:\n\n• '+missing.join('\n• '));return;}const level=document.getElementById('wuLevel').value,shift=WU.getShiftString(),fields=wuGetFieldVals();const dateFormatted=new Date(date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'});const doc=wuBuildDocument({empName:WU.currentEmpName,cat,level,sup,dateFormatted,shift,fields});document.getElementById('wuGenIncidente').value=doc.incidente;document.getElementById('wuGenCorrectiva').value=doc.correctiva;document.getElementById('wuGenConsecuencia').value=doc.consecuencia;document.getElementById('wuAIOutput').style.display='block';document.getElementById('wuAIOutput').scrollIntoView({behavior:'smooth',block:'start'});}
+function wuBuildDocument({empName,cat,level,sup,dateFormatted,shift,fields}){return{incidente:wuBuildIncidente(empName,cat,sup,dateFormatted,shift,fields),correctiva:wuBuildCorrectiva(empName,cat),consecuencia:`De reincidir en esta conducta, el/la empleado/a ${empName} estará sujeto/a a ${WU.FALTA_MAP[level]}, conforme a la política disciplinaria progresiva de Los Filtros FSU. Esta empresa está comprometida con mantener un ambiente de trabajo que cumpla con todas las normas establecidas, y espera el cumplimiento inmediato y sostenido de dicha política.`};}
+function wuBuildIncidente(n,cat,sup,date,shift,f){const t={'Asistencia y Puntualidad':`En fecha ${date}, el/la empleado/a ${n} incurrió en una violación a la Política de Asistencia y Puntualidad de Los Filtros FSU. ${f.tipo_ausencia==='Ausencia injustificada'?`El/la empleado/a tenía programado su turno a las ${f.horaProgram} y no se presentó a trabajar (ausencia injustificada). ${f.llamo==='Sí'?`Notificó al supervisor a las ${f.horaLlamo} con ${f.quienAtendio}.`:'No notificó a la gerencia en ningún momento previo al turno.'}`:`El/la empleado/a tenía programada su entrada a las ${f.horaProgram}, sin embargo se presentó a las ${f.horaLlegada}, registrando una tardanza de ${f.minutosT} minuto(s). De conformidad con la política de Los Filtros FSU, toda tardanza — incluyendo un (1) minuto — constituye una violación. ${f.llamo==='Sí'?`El/la empleado/a notificó al supervisor a las ${f.horaLlamo} con ${f.quienAtendio}.`:'El/la empleado/a no notificó previamente a la gerencia.'}`} ${f.reloj==='Sí'?'Dicho incidente quedó registrado en el sistema de marcaje electrónico de la empresa.':'El sistema de marcaje no registró la situación.'} ${f.ocasiones_previas==='Sí'?'Se certifica que el/la empleado/a ha tenido incidentes de asistencia previos en los últimos 90 días.':''} El supervisor ${sup} certificó la ocurrencia de dicho incidente durante el turno de ${shift}.`,'Normas de Conducta':`En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${n} incurrió en una violación a las Normas de Conducta de Los Filtros FSU. Específicamente, ${f.descripcion}. El incidente ocurrió en el área de ${f.area} a las ${f.horaInc}. ${f.clientes==='Sí'?'Había clientes presentes al momento del incidente.':''} ${f.testigos?`El/la testigo ${f.testigos} estuvo presente y ${f.testigoDecl==='Sí'?'está dispuesto/a a declarar.':'fue notificado/a del incidente.'}`:''} ${f.dano?`Como consecuencia, ${f.dano}.`:''} El supervisor ${sup} certificó la ocurrencia de dicho incidente.`,'Inocuidad de Alimentos / Seguridad Alimentaria':`En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${n} incurrió en una violación a la Política de Inocuidad de Alimentos de Los Filtros FSU. Específicamente, se violó la siguiente regulación: ${f.regulacion}. El producto, equipo o área involucrada fue: ${f.productoArea}. ${f.riesgo==='Sí'?'Existió un riesgo directo de contaminación o daño al cliente.':'No se identificó riesgo directo al consumidor.'} ${f.temperatura?`La temperatura registrada fue de ${f.temperatura}.`:''} ${f.descarto==='Sí'?'El producto fue descartado conforme al protocolo.':''} ${f.entrenado==='Sí'?'El/la empleado/a había recibido entrenamiento sobre esta regulación.':'Esta situación evidencia una deficiencia en la aplicación de los protocolos.'} ${f.corrigioMom==='Sí'?'La situación fue corregida al momento de ser identificada.':'La situación no fue corregida de inmediato.'} El supervisor ${sup} certificó la ocurrencia de dicho incidente.`,'Deberes y Responsabilidades del Puesto':`En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${n} incurrió en una violación a sus Deberes y Responsabilidades del Puesto en Los Filtros FSU. Específicamente, no cumplió con la siguiente tarea: ${f.tarea}. ${f.enDescripcion==='Sí'?'Dicha responsabilidad forma parte de la descripción oficial de su puesto.':''} ${f.instruccionDir==='Sí'?`Se le dio instrucción directa de realizarla por ${f.quienInstruyo}.`:''} Como consecuencia directa, ${f.impacto}. ${f.quejaCliente==='Sí'?'Se generó una queja de cliente a raíz de este incumplimiento.':''} El supervisor ${sup} certificó la ocurrencia de dicho incidente.`,'Ambiente de Trabajo Civil y Respetuoso':`En fecha ${date}, durante el turno de ${shift}, en el área de ${f.area}, el/la empleado/a ${n} incurrió en una violación a la Política de Ambiente de Trabajo Civil y Respetuoso de Los Filtros FSU. Específicamente, ${f.descripcion}. Dicha conducta fue dirigida a ${f.dirigidoA}. ${f.testigos?`El/la testigo ${f.testigos} estuvo presente y ${f.testigoDecl==='Sí'?'está dispuesto/a a declarar.':'fue notificado/a del incidente.'}`:''} ${f.contactoFisico==='Sí'?`Hubo contacto físico de la siguiente naturaleza: ${f.tipoContacto}.`:''} ${f.quejaFormal==='Sí'?'La parte afectada presentó queja formal.':''} ${f.hostigamiento==='Sí'?'Los hechos pueden constituir hostigamiento, discriminación o acoso en el lugar de trabajo.':''} El supervisor ${sup} certificó la ocurrencia de dicho incidente.`,'Apariencia y Aseo Personal':`En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${n} incurrió en una violación a la Política de Apariencia y Aseo Personal de Los Filtros FSU. Específicamente, no cumplió con el siguiente requisito: ${f.articulo}. ${f.tenia==='Sí'?'El/la empleado/a tenía el artículo en su poder ese día.':'El/la empleado/a no contaba con el artículo requerido.'} ${f.oportunidad==='Sí'?'Se le brindó la oportunidad de corregir la situación.':''} ${f.corrigio==='Sí'?'El/la empleado/a procedió a corregir la situación.':'El/la empleado/a no procedió a corregir la situación.'} ${f.impactoCliente==='Sí'?'Dicha situación tuvo impacto en la interacción con clientes.':''} El supervisor ${sup} certificó la ocurrencia de dicho incidente.`,'Seguridad en el Lugar de Trabajo':`En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${n} incurrió en una violación a la Política de Seguridad en el Lugar de Trabajo de Los Filtros FSU. Específicamente, violó la siguiente regla: ${f.regla}. El incidente ocurrió en ${f.lugar} a las ${f.horaInc}. ${f.riesgoLesion==='Sí'?'Existió riesgo de lesión para el/la empleado/a u otras personas.':''} ${f.entrenado==='Sí'?`El/la empleado/a había recibido entrenamiento en este procedimiento el ${f.fechaEntren}.`:''} ${f.camara==='Sí'?'Existe registro en cámara.':''} ${f.reportoGerente==='Sí'?'El incidente fue reportado al gerente de turno inmediatamente.':'El incidente no fue reportado al gerente de forma inmediata.'} El supervisor ${sup} certificó la ocurrencia de dicho incidente.`,'Responsabilidad de Efectivo y Cupones':`En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${n} incurrió en una violación a la Política de Responsabilidad de Efectivo y Cupones de Los Filtros FSU. Al realizarse el conteo a las ${f.horaConteo} en la caja ${f.caja}, se identificó una discrepancia de $${f.discrepancia}, siendo esta un ${f.tipoDisc}. ${f.soloEnCaja==='Sí'?'El/la empleado/a estuvo solo/a en dicha caja durante el turno.':'Otros empleados tuvieron acceso a la caja.'} ${f.reviso==='Sí'?'El conteo fue revisado con el/la empleado/a presente.':'El conteo no fue revisado con el/la empleado/a presente.'} ${f.firmoConteo==='Sí'?'El/la empleado/a firmó el conteo.':'El/la empleado/a no firmó el conteo.'} ${f.registroPOS==='Sí'?'Existe registro del sistema POS que respalda esta discrepancia.':''} El supervisor ${sup} certificó la ocurrencia de dicho incidente.`,'Política de Uniformes':`En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${n} incurrió en una violación a la Política de Uniformes de Los Filtros FSU. Específicamente, el siguiente artículo del uniforme faltaba o no cumplía con la política: ${f.articulo}. ${f.orientado==='Sí'?'El/la empleado/a fue notificado/a de la Política de Uniformes durante su orientación.':''} ${f.tenia==='Sí'?'El/la empleado/a tenía el artículo disponible ese día.':'El/la empleado/a no contaba con el artículo disponible.'} ${f.oportunidad==='Sí'?'Se le brindó la oportunidad de corregir la situación.':''} ${f.corrigio==='Sí'?'El/la empleado/a procedió a corregir la situación.':'El/la empleado/a no corrigió la situación.'} El supervisor ${sup} certificó la ocurrencia de dicho incidente.`,'Comunicaciones Telefónicas':`En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${n} incurrió en una violación a la Política de Comunicaciones Telefónicas de Los Filtros FSU. Específicamente, violó la siguiente política: ${f.politica}. El incidente ocurrió en el área de ${f.area}, ${f.horasTrabajo==='Horas activas de trabajo'?'durante horas activas de trabajo':'durante su período de descanso'}. ${f.afectoServicio==='Sí'?'Dicha conducta afectó directamente el servicio al cliente.':''} ${f.clienteTestigo==='Sí'?'Un cliente u otro testigo estuvo presente durante el incidente.':''} ${f.camara==='Sí'?'Existe registro en cámara del incidente.':''} El supervisor ${sup} certificó la ocurrencia de dicho incidente.`};return t[cat]||`En fecha ${date}, durante el turno de ${shift}, el/la empleado/a ${n} incurrió en una violación a la política de ${cat} de Los Filtros FSU. El supervisor ${sup} certificó la ocurrencia de dicho incidente.`;}
+function wuBuildCorrectiva(n,cat){const t={'Asistencia y Puntualidad':`Se le requiere al/a la empleado/a ${n} reportarse a su turno puntualmente. De acuerdo con la política de Los Filtros FSU, cualquier tardanza — incluyendo un (1) minuto de retraso — constituye una violación. En caso de no poder cumplir con el horario asignado, el/la empleado/a debe notificar al supervisor antes del inicio del turno. El incumplimiento reiterado de esta directiva resultará en acción disciplinaria progresiva hasta la terminación del empleo.`,'Normas de Conducta':`Se le requiere al/a la empleado/a ${n} mantener en todo momento una conducta profesional, respetuosa y acorde con las Normas de Conducta de Los Filtros FSU. Toda interacción con compañeros, supervisores y clientes debe realizarse dentro del marco de respeto y profesionalismo que exige esta empresa. El incumplimiento de esta directiva no será tolerado.`,'Inocuidad de Alimentos / Seguridad Alimentaria':`Se le requiere al/a la empleado/a ${n} cumplir estrictamente con todos los protocolos de inocuidad y seguridad alimentaria establecidos por Los Filtros FSU y las regulaciones aplicables. El manejo adecuado de alimentos es una responsabilidad no negociable que protege la salud de nuestros clientes y la integridad de la operación. El incumplimiento de estos protocolos no será tolerado bajo ninguna circunstancia.`,'Deberes y Responsabilidades del Puesto':`Se le requiere al/a la empleado/a ${n} cumplir a cabalidad con todas las tareas y responsabilidades inherentes a su puesto, conforme a las instrucciones recibidas de la gerencia. La ejecución efectiva de sus funciones es fundamental para el buen funcionamiento de la operación. El incumplimiento de sus responsabilidades no será tolerado.`,'Ambiente de Trabajo Civil y Respetuoso':`Se le requiere al/a la empleado/a ${n} mantener en todo momento un comportamiento civil, respetuoso y profesional hacia todos los compañeros, supervisores y clientes de Los Filtros FSU. Toda conducta que atente contra el ambiente de trabajo respetuoso que esta empresa promueve constituye una violación grave y no será tolerada.`,'Apariencia y Aseo Personal':`Se le requiere al/a la empleado/a ${n} reportarse a su turno cumpliendo en su totalidad con el Código de Apariencia y Aseo Personal de Los Filtros FSU. El cumplimiento de estos estándares es una condición de empleo y refleja los valores de la empresa. El incumplimiento de esta política no será tolerado.`,'Seguridad en el Lugar de Trabajo':`Se le requiere al/a la empleado/a ${n} cumplir en todo momento con todos los procedimientos y normas de seguridad establecidos por Los Filtros FSU. La seguridad en el lugar de trabajo es una responsabilidad compartida y su cumplimiento es obligatorio. El incumplimiento de los protocolos de seguridad no será tolerado.`,'Responsabilidad de Efectivo y Cupones':`Se le requiere al/a la empleado/a ${n} manejar el efectivo y cupones con la máxima diligencia conforme a los procedimientos de Los Filtros FSU. Toda discrepancia de $2.00 o más constituye una violación sujeta a acción disciplinaria progresiva (Verbal, Escrita, Final y Terminación). El/la empleado/a debe verificar su caja al inicio y cierre de turno, reportar cualquier irregularidad inmediatamente, y no compartir su caja sin autorización del gerente. El incumplimiento de esta política no será tolerado bajo ninguna circunstancia.`,'Política de Uniformes':`Se le requiere al/a la empleado/a ${n} reportarse a cada turno con el uniforme completo y en las condiciones establecidas por la Política de Uniformes de Los Filtros FSU. El uso correcto del uniforme es una condición de empleo y parte de la imagen profesional de la empresa. El incumplimiento de esta política no será tolerado.`,'Comunicaciones Telefónicas':`Se le requiere al/a la empleado/a ${n} cumplir estrictamente con la Política de Comunicaciones Telefónicas de Los Filtros FSU durante las horas de trabajo. El uso indebido de dispositivos de comunicación personal durante el turno interfiere con la operación y el servicio al cliente. El incumplimiento de esta política no será tolerado.`};return t[cat]||`Se le requiere al/a la empleado/a ${n} cumplir estrictamente con todas las políticas y normas de Los Filtros FSU. El incumplimiento de estas directivas no será tolerado.`;}
+function wuGenerateWithAI() { wuGenerateDocument(); }
+async function wuSaveRecord(){const record={emp_id:WU.currentEmpKey,emp_name:WU.currentEmpName,date:document.getElementById('wuDate').value,level:document.getElementById('wuLevel').value,category:document.getElementById('wuCategory').value,supervisor:document.getElementById('wuSupervisor').value.trim(),shift:WU.getShiftString(),incident:document.getElementById('wuGenIncidente').value,corrective:document.getElementById('wuGenCorrectiva').value,consequence:document.getElementById('wuGenConsecuencia').value,created_at:new Date().toISOString()};try{await WU.saveRecord(record);WU.currentRecords=await WU.fetchRecords(WU.currentEmpKey);wuRenderHistory(WU.currentRecords);document.getElementById('wuFormPanel').style.display='none';document.getElementById('wuAIOutput').style.display='none';document.getElementById('wuHistoryPanel').scrollIntoView({behavior:'smooth'});alert('✅ Amonestación guardada en el expediente de '+WU.currentEmpName+'.');}catch(err){alert('Error al guardar: '+err.message);}}
+function wuPrintRecord(){const level=document.getElementById('wuLevel').value,cat=document.getElementById('wuCategory').value,sup=document.getElementById('wuSupervisor').value.trim(),date=document.getElementById('wuDate').value,shift=WU.getShiftString(),incident=document.getElementById('wuGenIncidente').value,corrective=document.getElementById('wuGenCorrectiva').value,consequence=document.getElementById('wuGenConsecuencia').value;const today=new Date().toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'}),incDateFmt=date?new Date(date+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'}):'';const allCats=[['Política de Salud','Funciones, Responsabilidades y Requisitos de Liderazgo','Asistencia y Puntualidad','Pausas y Comidas de Empleados','Deberes y Responsabilidades del Puesto','Normas de Conducta','Ambiente de Trabajo Civil y Respetuoso','Inocuidad de Alimentos / Seguridad Alimentaria'],['Apariencia y Aseo Personal','Igualdad de Oportunidad de Empleo y Política de No Acoso','Seguridad en el Lugar de Trabajo','Comunicaciones Telefónicas','Responsabilidad de Efectivo y Cupones','Política de Uniformes']];const catItem=c=>{const chk=c===cat;return`<div style="display:flex;align-items:center;gap:6px;padding:1.5px 0;font-size:9pt;${chk?'font-weight:700;color:#004f71;':''}"><div style="width:13px;height:13px;border:1.5px solid #004f71;border-radius:2px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:9pt;${chk?'background:#e0f2fe;color:#c1121f;font-weight:900;':''}">${chk?'✓':''}</div><span>${c}</span></div>`;};const faltaMap={verbal:'escrita',escrita:'final',final:'terminacion',terminacion:'terminacion'},faltaKey=faltaMap[level];const levelRows=[{key:'verbal',label:'Amonestación Verbal'},{key:'escrita',label:'Amonestación Escrita'},{key:'final',label:'Amonestación Final Escrita'}];const faltaRows=[{key:'escrita',label:'Amonestación Escrita'},{key:'final',label:'Amonestación Final Escrita'},{key:'terminacion',label:'Terminación'}];const chkRow=(rows,active)=>rows.map(r=>`<div style="display:flex;align-items:center;gap:7px;font-size:9pt;${r.key===active?'font-weight:700;':''}"><div style="width:14px;height:14px;border:1.5px solid #004f71;border-radius:2px;flex-shrink:0;display:flex;align-items:center;justify-content:center;${r.key===active?'background:#fff0f0;color:#c1121f;font-size:10pt;font-weight:900;':''}">${r.key===active?'✓':''}</div><span>${r.label}</span></div>`).join('');const win=window.open('','_blank');win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/><title>Amonestación — ${WU.currentEmpName}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:10pt;color:#1a1a2e;padding:22px 26px}.hdr{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px}.title{font-size:20pt;font-weight:900;color:#004f71;line-height:1.1}.logo{text-align:right;font-size:10pt;font-weight:700;color:#004f71}.logo span{display:block;font-size:8pt;color:#c1121f;font-weight:600}.meta{display:grid;grid-template-columns:1fr 1fr;gap:3px 20px;border-top:2px solid #004f71;border-bottom:1px solid #e5e7eb;padding:7px 0;margin-bottom:9px}.mf{display:flex;align-items:baseline;gap:5px;font-size:9.5pt}.ml{font-weight:700;white-space:nowrap;color:#004f71}.mv{border-bottom:1px solid #94a3b8;flex:1;padding-bottom:1px;font-weight:600}.sec{background:#004f71;color:#fff;font-weight:700;font-size:8.5pt;padding:3px 9px;border-radius:3px;margin:8px 0 5px;display:inline-block}.cats{display:grid;grid-template-columns:1fr 1fr;gap:1px 14px;margin-bottom:3px}.tbox{border:1px solid #cbd5e1;border-radius:4px;padding:9px 11px;min-height:65px;font-size:9.5pt;line-height:1.65;margin-bottom:3px;font-weight:500}.chks{display:flex;gap:20px;margin:5px 0 3px;flex-wrap:wrap}.signotice{font-size:8pt;color:#374151;line-height:1.5;border:1px solid #e5e7eb;border-radius:4px;padding:7px 9px;margin:9px 0 7px;background:#f8fafc}.sigs{display:grid;grid-template-columns:1fr 1fr;gap:12px 28px;margin-bottom:9px}.sigs label{font-size:8pt;font-weight:700;color:#004f71;display:block;margin-bottom:2px}.sl{border-bottom:1.5px solid #374151;height:20px}.neg{border:1.5px solid #004f71;border-radius:4px;padding:7px 10px;margin-top:7px}.negtitle{background:#004f71;color:#fff;font-weight:700;font-size:8pt;padding:2px 7px;border-radius:2px;display:inline-block;margin-bottom:5px}.footer{font-size:7.5pt;color:#94a3b8;text-align:right;margin-top:8px;border-top:1px solid #e5e7eb;padding-top:5px}@media print{body{padding:14px}}</style></head><body><div class="hdr"><div class="title">FORMULARIO DE ACCIÓN<br>DISCIPLINARIA</div><div class="logo">🐔 Los Filtros FSU<span>Chick-fil-A</span></div></div><div class="meta"><div class="mf"><span class="ml">Nombre del Miembro del Equipo:</span><span class="mv">${WU.currentEmpName}</span></div><div class="mf"><span class="ml">Fecha del Incidente:</span><span class="mv">${incDateFmt}</span></div><div class="mf"><span class="ml">Fecha:</span><span class="mv">${today}</span></div><div class="mf"><span class="ml">Supervisor:</span><span class="mv">${sup}</span></div></div><div class="sec">VIOLACIÓN DE POLÍTICA</div><div class="cats"><div>${allCats[0].map(catItem).join('')}</div><div>${allCats[1].map(catItem).join('')}</div></div><div class="sec">DESCRIBA EL INCIDENTE</div><div class="tbox">${incident.replace(/\n/g,'<br/>')}</div><div class="sec">ACCIÓN DISCIPLINARIA</div><div class="chks">${chkRow(levelRows,level)}</div><div class="sec">ACCIÓN CORRECTIVA</div><div class="tbox">${corrective.replace(/\n/g,'<br/>')}</div><div class="sec">FALTA DE MEJORA</div><div class="chks">${chkRow(faltaRows,faltaKey)}</div><div class="tbox" style="min-height:48px">${consequence.replace(/\n/g,'<br/>')}</div><div class="signotice">Al firmar este documento reconozco que este informe ha sido completamente discutido y explicado por mi supervisor y entiendo que se me ha brindado la oportunidad de corregir mis acciones. Confirmo que se me brindó la oportunidad de explicar mi versión de los hechos.</div><div class="sigs"><div><label>Firma del Miembro del Equipo</label><div class="sl"></div></div><div><label>Fecha</label><div class="sl"></div></div><div><label>Firma del Supervisor</label><div class="sl"></div></div><div><label>Fecha</label><div class="sl"></div></div><div><label>Firma del Testigo</label><div class="sl"></div></div><div><label>Fecha</label><div class="sl"></div></div></div><div class="neg"><div class="negtitle">NEGATIVA DE FIRMA (si aplica)</div><div style="display:flex;align-items:center;gap:7px;font-size:8.5pt;margin-bottom:8px"><div style="width:13px;height:13px;border:1.5px solid #004f71;border-radius:2px;flex-shrink:0"></div><span>El Miembro del Equipo se negó a firmar después de que este documento le fue explicado completamente.</span></div><div class="sigs" style="margin-bottom:0"><div><label>Firma del Testigo</label><div class="sl"></div></div><div><label>Fecha</label><div class="sl"></div></div></div></div><div class="footer">Los Filtros FSU — Generado: ${today}</div><script>window.onload=()=>window.print();<\/script></body></html>`);win.document.close();}
+
+
+
+
+// ══════════════════════════════════════════════════════════════════
+// EOM PACKAGE GENERATOR MODULE
+// Generates CFA Digital Package PDF from Gastos CSV + receipt images
+// File format: 30014_YYYY_MM_PR.pdf
+// ══════════════════════════════════════════════════════════════════
+
+let _eomInited = false;
+let _eomState = {
+  payments: [],
+  month: null,
+  csvLoaded: false,
+};
+
+function eomInit() {
+  if (_eomInited) { eomUpdateStats(); return; }
+  _eomInited = true;
+  document.getElementById('eomApp').innerHTML = eomBuildHTML();
+  eomSetupDnD();
+}
+
+function eomBuildHTML() {
+  return `
+<style>
+  #eomApp * { box-sizing: border-box; }
+  .eom-layout { display: grid; grid-template-columns: 300px 1fr; min-height: calc(100vh - 120px); gap: 0; }
+  .eom-left { background: #f8f9fa; border-right: 1px solid var(--border); padding: 18px; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
+  .eom-right { padding: 20px 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+  .eom-section-label { font-family: monospace; font-size: .68rem; color: var(--text-light); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 6px; }
+  .eom-upload-zone { border: 1.5px dashed var(--border); border-radius: 10px; padding: 16px 12px; text-align: center; cursor: pointer; transition: all .15s; background: #fff; }
+  .eom-upload-zone:hover, .eom-upload-zone.drag-over { border-color: var(--navy); background: rgba(0,32,91,.04); }
+  .eom-upload-zone .eom-uz-icon { font-size: 1.5rem; margin-bottom: 4px; opacity: .7; }
+  .eom-upload-zone .eom-uz-title { font-size: .82rem; font-weight: 600; }
+  .eom-upload-zone .eom-uz-sub { font-size: .72rem; color: var(--text-light); margin-top: 2px; }
+  .eom-stats-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .eom-stat-card { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .eom-stat-val { font-family: monospace; font-size: 1.25rem; font-weight: 700; color: var(--navy); line-height: 1; }
+  .eom-stat-lbl { font-size: .68rem; color: var(--text-light); margin-top: 2px; }
+  .eom-progress-bar { background: #e5e7eb; border-radius: 999px; height: 6px; overflow: hidden; margin-top: 8px; }
+  .eom-progress-fill { height: 100%; background: var(--navy); border-radius: 999px; transition: width .4s; }
+  .eom-progress-label { font-family: monospace; font-size: .7rem; color: var(--text-light); margin-top: 4px; }
+  .eom-btn-generate { background: var(--navy); color: #fff; border: none; border-radius: 8px; padding: 11px; font-size: .88rem; font-weight: 700; cursor: pointer; width: 100%; transition: all .15s; display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .eom-btn-generate:hover:not(:disabled) { background: #001a5e; }
+  .eom-btn-generate:disabled { opacity: .45; cursor: not-allowed; }
+  .eom-tbl-wrap { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: #fff; }
+  .eom-tbl-header { padding: 11px 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); background: #f8f9fa; font-size: .82rem; font-weight: 600; }
+  .eom-table { width: 100%; border-collapse: collapse; font-size: .78rem; }
+  .eom-table th { background: #f8f9fa; padding: 8px 10px; text-align: left; font-family: monospace; font-size: .67rem; color: var(--text-light); letter-spacing: .06em; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .eom-table td { padding: 8px 10px; border-bottom: 1px solid rgba(0,0,0,.05); vertical-align: middle; }
+  .eom-table tr:last-child td { border-bottom: none; }
+  .eom-table tr:hover td { background: rgba(0,32,91,.02); }
+  .eom-pmt-id { font-family: monospace; color: var(--navy); font-size: .75rem; }
+  .eom-amount { font-family: monospace; text-align: right; }
+  .eom-amount.pos { color: #16a34a; }
+  .eom-amount.neg { color: var(--red); }
+  .eom-receipt-slot { display: inline-flex; align-items: center; gap: 5px; font-size: .72rem; cursor: pointer; transition: color .15s; }
+  .eom-receipt-slot.has { color: #16a34a; }
+  .eom-receipt-slot.none { color: var(--text-light); }
+  .eom-receipt-slot:hover { color: var(--navy); }
+  .eom-badge { display: inline-block; padding: 2px 7px; border-radius: 99px; font-size: .67rem; font-family: monospace; font-weight: 700; }
+  .eom-badge-ok { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+  .eom-badge-miss { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+  .eom-badge-wh { background: #f3f4f6; color: #6b7280; border: 1px solid #e5e7eb; }
+  .eom-log { background: #f8f9fa; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-family: monospace; font-size: .72rem; max-height: 150px; overflow-y: auto; display: none; }
+  .eom-log.visible { display: block; }
+  .eom-log-line { color: var(--text-mid); line-height: 1.7; }
+  .eom-log-line.ok { color: #16a34a; }
+  .eom-log-line.err { color: var(--red); }
+  .eom-log-line.info { color: var(--navy); font-weight: 700; }
+  .eom-wh-row td { opacity: .5; font-style: italic; }
+  .eom-tbl-footer { padding: 9px 14px; display: flex; justify-content: flex-end; gap: 18px; border-top: 1px solid var(--border); background: #f8f9fa; }
+  .eom-tbl-footer .fs { font-family: monospace; font-size: .76rem; color: var(--text-light); }
+  .eom-tbl-footer .fs span { color: var(--text); font-weight: 700; }
+  .eom-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; }
+  .eom-search { background: #f8f9fa; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: .78rem; padding: 6px 10px; outline: none; width: 200px; }
+  .eom-search:focus { border-color: var(--navy); }
+  .eom-empty { text-align: center; padding: 50px 20px; color: var(--text-light); }
+  .eom-empty .big { font-size: 2.5rem; margin-bottom: 10px; }
+  input[type=month].eom-month { background: #f8f9fa; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: monospace; font-size: .8rem; padding: 7px 10px; outline: none; width: 100%; }
+  input[type=month].eom-month:focus { border-color: var(--navy); }
+</style>
+
+<div class="eom-layout">
+  <!-- LEFT PANEL -->
+  <div class="eom-left">
+
+    <div>
+      <div class="eom-section-label">① Cargar GASTOS CSV</div>
+      <div class="eom-upload-zone" id="eomCsvZone" onclick="document.getElementById('eomCsvInput').click()">
+        <div class="eom-uz-icon">📄</div>
+        <div class="eom-uz-title">GASTOS_PMT_DTL_EXPORT</div>
+        <div class="eom-uz-sub">Arrastra o haz clic · .CSV</div>
+        <input type="file" id="eomCsvInput" accept=".csv" style="display:none" onchange="eomHandleCSV(event)">
+      </div>
+    </div>
+
+    <div id="eomStatsArea" style="display:none">
+      <div class="eom-section-label">Resumen del Mes</div>
+      <div class="eom-stats-row">
+        <div class="eom-stat-card"><div class="eom-stat-val" id="eomStatPmt">0</div><div class="eom-stat-lbl">Payment IDs</div></div>
+        <div class="eom-stat-card"><div class="eom-stat-val" id="eomStatTotal">$0</div><div class="eom-stat-lbl">Total Gastos</div></div>
+        <div class="eom-stat-card"><div class="eom-stat-val" id="eomStatReady" style="color:#16a34a">0</div><div class="eom-stat-lbl">Recibos listos</div></div>
+        <div class="eom-stat-card"><div class="eom-stat-val" id="eomStatMiss" style="color:var(--red)">0</div><div class="eom-stat-lbl">Sin recibo</div></div>
+      </div>
+      <div class="eom-progress-bar"><div class="eom-progress-fill" id="eomProgressFill" style="width:0%"></div></div>
+      <div class="eom-progress-label" id="eomProgressLabel">0 de 0 listos</div>
+    </div>
+
+    <div id="eomMonthArea" style="display:none">
+      <div class="eom-section-label">② Período del Paquete</div>
+      <input type="month" id="eomMonthPicker" class="eom-month" onchange="eomUpdateMonth()">
+      <div style="margin-top:6px;font-size:.71rem;color:var(--text-light)">
+        Archivo: <span style="color:var(--navy);font-family:monospace" id="eomFilenamePrev">30014_YYYY_MM_PR.pdf</span>
+      </div>
+    </div>
+
+    <div id="eomBulkArea" style="display:none">
+      <div class="eom-section-label">③ Subir Recibos (Bulk)</div>
+      <div class="eom-upload-zone" id="eomBulkZone" onclick="document.getElementById('eomBulkInput').click()">
+        <div class="eom-uz-icon">🖼</div>
+        <div class="eom-uz-title">Subir todos los recibos</div>
+        <div class="eom-uz-sub">JPG, PNG, PDF · múltiples archivos<br>Nombra con el Payment ID para auto-asignación</div>
+        <input type="file" id="eomBulkInput" accept="image/*,.pdf" multiple style="display:none" onchange="eomHandleBulkReceipts(event)">
+      </div>
+    </div>
+
+    <div id="eomGenArea" style="display:none">
+      <div class="eom-section-label">④ Generar Paquete</div>
+      <button class="eom-btn-generate" id="eomGenBtn" onclick="eomGeneratePackage()">
+        ⬇ Generar PDF EOM
+      </button>
+      <div id="eomLogPanel" class="eom-log" style="margin-top:10px"></div>
+    </div>
+
+    <div>
+      <button class="btn btn-sm" onclick="eomReset()" style="width:100%;color:var(--red);border-color:var(--red)">↺ Reset</button>
+    </div>
+
+  </div><!-- /eom-left -->
+
+  <!-- RIGHT PANEL -->
+  <div class="eom-right" id="eomRight">
+    <div class="eom-empty">
+      <div class="big">📂</div>
+      <p>Carga el CSV de Gastos para comenzar.<br>Los Payment IDs se mostrarán aquí.</p>
+    </div>
+  </div>
+</div>`;
+}
+
+// ── CSV Parsing ────────────────────────────────────────────────
+async function eomHandleCSV(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const ab = await file.arrayBuffer();
+  const text = new TextDecoder('windows-1252').decode(ab);
+  eomParseCSV(text);
+}
+
+function eomParseCSV(text) {
+  const lines = text.trim().split(/\r?\n/);
+  if (!lines.length) return;
+
+  const headers = eomParseLine(lines[0]);
+  const rows = lines.slice(1).map(l => {
+    const vals = eomParseLine(l);
+    const obj = {};
+    headers.forEach((h, i) => obj[h.trim()] = (vals[i] || '').trim());
+    return obj;
+  }).filter(r => r.PAYMENT_ID);
+
+  const pmtMap = new Map();
+  rows.forEach(r => {
+    const id = r.PAYMENT_ID;
+    if (!pmtMap.has(id)) {
+      pmtMap.set(id, { pmtId: id, vendor: r.VENDOR, date: r.PAYMENT_DATE, invoices: [], receipts: [], totalNet: 0 });
+    }
+    const p = pmtMap.get(id);
+    const amt = parseFloat(r.AMOUNT) || 0;
+    p.invoices.push({ invNum: r.INVOICE_NUMBER, invDate: r.INVOICE_DATE, category: r.EXPENSE_CATEGORY, description: r.DESCRIPTION, amount: amt });
+    p.totalNet += amt;
+  });
+
+  _eomState.payments = Array.from(pmtMap.values()).sort((a, b) => a.pmtId.localeCompare(b.pmtId));
+  _eomState.csvLoaded = true;
+
+  eomDetectMonth();
+  eomRenderTable();
+  eomUpdateStats();
+  eomShowPanels();
+
+  const zone = document.getElementById('eomCsvZone');
+  if (zone) { zone.style.borderColor = '#16a34a'; zone.querySelector('.eom-uz-title').textContent = `✓ ${_eomState.payments.length} Payment IDs`; }
+  showToast(`✅ CSV cargado — ${_eomState.payments.length} Payment IDs`, 'success');
+}
+
+function eomParseLine(line) {
+  const result = [];
+  let inQ = false, cur = '';
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') { inQ = !inQ; continue; }
+    if (c === ',' && !inQ) { result.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  result.push(cur);
+  return result;
+}
+
+function eomDetectMonth() {
+  if (!_eomState.payments.length) return;
+  const mmap = { JAN:'01',FEB:'02',MAR:'03',APR:'04',MAY:'05',JUN:'06',JUL:'07',AUG:'08',SEP:'09',OCT:'10',NOV:'11',DEC:'12' };
+  const date = _eomState.payments[0].date; // e.g. "03-NOV-2025"
+  if (!date) return;
+  const parts = date.split('-');
+  if (parts.length === 3) {
+    const yr = parts[2], mo = mmap[parts[1].toUpperCase()] || '01';
+    const val = `${yr}-${mo}`;
+    const picker = document.getElementById('eomMonthPicker');
+    if (picker) picker.value = val;
+    _eomState.month = val;
+    eomUpdateMonth();
+  }
+}
+
+function eomUpdateMonth() {
+  const val = document.getElementById('eomMonthPicker')?.value;
+  if (!val) return;
+  _eomState.month = val;
+  const [yr, mo] = val.split('-');
+  const prev = document.getElementById('eomFilenamePrev');
+  if (prev) prev.textContent = `30014_${yr}_${mo}_PR.pdf`;
+}
+
+// ── Bulk Receipt Upload ────────────────────────────────────────
+async function eomHandleBulkReceipts(e) {
+  const files = Array.from(e.target.files);
+  let matched = 0, unmatched = 0;
+  files.forEach(file => {
+    const name = file.name.replace(/\.[^.]+$/, '');
+    const pmtId = name.replace(/[^0-9]/g, '');
+    const payment = _eomState.payments.find(p => p.pmtId === pmtId);
+    if (payment) { payment.receipts = [file]; matched++; }
+    else unmatched++;
+  });
+  eomUpdateStats();
+  eomRenderTable();
+  showToast(`📎 ${matched} asignados${unmatched ? `, ${unmatched} sin coincidencia` : ''}`, 'info');
+}
+
+// ── Per-Row Receipt Upload ─────────────────────────────────────
+function eomHandleRowReceipt(pmtId, input) {
+  const file = input.files[0];
+  if (!file) return;
+  const payment = _eomState.payments.find(p => p.pmtId === pmtId);
+  if (!payment) return;
+  payment.receipts = [file];
+  eomUpdateStats();
+  eomRenderTable();
+}
+
+// ── Render Table ───────────────────────────────────────────────
+function eomRenderTable() {
+  const right = document.getElementById('eomRight');
+  if (!right) return;
+
+  const totals = eomCalcTotals();
+
+  right.innerHTML = `
+    <div class="eom-toolbar">
+      <input type="search" class="eom-search" id="eomSearch" placeholder="Vendor, Payment ID..." oninput="eomFilterTable(this.value)">
+      <button class="btn btn-sm" onclick="eomFilterTable(''); document.getElementById('eomSearch').value=''">Todos</button>
+      <button class="btn btn-sm" onclick="eomFilterMissing()">Sin recibo</button>
+      <span style="margin-left:auto;font-size:.75rem;color:var(--text-light)" id="eomFilterInfo"></span>
+    </div>
+    <div class="eom-tbl-wrap">
+      <div class="eom-tbl-header">
+        <span>Invoices por Payment ID</span>
+        <span style="font-size:.72rem;font-weight:400;color:var(--text-light)">Orden: <span style="font-family:monospace;color:var(--navy)">Payment ID ↑</span></span>
+      </div>
+      <div style="max-height:calc(100vh - 280px);overflow-y:auto">
+        <table class="eom-table">
+          <thead><tr>
+            <th>PAYMENT ID</th><th>VENDOR</th><th>FECHA PMT</th>
+            <th>INVOICE #</th><th>CATEGORÍA</th><th style="text-align:right">MONTO</th><th>RECIBO</th>
+          </tr></thead>
+          <tbody id="eomTableBody"></tbody>
+        </table>
+      </div>
+      <div class="eom-tbl-footer">
+        <span class="fs">Positivo: <span style="color:#16a34a">$${totals.positive.toFixed(2)}</span></span>
+        <span class="fs">Withholding: <span style="color:var(--red)">$${Math.abs(totals.negative).toFixed(2)}</span></span>
+        <span class="fs">Net: <span>$${totals.net.toFixed(2)}</span></span>
+      </div>
+    </div>`;
+
+  eomPopulateBody(_eomState.payments);
+}
+
+function eomPopulateBody(payments) {
+  const tbody = document.getElementById('eomTableBody');
+  if (!tbody) return;
+  let html = '';
+  payments.forEach(p => {
+    const hasR = p.receipts.length > 0;
+    const isWH = p.totalNet <= 0;
+    const badge = isWH ? `<span class="eom-badge eom-badge-wh">WH</span>` :
+                  hasR  ? `<span class="eom-badge eom-badge-ok">✓ Listo</span>` :
+                          `<span class="eom-badge eom-badge-miss">Falta</span>`;
+    const rowClass = isWH ? 'eom-wh-row' : '';
+    const receiptCell = hasR
+      ? `<label class="eom-receipt-slot has" title="Cambiar recibo"><span>📎 ${p.receipts[0].name.substring(0,14)}…</span><input type="file" accept="image/*,.pdf" style="display:none" onchange="eomHandleRowReceipt('${p.pmtId}',this)"></label>`
+      : `<label class="eom-receipt-slot none"><span>＋ Subir</span><input type="file" accept="image/*,.pdf" style="display:none" onchange="eomHandleRowReceipt('${p.pmtId}',this)"></label>`;
+
+    p.invoices.forEach((inv, idx) => {
+      const isFirst = idx === 0;
+      const rspan = p.invoices.length;
+      html += `<tr class="${rowClass}" data-pmtid="${p.pmtId}">
+        ${isFirst ? `<td class="eom-pmt-id" rowspan="${rspan}">${p.pmtId}</td>` : ''}
+        ${isFirst ? `<td rowspan="${rspan}" style="max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.vendor}">${p.vendor}</td>` : ''}
+        ${isFirst ? `<td rowspan="${rspan}" style="font-size:.74rem;white-space:nowrap">${p.date}</td>` : ''}
+        <td style="font-family:monospace;font-size:.74rem">${inv.invNum || '—'}</td>
+        <td style="font-size:.72rem;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${inv.category}">${inv.category || '—'}</td>
+        <td class="eom-amount ${inv.amount < 0 ? 'neg' : 'pos'}">${inv.amount < 0 ? '-' : ''}$${Math.abs(inv.amount).toFixed(2)}</td>
+        ${isFirst ? `<td rowspan="${rspan}">${badge}<br><div style="margin-top:4px">${receiptCell}</div></td>` : ''}
+      </tr>`;
+    });
+  });
+  tbody.innerHTML = html || '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text-light)">Sin resultados</td></tr>';
+}
+
+function eomFilterTable(query) {
+  const lq = (query || '').toLowerCase();
+  const filtered = lq
+    ? _eomState.payments.filter(p => p.pmtId.includes(lq) || p.vendor.toLowerCase().includes(lq) || p.invoices.some(i => (i.invNum||'').toLowerCase().includes(lq)))
+    : _eomState.payments;
+  eomPopulateBody(filtered);
+  const info = document.getElementById('eomFilterInfo');
+  if (info) info.textContent = filtered.length < _eomState.payments.length ? `Mostrando ${filtered.length} de ${_eomState.payments.length}` : '';
+}
+
+function eomFilterMissing() {
+  const el = document.getElementById('eomSearch');
+  if (el) el.value = '';
+  const filtered = _eomState.payments.filter(p => p.receipts.length === 0 && p.totalNet > 0);
+  eomPopulateBody(filtered);
+  const info = document.getElementById('eomFilterInfo');
+  if (info) info.textContent = `${filtered.length} sin recibo`;
+}
+
+function eomCalcTotals() {
+  let positive = 0, negative = 0;
+  _eomState.payments.forEach(p => p.invoices.forEach(inv => {
+    if (inv.amount >= 0) positive += inv.amount;
+    else negative += inv.amount;
+  }));
+  return { positive, negative, net: positive + negative };
+}
+
+// ── Stats ──────────────────────────────────────────────────────
+function eomUpdateStats() {
+  if (!_eomState.payments.length) return;
+  const totals = eomCalcTotals();
+  const ready = _eomState.payments.filter(p => p.receipts.length > 0 || p.totalNet <= 0).length;
+  const missing = _eomState.payments.filter(p => p.receipts.length === 0 && p.totalNet > 0).length;
+  const total = totals.positive;
+
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+  set('eomStatPmt', _eomState.payments.length);
+  set('eomStatTotal', '$' + total.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}));
+  set('eomStatReady', ready);
+  set('eomStatMiss', missing);
+
+  const pct = Math.round((ready / _eomState.payments.length) * 100);
+  const fill = document.getElementById('eomProgressFill');
+  if (fill) fill.style.width = pct + '%';
+  const lbl = document.getElementById('eomProgressLabel');
+  if (lbl) lbl.textContent = `${ready} de ${_eomState.payments.length} listos (${pct}%)`;
+}
+
+function eomShowPanels() {
+  ['eomStatsArea','eomMonthArea','eomBulkArea','eomGenArea'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'block';
+  });
+}
+
+// ── PDF Generation ─────────────────────────────────────────────
+async function eomGeneratePackage() {
+  if (!window.PDFLib) { showToast('pdf-lib no cargado. Recarga la página.', 'error'); return; }
+  const btn = document.getElementById('eomGenBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Generando…'; }
+
+  const log = document.getElementById('eomLogPanel');
+  if (log) { log.innerHTML = ''; log.classList.add('visible'); }
+
+  function addLog(msg, type = '') {
+    if (!log) return;
+    const d = document.createElement('div');
+    d.className = `eom-log-line ${type}`;
+    d.textContent = msg;
+    log.appendChild(d);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  try {
+    const { PDFDocument, StandardFonts, rgb } = PDFLib;
+    addLog('▶ Iniciando generación del paquete EOM…', 'info');
+
+    const pdfDoc = await PDFDocument.create();
+    const font = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    const fontReg = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+    const sorted = [..._eomState.payments].sort((a, b) => parseInt(a.pmtId) - parseInt(b.pmtId));
+
+    addLog('📄 Portada…');
+    await eomAddCoverPage(pdfDoc, font, fontReg, rgb);
+    addLog('📋 Resumen…');
+    await eomAddSummaryPage(pdfDoc, font, fontReg, rgb, sorted);
+
+    let processed = 0, skipped = 0;
+
+    for (const payment of sorted) {
+      if (payment.totalNet <= 0) { skipped++; continue; }
+      if (!payment.receipts.length) {
+        addLog(`⚠ Sin recibo: PMT ${payment.pmtId} — ${payment.vendor}`, 'err');
+        await eomAddPlaceholderPage(pdfDoc, font, fontReg, rgb, payment);
+        continue;
+      }
+      addLog(`✓ PMT ${payment.pmtId} — ${payment.vendor}`, 'ok');
+      const file = payment.receipts[0];
+      try {
+        if (file.type === 'application/pdf') await eomAddReceiptPDF(pdfDoc, font, rgb, file, payment);
+        else await eomAddReceiptImage(pdfDoc, font, fontReg, rgb, file, payment);
+        processed++;
+      } catch (err) {
+        addLog(`  ✗ Error: ${err.message}`, 'err');
+        await eomAddPlaceholderPage(pdfDoc, font, fontReg, rgb, payment);
+      }
+    }
+
+    addLog(`\n✅ ${processed} recibos procesados, ${skipped} withholding omitidos`, 'ok');
+    addLog('📦 Guardando PDF…', 'info');
+
+    const pdfBytes = await pdfDoc.save();
+    const mb = (pdfBytes.length / 1024 / 1024).toFixed(2);
+    addLog(`📊 Tamaño: ${mb} MB ${parseFloat(mb) > 50 ? '⚠ EXCEDE 50MB!' : '✓'}`, parseFloat(mb) > 50 ? 'err' : 'ok');
+
+    const [yr, mo] = (_eomState.month || '2025-01').split('-');
+    const filename = `30014_${yr}_${mo}_PR.pdf`;
+    eomDownloadPDF(pdfBytes, filename);
+    addLog(`⬇ Descargado: ${filename}`, 'ok');
+    showToast(`✅ Paquete EOM generado — ${mb} MB`, 'success');
+
+  } catch (err) {
+    addLog(`✗ Error: ${err.message}`, 'err');
+    showToast('Error al generar el PDF: ' + err.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '⬇ Generar PDF EOM'; }
+  }
+}
+
+async function eomAddCoverPage(pdfDoc, font, fontReg, rgb) {
+  const page = pdfDoc.addPage([612, 792]);
+  const { width, height } = page.getSize();
+  page.drawRectangle({ x:0,y:0,width,height, color:rgb(0.05,0.08,0.22) });
+  page.drawRectangle({ x:0,y:height-8,width,height:8, color:rgb(0.75,0.19,0.22) });
+  page.drawText('END OF MONTH PACKAGE', { x:50,y:height-70,size:24,font,color:rgb(1,1,1) });
+  page.drawText('Los Filtros FSU — Store #30014', { x:50,y:height-98,size:13,font:fontReg,color:rgb(0.8,0.85,0.9) });
+  const [yr,mo] = (_eomState.month||'2025-01').split('-');
+  const mNames=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  page.drawText(`${mNames[parseInt(mo)]||mo} ${yr}`, { x:50,y:height-125,size:17,font,color:rgb(0.92,0.63,0.13) });
+  page.drawLine({ start:{x:50,y:height-148},end:{x:width-50,y:height-148},thickness:1,color:rgb(0.15,0.18,0.35) });
+  const totals = eomCalcTotals();
+  const ready = _eomState.payments.filter(p=>p.receipts.length>0).length;
+  const stats = [
+    ['Payment IDs', _eomState.payments.length.toString()],
+    ['Total Gastos', '$'+totals.positive.toLocaleString('en-US',{minimumFractionDigits:2})],
+    ['Withholding', '$'+Math.abs(totals.negative).toLocaleString('en-US',{minimumFractionDigits:2})],
+    ['Net Total', '$'+totals.net.toLocaleString('en-US',{minimumFractionDigits:2})],
+    ['Recibos Incluidos', ready.toString()],
+  ];
+  let y = height-190;
+  stats.forEach(([lbl,val]) => {
+    page.drawText(lbl+':', {x:50,y,size:11,font:fontReg,color:rgb(0.5,0.55,0.65)});
+    page.drawText(val, {x:240,y,size:11,font,color:rgb(0.9,0.92,0.95)});
+    y -= 22;
+  });
+  page.drawText(`Generado: ${new Date().toLocaleDateString('es-PR')} · GlobalDigitalFCRPackage@chick-fil-a.com`, {x:50,y:28,size:8,font:fontReg,color:rgb(0.4,0.45,0.55)});
+}
+
+async function eomAddSummaryPage(pdfDoc, font, fontReg, rgb, payments) {
+  const page = pdfDoc.addPage([612, 792]);
+  const { width, height } = page.getSize();
+  page.drawRectangle({ x:0,y:0,width,height,color:rgb(1,1,1) });
+  page.drawText('RESUMEN DE PAYMENT IDs', {x:50,y:height-48,size:15,font,color:rgb(0.05,0.08,0.22)});
+  page.drawLine({start:{x:50,y:height-62},end:{x:width-50,y:height-62},thickness:1,color:rgb(0.85,0.87,0.9)});
+  let y = height-86;
+  const cols = [[50,'PAYMENT ID'],[140,'VENDOR'],[285,'FECHA'],[360,'NET'],[430,'RECIBO']];
+  cols.forEach(([x,lbl]) => page.drawText(lbl,{x,y,size:8,font,color:rgb(0.55,0.58,0.65)}));
+  y-=5; page.drawLine({start:{x:50,y},end:{x:width-50,y},thickness:.5,color:rgb(0.85,0.87,0.9)}); y-=12;
+  for (const p of payments) {
+    if (y < 50) { const np=pdfDoc.addPage([612,792]); np.drawRectangle({x:0,y:0,width:612,height:792,color:rgb(1,1,1)}); y=742; }
+    const hasR=p.receipts.length>0, isWH=p.totalNet<=0;
+    const rCol=isWH?rgb(0.6,0.63,0.7):hasR?rgb(0.09,0.67,0.28):rgb(0.86,0.14,0.16);
+    const vendor=p.vendor.length>22?p.vendor.substring(0,22)+'…':p.vendor;
+    page.drawText(p.pmtId,{x:50,y,size:8,font,color:rgb(0.05,0.08,0.22)});
+    page.drawText(vendor,{x:140,y,size:8,font:fontReg,color:rgb(0.2,0.22,0.28)});
+    page.drawText(p.date,{x:285,y,size:8,font:fontReg,color:rgb(0.35,0.38,0.45)});
+    page.drawText('$'+p.totalNet.toFixed(2),{x:360,y,size:8,font,color:p.totalNet<0?rgb(0.86,0.14,0.16):rgb(0.09,0.67,0.28)});
+    page.drawText(isWH?'WH':hasR?'✓':'✗',{x:430,y,size:8,font,color:rCol});
+    y-=13;
+  }
+}
+
+async function eomAddReceiptImage(pdfDoc, font, fontReg, rgb, file, payment) {
+  const page = pdfDoc.addPage([612, 792]);
+  const { width, height } = page.getSize();
+  page.drawRectangle({x:0,y:0,width,height,color:rgb(1,1,1)});
+  page.drawRectangle({x:0,y:height-46,width,height:46,color:rgb(0.05,0.08,0.22)});
+  page.drawText(`PMT ID: ${payment.pmtId}`,{x:12,y:height-22,size:12,font,color:rgb(0.92,0.63,0.13)});
+  page.drawText(payment.vendor.substring(0,42),{x:12,y:height-36,size:8,font:fontReg,color:rgb(0.8,0.85,0.9)});
+  page.drawText('$'+Math.abs(payment.totalNet).toFixed(2),{x:width-80,y:height-24,size:11,font,color:rgb(0.09,0.67,0.28)});
+  page.drawText(payment.date,{x:width-90,y:height-37,size:8,font:fontReg,color:rgb(0.6,0.65,0.72)});
+
+  const ab = await file.arrayBuffer();
+  let img;
+  if (file.type === 'image/png') img = await pdfDoc.embedPng(ab);
+  else img = await pdfDoc.embedJpg(ab);
+  const dim = img.scaleToFit(width-40, height-100);
+  const imgX = (width-dim.width)/2, imgY = 18;
+  page.drawImage(img,{x:imgX,y:imgY,width:dim.width,height:dim.height});
+  page.drawText(payment.pmtId,{x:imgX+4,y:imgY+dim.height-18,size:13,font,color:rgb(0.92,0.63,0.13),opacity:0.95});
+}
+
+async function eomAddReceiptPDF(pdfDoc, font, rgb, file, payment) {
+  const ab = await file.arrayBuffer();
+  const src = await PDFLib.PDFDocument.load(ab);
+  const count = src.getPageCount();
+  for (let i = 0; i < count; i++) {
+    const [pg] = await pdfDoc.copyPages(src,[i]);
+    pdfDoc.addPage(pg);
+    if (i===0) {
+      const last = pdfDoc.getPage(pdfDoc.getPageCount()-1);
+      const {width,height} = last.getSize();
+      last.drawRectangle({x:0,y:height-30,width,height:30,color:rgb(0.05,0.08,0.22),opacity:0.9});
+      last.drawText(`PMT ID: ${payment.pmtId} — ${payment.vendor.substring(0,35)} — $${payment.totalNet.toFixed(2)}`,{x:10,y:height-20,size:10,font,color:rgb(0.92,0.63,0.13)});
+    }
+  }
+}
+
+async function eomAddPlaceholderPage(pdfDoc, font, fontReg, rgb, payment) {
+  const page = pdfDoc.addPage([612, 792]);
+  const { width, height } = page.getSize();
+  page.drawRectangle({x:0,y:0,width,height,color:rgb(1,1,1)});
+  page.drawRectangle({x:0,y:height-46,width,height:46,color:rgb(0.95,0.3,0.3)});
+  page.drawText(`PMT ID: ${payment.pmtId} — RECIBO FALTANTE`,{x:12,y:height-22,size:11,font,color:rgb(1,1,1)});
+  page.drawText(payment.vendor,{x:12,y:height-37,size:8,font:fontReg,color:rgb(1,1,1)});
+  page.drawText('RECIBO NO CARGADO',{x:width/2-80,y:height/2,size:16,font,color:rgb(0.8,0.25,0.25)});
+}
+
+function eomDownloadPDF(bytes, filename) {
+  const blob = new Blob([bytes],{type:'application/pdf'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href=url; a.download=filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),5000);
+}
+
+// ── Reset ──────────────────────────────────────────────────────
+function eomReset() {
+  _eomState = { payments: [], month: null, csvLoaded: false };
+  _eomInited = false;
+  document.getElementById('eomApp').innerHTML = '';
+  eomInit();
+  showToast('Reset completo', 'info');
+}
+
+// ── Drag & Drop ────────────────────────────────────────────────
+function eomSetupDnD() {
+  const zone = document.getElementById('eomCsvZone');
+  if (!zone) return;
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault(); zone.classList.remove('drag-over');
+    const files = e.dataTransfer.files;
+    if (files.length) eomHandleCSV({ target: { files } });
+  });
+}
+
+// ══════════════════════════════════════════
+// BANCO POPULAR DEBIT PARSER
+// ══════════════════════════════════════════
+let _bpAllDebits = [];
+
+function handleBPStatement(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const text = e.target.result;
+    const lines = text.split(/\r?\n/).filter(l => l.trim());
+    if (lines.length < 2) { showToast('File appears empty', 'error'); return; }
+
+    // Parse CSV header — supports both BP export formats:
+    // Format A (older): Type, Effective Date, Transaction Description, Amount, Transaction Code
+    // Format B (current): Date, Description, Amount
+    const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+
+    const typeIdx = headers.findIndex(h => h === 'Type');
+    const amtIdx  = headers.findIndex(h => h === 'Amount');
+    const dateIdx = headers.findIndex(h => h === 'Date' || h === 'Effective Date');
+    const descIdx = headers.findIndex(h => h === 'Description' || h === 'Transaction Description');
+
+    if (amtIdx === -1) {
+      showToast('Could not find Amount column in bank export', 'error');
+      return;
+    }
+
+    const SKIP_KW = ['CHICK FIL A PR','CHASE CREDIT CRD','AMERICAN EXPRESS','CURRENCY CASH',
+      'TELEPAGO','BPPR MERCHANT','COMM SVC','STATE IVU','MUNICIPAL IVU','AJUSTE','CFA CORP WEB',
+      'CURRENCY CASH REQ',
+      // Deposits — skip all EFT DEPOSIT (EFT PMT = payments out, keep those)
+      'VIRTUAL S DEPOSIT','BPPR MRCH. DEP','EFT DEPOSIT','UBER USA','DEPOSITO'];
+
+    const debits = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+      const rawAmt = parseFloat(cols[amtIdx]);
+      if (isNaN(rawAmt)) continue;
+
+      // Format A: filter by Type === 'DB'
+      if (typeIdx >= 0) {
+        if ((cols[typeIdx] || '').trim() !== 'DB') continue;
+      } else {
+        // Format B: negative = debit, positive = credit — keep only negatives
+        if (rawAmt >= 0) continue;
+      }
+
+      const desc = cols[descIdx] || '';
+      if (SKIP_KW.some(k => desc.toUpperCase().includes(k))) continue;
+      debits.push({
+        date:   cols[dateIdx] || '',
+        desc:   desc,
+        amount: Math.abs(parseFloat(cols[amtIdx])) || 0,
+      });
+    }
+
+    // Filter to current month + 14 days prior (same window as reconciliation engine)
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const twoWeeksPrior = new Date(monthStart.getTime() - 14 * 24 * 60 * 60 * 1000);
+    const filteredDebits = debits.filter(d => {
+      const dt = new Date(d.date);
+      return !isNaN(dt) && dt >= twoWeeksPrior;
+    });
+    _bpAllDebits = filteredDebits.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    // Update file slot note
+    document.getElementById('bpCachedNote').textContent =
+      `✓ ${file.name} — ${debits.length} debits loaded`;
+
+    renderBPDebits(_bpAllDebits);
+  };
+  reader.readAsText(file);
+}
+
+function renderBPDebits(debits) {
+  const panel = document.getElementById('bpDebitPanel');
+  panel.style.display = 'block';
+
+  const total   = debits.reduce((s, r) => s + r.amount, 0);
+  const largest = debits.length ? Math.max(...debits.map(r => r.amount)) : 0;
+
+  document.getElementById('bpTotalAmt').textContent   = '$' + total.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+  document.getElementById('bpTxCount').textContent    = _bpAllDebits.length;
+  document.getElementById('bpLargestAmt').textContent = '$' + largest.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+  document.getElementById('bpShowingCount').textContent = debits.length;
+
+  // Period label
+  if (debits.length) {
+    const dates = debits.map(r => r.date).sort();
+    document.getElementById('bpPeriodLabel').textContent =
+      `Period: ${dates[0]} → ${dates[dates.length-1]} · Acct ending in ...${_bpAllDebits.length > 0 ? '095' : ''}`;
+  }
+
+  // Build rows
+  const typeLabels = {
+    '681': 'EFT Debit',
+    '693': 'Check',
+    '681B': 'Prefunding',
+  };
+
+  const rows = debits.map(r => {
+    const label = r.desc.includes('CHEQUE') ? 'Check'
+                : r.desc.includes('Prefunding') ? 'Pending'
+                : r.desc.includes('CURRENCY CASH') ? 'Cash Req'
+                : 'EFT Debit';
+    const badgeColor = r.desc.includes('CHEQUE') ? '#7c3aed'
+                     : r.desc.includes('Prefunding') ? '#9ca3af'
+                     : r.desc.includes('CURRENCY CASH') ? '#d97706'
+                     : '#dc2626';
+    return `<div style="display:grid;grid-template-columns:110px 1fr 110px 80px;padding:11px 16px;border-bottom:1px solid #f3f4f6;align-items:center;gap:8px;transition:background .1s" onmouseover="this.style.background='#fafafa'" onmouseout="this.style.background=''">
+      <span style="font-size:.82rem;color:var(--text-mid);font-family:monospace">${r.date}</span>
+      <span style="font-size:.85rem;color:var(--navy);font-weight:500">${r.desc.replace(/X{4,}/g, '••••').replace(/XXXXXXXXXXXXXX0/g, '••••')}</span>
+      <span style="font-size:.9rem;font-weight:700;color:#dc2626;text-align:right;font-family:monospace">$${r.amount.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}</span>
+      <span style="text-align:center"><span style="background:${badgeColor}18;color:${badgeColor};font-size:.68rem;font-weight:700;padding:3px 8px;border-radius:20px;white-space:nowrap">${label}</span></span>
+    </div>`;
+  });
+
+  document.getElementById('bpDebitRows').innerHTML = rows.length
+    ? rows.join('')
+    : '<div style="padding:32px;text-align:center;color:var(--text-light)">No debit transactions found</div>';
+}
+
+function filterBPDebits() {
+  const q = (document.getElementById('bpSearch').value || '').toLowerCase();
+  const filtered = q
+    ? _bpAllDebits.filter(r => r.desc.toLowerCase().includes(q) || r.amount.toString().includes(q))
+    : _bpAllDebits;
+  renderBPDebits(filtered);
+}
+
+function exportBPDebitsCSV() {
+  if (!_bpAllDebits.length) { showToast('No data to export', 'error'); return; }
+  const q = (document.getElementById('bpSearch').value || '').toLowerCase();
+  const rows = q ? _bpAllDebits.filter(r => r.desc.toLowerCase().includes(q)) : _bpAllDebits;
+  const csv = ['Date,Description,Amount\n',
+    ...rows.map(r => `${r.date},"${r.desc}",${r.amount}`)
+  ].join('\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = 'bp_debits.csv';
+  a.click();
+}
+
+// ══════════════════════════════════════════════════════════════════
+// CATERING TAB
+// ══════════════════════════════════════════════════════════════════
+
+let _cateringAllOrders = [];
+let _cateringFiltered  = [];
+let _cateringActiveId  = null;
+
+async function cateringInit() {
+  await cateringRefresh();
+}
+
+async function cateringRefresh() {
+  document.getElementById('cateringTableBody').innerHTML =
+    '<div style="padding:40px;text-align:center;color:var(--text-light)">Cargando órdenes...</div>';
+  try {
+    const { data, error } = await getSupa()
+      .from('catering_orders')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    _cateringAllOrders = data || [];
+    window._hubCatering = _cateringAllOrders;
+    if (window.hubRefreshCounts) hubRefreshCounts();
+    cateringApplyFilters();
+  } catch (err) {
+    document.getElementById('cateringTableBody').innerHTML =
+      `<div style="padding:40px;text-align:center;color:#dc2626">Error al cargar: ${err.message}</div>`;
+  }
+}
+
+function cateringApplyFilters() {
+  const dateF   = document.getElementById('cateringDateFilter').value;
+  const statusF = document.getElementById('cateringStatusFilter').value;
+  const now     = new Date();
+  const todayStr = now.toLocaleDateString('en-US', {
+    timeZone: 'America/Puerto_Rico', month:'2-digit', day:'2-digit', year:'numeric'
+  });
+
+  _cateringFiltered = _cateringAllOrders.filter(o => {
+    if (statusF !== 'all' && o.follow_up_status !== statusF) return false;
+    if (dateF === 'today') {
+      return (o.pickup_time || '').includes(todayStr) || (o.order_date || '') === todayStr;
+    }
+    if (dateF === 'week') {
+      const diff = (now - new Date(o.created_at)) / (1000 * 60 * 60 * 24);
+      return diff <= 7;
+    }
+    if (dateF === 'month') {
+      const d = new Date(o.created_at);
+      return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+    }
+    return true;
+  });
+
+  cateringRenderStats();
+  cateringRenderTable();
+}
+
+function cateringRenderStats() {
+  const all      = _cateringAllOrders;
+  const pending  = all.filter(o => o.follow_up_status === 'Pending').length;
+  const done     = all.filter(o => o.follow_up_status === 'Completed').length;
+  const todayStr = new Date().toLocaleDateString('en-US', {
+    timeZone: 'America/Puerto_Rico', month:'2-digit', day:'2-digit', year:'numeric'
+  });
+  const today = all.filter(o =>
+    (o.pickup_time || '').includes(todayStr) || (o.order_date || '') === todayStr
+  ).length;
+  document.getElementById('catStatTotal').textContent   = all.length;
+  document.getElementById('catStatPending').textContent = pending;
+  document.getElementById('catStatDone').textContent    = done;
+  document.getElementById('catStatToday').textContent   = today;
+}
+
+const CATERING_NOTES_TEMPLATE =
+  '¿Cómo estuvo la experiencia en general?\n\n' +
+  '¿Llegó la orden completa y a tiempo?\n\n' +
+  '¿Hubo algún problema con la comida o el servicio?\n\n' +
+  '¿Le interesaría volver a ordenar o tiene un evento próximo?\n\n';
+
+function cateringRenderTable() {
+  const tbody = document.getElementById('cateringTableBody');
+  if (_cateringFiltered.length === 0) {
+    tbody.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-light)">No hay órdenes que mostrar.</div>';
+    return;
+  }
+  tbody.innerHTML = _cateringFiltered.map(o => {
+    const isPending   = o.follow_up_status !== 'Completed';
+    const statusColor = isPending ? '#d97706' : '#16a34a';
+    const statusBg    = isPending ? '#fef3c7' : '#dcfce7';
+    const statusLabel = isPending ? 'Pendiente' : 'Completado';
+    const items       = (o.items || '—');
+    const itemsShort  = items.length > 45 ? items.substring(0,45)+'…' : items;
+    const pickup      = o.pickup_time || o.order_date || '—';
+    const typeCell    = o.order_type
+      ? `<span style="display:inline-block;padding:3px 9px;border-radius:20px;font-size:.7rem;font-weight:700;background:#eef2ff;color:#4338ca">${o.order_type}</span>`
+      : '<span style="color:var(--text-light);font-size:.78rem">—</span>';
+    return `<div style="display:grid;grid-template-columns:110px 150px 130px 1fr 100px 120px 130px 60px;padding:12px 16px;border-bottom:1px solid var(--border);gap:8px;align-items:center;min-width:900px" onmouseenter="this.style.background='#f8fafc'" onmouseleave="this.style.background=''">
+      <div style="font-size:.8rem;color:var(--text-mid)">${pickup}</div>
+      <div style="font-size:.85rem;font-weight:600;color:var(--navy)">${o.guest_name||'—'}</div>
+      <div style="font-size:.8rem;color:var(--text-mid)">${o.phone||'—'}</div>
+      <div style="font-size:.78rem;color:var(--text-mid);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${items}">${itemsShort}</div>
+      <div style="font-size:.85rem;font-weight:700;color:var(--navy);text-align:right">${o.total_amount||'—'}</div>
+      <div style="text-align:center">${typeCell}</div>
+      <div style="text-align:center"><span style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:.72rem;font-weight:700;background:${statusBg};color:${statusColor}">${statusLabel}</span></div>
+      <div style="text-align:center"><button onclick="cateringOpenModal('${o.id}')" style="padding:4px 10px;border:1.5px solid var(--navy);border-radius:6px;background:#fff;color:var(--navy);font-size:.75rem;font-weight:600;cursor:pointer">Ver</button></div>
+    </div>`;
+  }).join('');
+}
+
+function cateringOpenModal(id) {
+  const o = _cateringAllOrders.find(x => x.id === id);
+  if (!o) return;
+  _cateringActiveId = id;
+  const isPending   = o.follow_up_status !== 'Completed';
+  const statusColor = isPending ? '#d97706' : '#16a34a';
+  const statusLabel = isPending ? 'Pendiente' : 'Completado';
+  document.getElementById('cateringModalContent').innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+      <div style="background:#f8fafc;border-radius:10px;padding:12px">
+        <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:4px">Invitado</div>
+        <div style="font-weight:600;color:var(--navy)">${o.guest_name||'—'}</div>
+      </div>
+      <div style="background:#f8fafc;border-radius:10px;padding:12px">
+        <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:4px">Teléfono</div>
+        <div style="font-weight:600;color:var(--navy)">${o.phone||'—'}</div>
+      </div>
+      <div style="background:#f8fafc;border-radius:10px;padding:12px">
+        <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:4px">Hora de Recogido</div>
+        <div style="font-weight:600;color:var(--navy)">${o.pickup_time||'—'}</div>
+      </div>
+      <div style="background:#f8fafc;border-radius:10px;padding:12px">
+        <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:4px">Total</div>
+        <div style="font-weight:700;color:var(--navy);font-size:1rem">${o.total_amount||'—'}</div>
+      </div>
+    </div>
+    <div style="background:#f8fafc;border-radius:10px;padding:12px;margin-bottom:12px">
+      <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:6px">Ítems Pedidos</div>
+      <div style="font-size:.85rem;color:var(--text-mid);line-height:1.5">${o.items||'—'}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr;gap:12px">
+      <div style="background:#f8fafc;border-radius:10px;padding:12px">
+        <div style="font-size:.7rem;font-weight:700;color:var(--text-light);text-transform:uppercase;margin-bottom:4px">Estado</div>
+        <span style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:.75rem;font-weight:700;background:${isPending?'#fef3c7':'#dcfce7'};color:${statusColor}">${statusLabel}</span>
+      </div>
+    </div>
+    ${o.notes && o.notes !== 'N/A' ? `<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:12px;margin-top:12px"><div style="font-size:.7rem;font-weight:700;color:#1e40af;text-transform:uppercase;margin-bottom:4px">Notas Especiales</div><div style="font-size:.83rem;color:#1e40af">${o.notes}</div></div>` : ''}`;
+  document.getElementById('cateringDirectorNotes').value =
+    (o.director_notes && o.director_notes.trim()) ? o.director_notes : CATERING_NOTES_TEMPLATE;
+  document.getElementById('cateringOrderType').value = o.order_type || '';
+  const btn = document.getElementById('cateringCompleteBtn');
+  btn.disabled = false;
+  btn.style.opacity = '1';
+  if (isPending) {
+    btn.textContent = 'Marcar Completado';
+    btn.style.borderColor = '#16a34a';
+    btn.style.color = '#16a34a';
+  } else {
+    btn.textContent = 'Marcar como Pendiente';
+    btn.style.borderColor = '#d97706';
+    btn.style.color = '#d97706';
+  }
+  om('cateringModal');
+}
+
+async function cateringSaveNotes() {
+  if (!_cateringActiveId) return;
+  const notes = document.getElementById('cateringDirectorNotes').value.trim();
+  const orderType = document.getElementById('cateringOrderType').value;
+  try {
+    const { error } = await getSupa().from('catering_orders')
+      .update({ director_notes: notes, order_type: orderType }).eq('id', _cateringActiveId);
+    if (error) throw error;
+    const idx = _cateringAllOrders.findIndex(x => x.id === _cateringActiveId);
+    if (idx !== -1) { _cateringAllOrders[idx].director_notes = notes; _cateringAllOrders[idx].order_type = orderType; }
+    cateringApplyFilters();
+    alert('Notas guardadas.');
+  } catch (err) { alert('Error: ' + err.message); }
+}
+
+async function cateringSetStatus(newStatus) {
+  if (!_cateringActiveId) return;
+  const notes = document.getElementById('cateringDirectorNotes').value.trim();
+  const orderType = document.getElementById('cateringOrderType').value;
+  try {
+    const { error } = await getSupa().from('catering_orders')
+      .update({ follow_up_status: newStatus, director_notes: notes, order_type: orderType })
+      .eq('id', _cateringActiveId);
+    if (error) throw error;
+    const idx = _cateringAllOrders.findIndex(x => x.id === _cateringActiveId);
+    if (idx !== -1) {
+      _cateringAllOrders[idx].follow_up_status = newStatus;
+      _cateringAllOrders[idx].director_notes   = notes;
+      _cateringAllOrders[idx].order_type       = orderType;
+    }
+    cm('cateringModal');
+    cateringApplyFilters();
+    alert(newStatus === 'Completed' ? 'Seguimiento marcado como completado.' : 'Orden marcada como pendiente.');
+  } catch (err) { alert('Error: ' + err.message); }
+}
+
+function cateringToggleStatus() {
+  const o = _cateringAllOrders.find(x => x.id === _cateringActiveId);
+  if (!o) return;
+  cateringSetStatus(o.follow_up_status === 'Completed' ? 'Pending' : 'Completed');
+}
+
+function cateringExportCSV() {
+  const headers = ['Hora Recogido','Invitado','Teléfono','Ítems','Total','# Orden','Tipo','Notas Especiales','Estado','Notas Director'];
+  const rows = _cateringFiltered.map(o =>
+    [o.pickup_time||'', o.guest_name||'', o.phone||'', o.items||'', o.total_amount||'',
+     o.order_number||'', o.order_type||'', o.notes||'', o.follow_up_status||'', o.director_notes||'']
+    .map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')
+  );
+  const csv  = [headers.join(','), ...rows].join('\n');
+  const blob = new Blob([csv], { type:'text/csv' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = `catering_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click(); URL.revokeObjectURL(url);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// FCR TRENDS MODULE
+// Upload monthly FCR PDFs → AI-parse → editable review → save →
+// automatic month-over-month/YTD comparison, contractual verification
+// checks, and operational variance flagging.
+// ══════════════════════════════════════════════════════════════════
+
+const FCR_PROXY = `${SUPABASE_URL}/functions/v1/claude-proxy`;
+
+// Fixed contractual rules — a deviation here is a well-formed question for
+// CFA Inc / your CPA, not a judgment call. Tolerances absorb rounding noise.
+const FCR_FLAT_FEE_CHECKS = [
+  { name: 'Equipment Rent', label: 'Equipment Rent' },
+  { name: 'Business Services Fee', label: 'Business Services Fee' },
+  { name: 'Common Area Maintenance', label: 'Common Area Maintenance (CAM)' },
+];
+
+const FCR = { reports: [], lineItemsByReport: {}, pendingParse: null, _variance: [] };
+console.log('FCR module loaded: v4-ai-header-footer');
+
+// ── Init ───────────────────────────────────────────────────────────
+async function fcrInit() {
+  const app = document.getElementById('fcrApp');
+  if (!app) return;
+  if (app.dataset.init !== '1') {
+    app.dataset.init = '1';
+    fcrRenderShell(app);
+  }
+  await fcrLoadAll();
+  fcrRenderDashboard();
+}
+
+function fcrRenderShell(app) {
+  app.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+      <div>
+        <h2 style="margin:0;font-size:1.2rem;color:var(--navy)">📈 FCR Trends</h2>
+        <span style="font-size:.78rem;color:var(--text-mid)">Month-over-month &amp; YTD comparison across your Financial Control Reports</span>
+      </div>
+      <div id="fcrMonthSelectorWrap" style="display:none;align-items:center;gap:8px">
+        <label style="font-size:.8rem;color:var(--text-mid);font-weight:600">Viewing:</label>
+        <select id="fcrMonthSelector" class="sel" onchange="fcrOnMonthChange()" style="min-width:160px"></select>
+      </div>
+    </div>
+    <div class="ccard ccard-top">
+      <div class="ccard-body">
+        <h2 style="font-size:1.05rem;margin-top:0">Upload FCR</h2>
+        <p class="desc">Upload the monthly FCR PDF from the CFA backoffice. It's parsed automatically — you'll review and can correct anything before it's saved.</p>
+        <div class="file-slot required">
+          <h4>FCR PDF <span>Month-end report</span></h4>
+          <p>"Los Filtros FSU — For The Month Ending [Date]" export</p>
+          <input type="file" accept=".pdf" id="fcrFileInput" onchange="fcrHandleFile(this.files[0])"/>
+        </div>
+        <div id="fcrUploadStatus" style="margin-top:10px;font-size:.85rem"></div>
+      </div>
+    </div>
+    <div id="fcrPreviewWrap" style="display:none;margin-top:20px"></div>
+    <div id="fcrDashboardWrap" style="margin-top:20px"></div>
+  `;
+}
+
+async function fcrLoadAll() {
+  const { data: reports, error } = await getSupa()
+    .from('fcr_reports').select('*')
+    .order('period_year', { ascending: true })
+    .order('period_month', { ascending: true });
+  if (error) { console.error('fcrLoadAll reports:', error); return; }
+  FCR.reports = reports || [];
+  FCR.lineItemsByReport = {};
+  if (FCR.reports.length) {
+    const ids = FCR.reports.map(r => r.id);
+    const { data: items, error: e2 } = await getSupa()
+      .from('fcr_line_items').select('*').in('report_id', ids);
+    if (e2) { console.error('fcrLoadAll items:', e2); return; }
+    for (const it of (items || [])) (FCR.lineItemsByReport[it.report_id] ||= []).push(it);
+  }
+}
+
+// ── Upload → Extract (pdf.js + chunked Claude calls) → Editable Preview ──
+// A full FCR has 100+ line items. One giant extraction call was unreliable —
+// either hitting response limits or the model losing accuracy over a very
+// long repetitive list. Instead: pull the header/footer totals with plain
+// regex (fast, deterministic, no AI needed), then extract line items in
+// small per-page-group chunks so each individual AI call is short and safe.
+async function fcrHandleFile(file) {
+  if (!file) return;
+  const status = document.getElementById('fcrUploadStatus');
+  status.innerHTML = '<span style="color:var(--navy)">⏳ Reading PDF...</span>';
+  try {
+    const pages = await fcrExtractPdfPages(file);
+    const fullText = pages.join('\n');
+    const regexHeaderFooter = fcrRegexExtractHeaderFooter(fullText); // cheap first pass, used as backup only
+
+    const chunks = fcrChunkArray(pages, 2); // 2 pages per AI call — FCR pages are dense with invoice rows
+    let allLineItems = [];
+    let priorContext = null;
+    let aiTotalSales = null, aiNetProfit = null, aiNetProfitPct = null, aiMonth = null, aiYear = null;
+
+    for (let i = 0; i < chunks.length; i++) {
+      status.innerHTML = `<span style="color:var(--navy)">⚙️ Parsing line items with AI — section ${i + 1} of ${chunks.length}...</span>`;
+      const chunkText = chunks[i].join('\n');
+      const result = await fcrCallClaudeExtractChunk(chunkText, priorContext);
+      const items = result.line_items || [];
+      allLineItems = allLineItems.concat(items);
+      const lastTop = [...items].reverse().find(li => li.is_subtotal && !li.parent_line);
+      if (lastTop) priorContext = lastTop.line_item;
+
+      // Coalesce header/footer fields — take the first chunk that actually reports each one.
+      if (aiTotalSales == null && result.total_sales_cm != null) aiTotalSales = result.total_sales_cm;
+      if (aiNetProfit == null && result.net_profit_cm != null) aiNetProfit = result.net_profit_cm;
+      if (aiNetProfitPct == null && result.net_profit_pct_cm != null) aiNetProfitPct = result.net_profit_pct_cm;
+      if (aiMonth == null && result.period_month != null) aiMonth = result.period_month;
+      if (aiYear == null && result.period_year != null) aiYear = result.period_year;
+    }
+
+    // Post-merge deduplication — chunk boundaries can cause the AI to re-emit
+    // a section header it already emitted at the end of the previous chunk.
+    // Strategy: for each unique line_item key, keep the row with real numbers;
+    // if both have real numbers keep the first occurrence.
+    const seen = new Map();
+    const deduped = [];
+    for (const li of allLineItems) {
+      const key = `${li.section}|${li.parent_line || ''}|${li.line_item}`;
+      if (!seen.has(key)) {
+        seen.set(key, li);
+        deduped.push(li);
+      } else {
+        // If the existing entry has zero values but this one has real values, replace it
+        const existing = seen.get(key);
+        const existingHasData = Math.abs(existing.cm_amount || 0) > 0.001 || Math.abs(existing.ytd_amount || 0) > 0.001;
+        const thisHasData = Math.abs(li.cm_amount || 0) > 0.001 || Math.abs(li.ytd_amount || 0) > 0.001;
+        if (!existingHasData && thisHasData) {
+          // Replace zero row with real row
+          const idx = deduped.indexOf(existing);
+          if (idx !== -1) deduped[idx] = li;
+          seen.set(key, li);
+        }
+        // Otherwise keep first occurrence (already in deduped)
+      }
+    }
+    allLineItems = deduped;
+
+    const total_sales_cm = aiTotalSales ?? regexHeaderFooter.total_sales_cm;
+    const net_profit_cm = aiNetProfit ?? regexHeaderFooter.net_profit_cm;
+    const net_profit_pct_cm = aiNetProfitPct ?? regexHeaderFooter.net_profit_pct_cm;
+    const period_month = aiMonth ?? regexHeaderFooter.period_month ?? (new Date().getMonth() + 1);
+    const period_year = aiYear ?? regexHeaderFooter.period_year ?? new Date().getFullYear();
+
+    let warning = '';
+    if (total_sales_cm == null || net_profit_cm == null) {
+      console.warn('FCR: neither AI nor regex found Total Sales / Net Profit.');
+      console.warn('First 800 chars of extracted text:', fullText.slice(0, 800));
+      warning = 'Could not auto-detect Total Sales and/or Net Profit — enter them manually in the fields below before saving.';
+    }
+
+    const parsed = {
+      period_month, period_year,
+      total_sales_cm: total_sales_cm || 0,
+      net_profit_cm: net_profit_cm || 0,
+      net_profit_pct_cm: net_profit_pct_cm || 0,
+      line_items: allLineItems
+    };
+
+    FCR.pendingParse = { file, parsed };
+    status.innerHTML = warning
+      ? `<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px;color:#92400e;font-size:.83rem">⚠️ ${warning}</div>`
+      : '<span style="color:#16a34a">✓ Parsed. Review below before saving.</span>';
+    fcrRenderPreview(parsed);
+  } catch (err) {
+    console.error(err);
+    status.innerHTML = `<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px;color:#991b1b;font-size:.83rem">⚠️ ${err.message || 'Failed to parse PDF'}</div>`;
+  }
+}
+
+function fcrChunkArray(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+// Deterministic (no AI) — these two figures anchor the parse-integrity check,
+// so pulling them straight from the text with regex is more reliable than
+// asking the model to find them again inside a long extraction task.
+function fcrRegexExtractHeaderFooter(fullText) {
+  const monthMap = { January: 1, February: 2, March: 3, April: 4, May: 5, June: 6, July: 7, August: 8, September: 9, October: 10, November: 11, December: 12 };
+  let period_month = null, period_year = null;
+  const dateMatch = fullText.match(/For\s+The\s+Month\s+Ending\s+([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})/i);
+  if (dateMatch) { period_month = monthMap[dateMatch[1]] || null; period_year = parseInt(dateMatch[3], 10); }
+
+  let total_sales_cm = null;
+  // Tolerant of extra characters / a line break between the label and its number,
+  // in case the PDF's text layer splits them across reconstructed lines.
+  const salesMatch = fullText.match(/Total\s+Sales[\s\S]{0,30}?([\d,]+\.\d{2})/i);
+  if (salesMatch) total_sales_cm = parseFloat(salesMatch[1].replace(/,/g, ''));
+
+  let net_profit_cm = null, net_profit_pct_cm = null;
+  const npMatch = fullText.match(/Net\s+Profit[\s\S]{0,30}?([\d,]+\.\d{2})[\s\S]{0,15}?([\d.]+)/i);
+  if (npMatch) { net_profit_cm = parseFloat(npMatch[1].replace(/,/g, '')); net_profit_pct_cm = parseFloat(npMatch[2]); }
+
+  return { period_month, period_year, total_sales_cm, net_profit_cm, net_profit_pct_cm };
+}
+
+// Returns an array of strings, one per PDF page (not joined) so the caller can chunk by page.
+async function fcrExtractPdfPages(file) {
+  if (typeof pdfjsLib === 'undefined') {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+      s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const pages = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const byY = {};
+    for (const item of content.items) {
+      const y = Math.round(item.transform[5] / 3) * 3;
+      (byY[y] ||= []).push({ x: item.transform[4], text: item.str });
+    }
+    const ys = Object.keys(byY).map(Number).sort((a, b) => b - a);
+    const lines = [];
+    for (const y of ys) {
+      const lineText = byY[y].sort((a, b) => a.x - b.x).map(i2 => i2.text).join(' ').replace(/\s+/g, ' ').trim();
+      if (lineText) lines.push(lineText);
+    }
+    pages.push(lines.join('\n'));
+  }
+  return pages;
+}
+
+const FCR_CHUNK_SYSTEM_PROMPT = `You extract structured summary line items from a SMALL EXCERPT (a few pages) of a Chick-fil-A "FSU" Financial Control Report (FCR) for the Los Filtros location, Puerto Rico. This is one piece of a larger document — only extract what's visible in THIS excerpt.
+
+STRUCTURE:
+- Each summary line has a name followed by four numbers in order: CM USD, CM %, YTD USD, YTD %, then two more numbers (PY CM USD/%, PY YTD USD/%) which are always 0.00 for this operator — ignore those last two entirely, do not include them in your output.
+- Top-level rows are category names ending in "*" (e.g. "Food Cost*", "Talent Investment*") OR the row "Chick-fil-A Puerto Rico LLC Expenses and Fees" (no asterisk, still top-level, and its name may be split across 2-3 lines in the source — reassemble it). Do NOT extract the final "Net Profit" row if it appears in this excerpt — that's handled separately elsewhere.
+- Every top-level row: section = its own name with the trailing "*" stripped, parent_line = null, is_subtotal = true.
+- Indented child rows: section = the top-level ancestor's name (no asterisk), parent_line = the immediate parent row's name, is_subtotal = false (unless it's itself a mid-level rollup with its own children, like "Other" under Talent Investment, or "Rent"/"Property Tax" sub-groupings under CFA fees).
+- CRITICAL — "Chick-fil-A Puerto Rico LLC Expenses and Fees" contains these as CHILDREN, not separate top-level sections: Equipment Rent, Business Services Fee, Base Franchise Fee - Royalty, Base Franchise Fee - Services, Rent (containing Base Rent CFA, Percentage Rent CFA, etc.), Property Tax (containing Unit Property Tax Expense - Owned RE, - BPP, etc.), Additional Charges & Expenses (containing Common Area Maintenance, etc.).
+- DEDUPE RULE: if a header line is immediately followed by a single child line with the identical name AND identical numbers (a layout artifact), return only ONE row.
+- Do NOT skip zero-value or "No Transactions Exist" line items — include them with cm_amount 0.
+- SKIP transaction detail blocks (rows starting with a date like "06/15" followed by Debits/Credits/Journal Entry Description) — only extract summary rows with the four numbers.
+- has_accrual_entries: true if journal-entry text near that line contains "To accrue" or "Promo Reclass" — otherwise false.
+- If this excerpt starts mid-section (no fresh "*" header visible yet), use the "current section context" note below to assign section/parent_line correctly for rows at the very top of the excerpt.
+- If this excerpt is pure transaction detail with no summary rows at all, return an empty line_items array — that's a valid, expected result, not an error.
+
+ALSO — if visible anywhere in THIS excerpt (usually only in the very first or very last chunk of the report, otherwise leave these null):
+- "Total Sales" is normally the very first data row, right after a header row like "USD % USD % USD % USD %". If you see it, extract its CM USD figure as total_sales_cm.
+- "For The Month Ending [Month] [DD], [YYYY]" appears near the top — if visible, extract period_month (1-12) and period_year.
+- "Net Profit" is the very last row of the entire report (often followed by a footnote starting with "* Indicates..."). If you see it, extract its CM USD as net_profit_cm and CM % as net_profit_pct_cm. (This is the only case where you SHOULD capture a "Net Profit" value — the instruction above to skip it only meant don't treat it as a line_items row.)
+
+{{CONTEXT_NOTE}}
+
+Return ONLY valid JSON, no markdown, no backticks, no preamble, in exactly this shape:
+{
+  "total_sales_cm": null,
+  "net_profit_cm": null,
+  "net_profit_pct_cm": null,
+  "period_month": null,
+  "period_year": null,
+  "line_items": [
+  { "section":"Food Cost", "parent_line":null, "line_item":"Food Cost", "is_subtotal":true, "has_accrual_entries":false, "cm_amount":263800.04, "cm_pct":30.15, "ytd_amount":803135.97, "ytd_pct":30.37 },
+  { "section":"Food Cost", "parent_line":"Food Cost", "line_item":"Food Cost less Refills", "is_subtotal":false, "has_accrual_entries":true, "cm_amount":260419.65, "cm_pct":29.76, "ytd_amount":792376.46, "ytd_pct":29.96 }
+] }`;
+
+async function fcrCallClaudeExtractChunk(chunkText, priorContext) {
+  const contextNote = priorContext
+    ? `CURRENT SECTION CONTEXT: the excerpt immediately before this one ended inside "${priorContext}". If this excerpt begins with child rows before any new "*" header appears, they belong under "${priorContext}".`
+    : `CURRENT SECTION CONTEXT: this is the start of the report.`;
+  const system = FCR_CHUNK_SYSTEM_PROMPT.replace('{{CONTEXT_NOTE}}', contextNote);
+
+  const res = await fetch(FCR_PROXY, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON}` },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-5',
+      max_tokens: 16000,
+      system,
+      messages: [{ role: 'user', content: `Excerpt:\n\n${chunkText}` }]
+    })
+  });
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  const rawResponseText = data.content?.[0]?.text || '';
+
+  if (data.stop_reason === 'max_tokens') {
+    console.error('FCR chunk extraction truncated. Raw text so far:', rawResponseText);
+    throw new Error('A section of the report produced an unexpectedly long response. Please try uploading again.');
+  }
+
+  return fcrParseJsonLoose(rawResponseText);
+}
+
+// Claude is instructed to return ONLY JSON, but on a large/complex extraction it can
+// occasionally add a stray sentence before/after the JSON block, or produce small
+// syntax slips (trailing commas, smart quotes). This survives all of those instead
+// of failing outright on a single strict JSON.parse().
+function fcrParseJsonLoose(raw) {
+  let text = (raw || '').trim();
+
+  // Strip any markdown code fences (```json ... ``` or plain ``` ... ```)
+  text = text.replace(/```[a-zA-Z]*\n?/g, '').replace(/```/g, '').trim();
+
+  // If there's stray prose before/after, isolate the outermost { ... } block
+  const firstBrace = text.indexOf('{');
+  const lastBrace = text.lastIndexOf('}');
+  if (firstBrace > 0 || (lastBrace >= 0 && lastBrace < text.length - 1)) {
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      text = text.slice(firstBrace, lastBrace + 1);
+    }
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch (e1) {
+    // Light repair pass: trailing commas + curly/smart quotes are the two most common
+    // things a model slips in that break strict JSON without changing the actual data.
+    let repaired = text
+      .replace(/,(\s*[}\]])/g, '$1')
+      .replace(/[\u201C\u201D]/g, '"')
+      .replace(/[\u2018\u2019]/g, "'");
+    try {
+      const parsed = JSON.parse(repaired);
+      console.warn('FCR extraction JSON needed light repair (trailing commas / smart quotes) — parsed successfully after cleanup.');
+      return parsed;
+    } catch (e2) {
+      console.error('FCR extraction: could not parse JSON even after repair attempt.');
+      console.error('Original response:', raw);
+      console.error('Parse error:', e2.message);
+      throw new Error(`Could not parse the AI's response as JSON (${e2.message}). Full raw output was logged to the browser console (F12 → Console tab) — copy it and share it so this can be fixed. Try uploading again in the meantime.`);
+    }
+  }
+}
+
+// ── Editable Preview ─────────────────────────────────────────────
+function fcrEsc(s) { return String(s == null ? '' : s).replace(/"/g, '&quot;'); }
+function fcrEscJs(s) { return String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, ' '); }
+function fcrFmt(n) { return (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function fcrMonthName(m) {
+  return ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][m] || m;
+}
+function fcrMonthLabel(r) { return `${fcrMonthName(r.period_month)} ${r.period_year}`; }
+
+function fcrRenderPreview(parsed) {
+  const wrap = document.getElementById('fcrPreviewWrap');
+  wrap.style.display = 'block';
+  wrap.innerHTML = `
+    <div class="ccard">
+      <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <strong style="color:var(--navy)">Review Parsed Data — ${fcrMonthName(parsed.period_month)} ${parsed.period_year}</strong>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-sm" onclick="fcrAddRow()">+ Add Row</button>
+          <button class="btn btn-red2 btn-sm" onclick="fcrSaveReport()">Save Report</button>
+        </div>
+      </div>
+      <div class="ccard-body">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px">
+          <div><label style="font-size:.72rem;color:var(--text-light);display:block;margin-bottom:3px">Total Sales (CM)</label>
+            <input class="sinput" id="fcrTotalSales" type="number" step="0.01" value="${parsed.total_sales_cm}" oninput="fcrRecalcCheck()" style="width:100%"/></div>
+          <div><label style="font-size:.72rem;color:var(--text-light);display:block;margin-bottom:3px">Net Profit (CM)</label>
+            <input class="sinput" id="fcrNetProfit" type="number" step="0.01" value="${parsed.net_profit_cm}" oninput="fcrRecalcCheck()" style="width:100%"/></div>
+          <div><label style="font-size:.72rem;color:var(--text-light);display:block;margin-bottom:3px">Net Profit %</label>
+            <input class="sinput" id="fcrNetProfitPct" type="number" step="0.01" value="${parsed.net_profit_pct_cm}" style="width:100%"/></div>
+          <div><label style="font-size:.72rem;color:var(--text-light);display:block;margin-bottom:3px">Month</label>
+            <input class="sinput" id="fcrPeriodMonth" type="number" min="1" max="12" value="${parsed.period_month}" style="width:100%"/></div>
+          <div><label style="font-size:.72rem;color:var(--text-light);display:block;margin-bottom:3px">Year</label>
+            <input class="sinput" id="fcrPeriodYear" type="number" value="${parsed.period_year}" style="width:100%"/></div>
+        </div>
+        <div id="fcrParseCheck" style="margin-bottom:16px"></div>
+        <div style="max-height:520px;overflow:auto;border:1px solid var(--border);border-radius:10px">
+          <table style="width:100%;border-collapse:collapse;font-size:.78rem" id="fcrPreviewTable">
+            <thead style="position:sticky;top:0;background:#f8fafc;z-index:1">
+              <tr>
+                <th style="padding:6px 8px;text-align:left">Section</th>
+                <th style="padding:6px 8px;text-align:left">Parent</th>
+                <th style="padding:6px 8px;text-align:left">Line Item</th>
+                <th style="padding:6px 8px;text-align:center">Sub?</th>
+                <th style="padding:6px 8px;text-align:center">Accr?</th>
+                <th style="padding:6px 8px;text-align:right">CM $</th>
+                <th style="padding:6px 8px;text-align:right">CM %</th>
+                <th style="padding:6px 8px;text-align:right">YTD $</th>
+                <th style="padding:6px 8px;text-align:right">YTD %</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>${parsed.line_items.map((li, idx) => fcrPreviewRow(li, idx)).join('')}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+  fcrRecalcCheck();
+  wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function fcrPreviewRow(li, idx) {
+  const topLevel = !li.parent_line;
+  return `
+    <tr data-idx="${idx}" style="border-bottom:1px solid #f1f5f9;${topLevel ? 'background:#f8fafc;font-weight:700' : ''}">
+      <td style="padding:4px"><input class="sinput" value="${fcrEsc(li.section)}" oninput="fcrUpdateRow(${idx},'section',this.value)" style="width:120px"/></td>
+      <td style="padding:4px"><input class="sinput" value="${fcrEsc(li.parent_line)}" oninput="fcrUpdateRow(${idx},'parent_line',this.value)" style="width:120px"/></td>
+      <td style="padding:4px"><input class="sinput" value="${fcrEsc(li.line_item)}" oninput="fcrUpdateRow(${idx},'line_item',this.value)" style="width:150px"/></td>
+      <td style="padding:4px;text-align:center"><input type="checkbox" ${li.is_subtotal ? 'checked' : ''} onchange="fcrUpdateRow(${idx},'is_subtotal',this.checked)"/></td>
+      <td style="padding:4px;text-align:center"><input type="checkbox" ${li.has_accrual_entries ? 'checked' : ''} onchange="fcrUpdateRow(${idx},'has_accrual_entries',this.checked)"/></td>
+      <td style="padding:4px"><input class="sinput" type="number" step="0.01" value="${li.cm_amount}" oninput="fcrUpdateRow(${idx},'cm_amount',parseFloat(this.value)||0)" style="width:85px;text-align:right"/></td>
+      <td style="padding:4px"><input class="sinput" type="number" step="0.01" value="${li.cm_pct}" oninput="fcrUpdateRow(${idx},'cm_pct',parseFloat(this.value)||0)" style="width:65px;text-align:right"/></td>
+      <td style="padding:4px"><input class="sinput" type="number" step="0.01" value="${li.ytd_amount}" oninput="fcrUpdateRow(${idx},'ytd_amount',parseFloat(this.value)||0)" style="width:85px;text-align:right"/></td>
+      <td style="padding:4px"><input class="sinput" type="number" step="0.01" value="${li.ytd_pct}" oninput="fcrUpdateRow(${idx},'ytd_pct',parseFloat(this.value)||0)" style="width:65px;text-align:right"/></td>
+      <td style="padding:4px"><button class="btn btn-sm" onclick="fcrRemoveRow(${idx})" style="padding:2px 8px;color:var(--red)">✕</button></td>
+    </tr>`;
+}
+
+function fcrUpdateRow(idx, field, value) {
+  if (!FCR.pendingParse) return;
+  FCR.pendingParse.parsed.line_items[idx][field] = value;
+  fcrRecalcCheck();
+}
+function fcrRemoveRow(idx) {
+  if (!FCR.pendingParse) return;
+  FCR.pendingParse.parsed.line_items.splice(idx, 1);
+  fcrRenderPreview(FCR.pendingParse.parsed);
+}
+function fcrAddRow() {
+  if (!FCR.pendingParse) return;
+  FCR.pendingParse.parsed.line_items.push({ section: '', parent_line: '', line_item: 'New Line', is_subtotal: false, has_accrual_entries: false, cm_amount: 0, cm_pct: 0, ytd_amount: 0, ytd_pct: 0 });
+  fcrRenderPreview(FCR.pendingParse.parsed);
+}
+
+// Parse-integrity check: Total Sales − sum(top-level sections) should equal stated Net Profit.
+function fcrRecalcCheck() {
+  if (!FCR.pendingParse) return;
+  const parsed = FCR.pendingParse.parsed;
+  const tsInput = document.getElementById('fcrTotalSales');
+  const npInput = document.getElementById('fcrNetProfit');
+  if (tsInput) parsed.total_sales_cm = parseFloat(tsInput.value) || parsed.total_sales_cm;
+  if (npInput) parsed.net_profit_cm = parseFloat(npInput.value) || parsed.net_profit_cm;
+  const topLevel = parsed.line_items.filter(li => !li.parent_line);
+  const sum = topLevel.reduce((s, li) => s + (Number(li.cm_amount) || 0), 0);
+  const implied = parsed.total_sales_cm - sum;
+  const delta = implied - parsed.net_profit_cm;
+  const passed = Math.abs(delta) < 1.00;
+  const el = document.getElementById('fcrParseCheck');
+  if (el) {
+    el.innerHTML = passed
+      ? `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 14px;font-size:.83rem;color:#166534">✓ Parse check passed — Total Sales minus top-level sections ($${fcrFmt(implied)}) matches stated Net Profit within $1.00.</div>`
+      : `<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 14px;font-size:.83rem;color:#991b1b">⚠️ Parse check failed — Total Sales minus top-level sections implies Net Profit of $${fcrFmt(implied)}, but stated Net Profit is $${fcrFmt(parsed.net_profit_cm)} (off by $${fcrFmt(delta)}). A row is likely missing, duplicated, or misread below — review before saving.</div>`;
+  }
+  FCR.pendingParse.checkPassed = passed;
+  FCR.pendingParse.checkDelta = delta;
+}
+
+// ── Save ─────────────────────────────────────────────────────────
+async function fcrSaveReport() {
+  if (!FCR.pendingParse) return;
+  const parsed = FCR.pendingParse.parsed;
+  const file = FCR.pendingParse.file;
+  const period_month = parseInt(document.getElementById('fcrPeriodMonth').value, 10);
+  const period_year = parseInt(document.getElementById('fcrPeriodYear').value, 10);
+  const statusHost = document.getElementById('fcrUploadStatus');
+  statusHost.innerHTML = '<span style="color:var(--navy)">⏳ Saving...</span>';
+
+  try {
+    const { data: { user } } = await getSupa().auth.getUser();
+
+    let storagePath = null;
+    const path = `${period_year}-${String(period_month).padStart(2, '0')}-${Date.now()}.pdf`;
+    const { error: upErr } = await getSupa().storage.from('fcr-pdfs').upload(path, file, { upsert: true });
+    if (!upErr) storagePath = path; else console.warn('FCR PDF storage upload failed (continuing without it):', upErr.message);
+
+    // Mark the operator-takeover month as a transition period, excluded from trailing-average baselines.
+    const is_transition = (period_year === 2026 && period_month === 4);
+
+    const { data: reportRow, error: repErr } = await getSupa()
+      .from('fcr_reports')
+      .upsert({
+        period_month, period_year,
+        source_filename: file.name,
+        storage_path: storagePath,
+        total_sales: parsed.total_sales_cm,
+        net_profit: parsed.net_profit_cm,
+        net_profit_pct: parsed.net_profit_pct_cm,
+        is_transition_period: is_transition,
+        parse_check_passed: FCR.pendingParse.checkPassed,
+        parse_check_delta: FCR.pendingParse.checkDelta,
+        uploaded_by: user?.id || null
+      }, { onConflict: 'period_month,period_year' })
+      .select().single();
+    if (repErr) throw repErr;
+
+    await getSupa().from('fcr_line_items').delete().eq('report_id', reportRow.id);
+
+    const rows = parsed.line_items.map(li => ({
+      report_id: reportRow.id,
+      section: li.section || null,
+      parent_line: li.parent_line || null,
+      line_item: li.line_item,
+      is_subtotal: !!li.is_subtotal,
+      has_accrual_entries: !!li.has_accrual_entries,
+      cm_amount: Number(li.cm_amount) || 0,
+      cm_pct: Number(li.cm_pct) || 0,
+      ytd_amount: Number(li.ytd_amount) || 0,
+      ytd_pct: Number(li.ytd_pct) || 0
+    }));
+    const { error: liErr } = await getSupa().from('fcr_line_items').insert(rows);
+    if (liErr) throw liErr;
+
+    statusHost.innerHTML = '<span style="color:#16a34a">✓ Saved.</span>';
+    FCR.pendingParse = null;
+    document.getElementById('fcrPreviewWrap').style.display = 'none';
+    document.getElementById('fcrFileInput').value = '';
+    await fcrLoadAll();
+    fcrRenderDashboard();
+  } catch (err) {
+    console.error(err);
+    statusHost.innerHTML = `<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px;color:#991b1b;font-size:.83rem">⚠️ Save failed: ${err.message}</div>`;
+  }
+}
+
+// ── Helpers over saved reports ──────────────────────────────────
+function fcrSortedReports() {
+  return FCR.reports.slice().sort((a, b) => (a.period_year - b.period_year) || (a.period_month - b.period_month));
+}
+function fcrGetItems(reportId) { return FCR.lineItemsByReport[reportId] || []; }
+function fcrLineKey(li) { return `${li.section || ''}|${li.parent_line || ''}|${li.line_item}`; }
+
+function fcrPriorReport(current) {
+  const sorted = fcrSortedReports();
+  const idx = sorted.findIndex(r => r.id === current.id);
+  return idx > 0 ? sorted[idx - 1] : null;
+}
+function fcrBaselineReports(current) {
+  const sorted = fcrSortedReports();
+  const idx = sorted.findIndex(r => r.id === current.id);
+  const out = [];
+  for (let i = idx - 1; i >= 0 && out.length < 3; i--) {
+    if (!sorted[i].is_transition_period) out.push(sorted[i]);
+  }
+  return out;
+}
+
+// ── Layer 1: Verification (questions for CFA / your CPA) ───────────
+function fcrComputeVerification(current) {
+  const items = fcrGetItems(current.id);
+  const prior = fcrPriorReport(current);
+  const priorItems = prior ? fcrGetItems(prior.id) : [];
+  const findByName = (arr, name) => arr.find(i => i.line_item === name);
+  const questions = [];
+  const passes = [];
+
+  // Royalty must be exactly 4.00% of Total Sales
+  {
+    const li = findByName(items, 'Base Franchise Fee - Royalty');
+    if (li && current.total_sales) {
+      const actualPct = (li.cm_amount / current.total_sales) * 100;
+      const off = Math.abs(actualPct - 4.00);
+      if (off > 0.02) {
+        questions.push({
+          title: 'Royalty percentage off target',
+          detail: `${fcrMonthLabel(current)}: Base Franchise Fee - Royalty is $${fcrFmt(li.cm_amount)} (${actualPct.toFixed(3)}% of $${fcrFmt(current.total_sales)} sales) — should be exactly 4.00%.`,
+          draft: `Hi — for ${fcrMonthLabel(current)}, our Base Franchise Fee - Royalty came in at ${actualPct.toFixed(3)}% of Total Sales ($${fcrFmt(li.cm_amount)}) instead of the standard 4.00% ($${fcrFmt(current.total_sales * 0.04)}). Could you confirm this is correct or if there's a correction coming?`
+        });
+      } else passes.push('Base Franchise Fee - Royalty = 4.00% of sales');
+    }
+  }
+
+  // Rent (Base Rent CFA + Percentage Rent CFA) must be exactly 6.00% of Total Sales
+  {
+    const base = findByName(items, 'Base Rent CFA');
+    const pct = findByName(items, 'Percentage Rent CFA');
+    if ((base || pct) && current.total_sales) {
+      const total = (base?.cm_amount || 0) + (pct?.cm_amount || 0);
+      const actualPct = (total / current.total_sales) * 100;
+      const off = Math.abs(actualPct - 6.00);
+      if (off > 0.02) {
+        questions.push({
+          title: 'Rent percentage off target',
+          detail: `${fcrMonthLabel(current)}: Base Rent CFA + Percentage Rent CFA totals $${fcrFmt(total)} (${actualPct.toFixed(3)}% of sales) — should be exactly 6.00%.`,
+          draft: `Hi — for ${fcrMonthLabel(current)}, our combined Base Rent CFA + Percentage Rent CFA came in at ${actualPct.toFixed(3)}% of Total Sales ($${fcrFmt(total)}) instead of 6.00% ($${fcrFmt(current.total_sales * 0.06)}). Could you confirm this is correct?`
+        });
+      } else passes.push('Rent (Base + Percentage) = 6.00% of sales');
+    }
+  }
+
+  // Flat-dollar lines — flag ANY change vs prior month
+  if (prior) {
+    for (const chk of FCR_FLAT_FEE_CHECKS) {
+      const cur = findByName(items, chk.name);
+      const pri = findByName(priorItems, chk.name);
+      if (cur && pri) {
+        const diff = Math.abs(cur.cm_amount - pri.cm_amount);
+        if (diff > 0.01) {
+          questions.push({
+            title: `${chk.label} changed`,
+            detail: `${chk.label} changed from $${fcrFmt(pri.cm_amount)} (${fcrMonthLabel(prior)}) to $${fcrFmt(cur.cm_amount)} (${fcrMonthLabel(current)}).`,
+            draft: `Hi — I noticed ${chk.label} changed from $${fcrFmt(pri.cm_amount)} to $${fcrFmt(cur.cm_amount)} between ${fcrMonthLabel(prior)} and ${fcrMonthLabel(current)}. Was this an intended update to our agreement?`
+          });
+        } else passes.push(`${chk.label} unchanged ($${fcrFmt(cur.cm_amount)})`);
+      }
+    }
+  }
+
+  // YTD arithmetic: prior YTD + this month's CM should equal this month's YTD, for every matching line.
+  if (prior) {
+    const priorByKey = {};
+    for (const pi of priorItems) priorByKey[fcrLineKey(pi)] = pi;
+    for (const li of items) {
+      const p = priorByKey[fcrLineKey(li)];
+      if (!p) continue;
+      const expectedYtd = p.ytd_amount + li.cm_amount;
+      const diff = Math.abs(expectedYtd - li.ytd_amount);
+      if (diff > 0.05) {
+        questions.push({
+          title: `YTD doesn't reconcile — ${li.line_item}`,
+          detail: `${fcrMonthLabel(prior)} YTD ($${fcrFmt(p.ytd_amount)}) + ${fcrMonthLabel(current)} CM ($${fcrFmt(li.cm_amount)}) = $${fcrFmt(expectedYtd)}, but stated YTD is $${fcrFmt(li.ytd_amount)} (off by $${fcrFmt(diff)}).`,
+          draft: `Hi — the YTD math for "${li.line_item}" doesn't reconcile in the ${fcrMonthLabel(current)} FCR: prior YTD plus this month's CM should be $${fcrFmt(expectedYtd)}, but the report shows $${fcrFmt(li.ytd_amount)}. Was there a restatement or correction I should know about?`
+        });
+      }
+    }
+  }
+
+  return { questions, passes };
+}
+
+// ── Layer 2: Operational variance (dollar-ranked, tiered, learns from your notes) ──
+async function fcrLoadKnownPatterns() {
+  const { data, error } = await getSupa().from('fcr_known_patterns').select('*');
+  if (error) { console.error(error); return []; }
+  return data || [];
+}
+
+function fcrComputeVariance(current, baselineReports, knownPatterns) {
+  const items = fcrGetItems(current.id);
+  const suppressSet = new Set(knownPatterns.filter(p => p.auto_suppress).map(p => p.line_item));
+  const noteMap = {};
+  for (const p of knownPatterns) (noteMap[p.line_item] ||= []).push(p.note);
+
+  const avgMap = {};
+  for (const br of baselineReports) {
+    for (const bi of fcrGetItems(br.id)) {
+      const k = fcrLineKey(bi);
+      if (!avgMap[k]) avgMap[k] = { sumAmt: 0, n: 0 };
+      avgMap[k].sumAmt += bi.cm_amount;
+      avgMap[k].n += 1;
+    }
+  }
+
+  const flagged = [];
+  for (const li of items) {
+    if (li.is_subtotal) continue; // sections roll up from their children; flag the leaf, not the total
+    const base = avgMap[fcrLineKey(li)];
+    if (!base || base.n === 0) continue;
+    const avgAmt = base.sumAmt / base.n;
+    const dollarDelta = li.cm_amount - avgAmt;
+    const pctDelta = avgAmt !== 0 ? (dollarDelta / Math.abs(avgAmt)) * 100 : (li.cm_amount !== 0 ? 100 : 0);
+    const relTrip = Math.abs(pctDelta) > 12;
+    const absTrip = Math.abs(dollarDelta) > 500;
+    if (!relTrip && !absTrip) continue;
+    if (suppressSet.has(li.line_item)) continue;
+    flagged.push({
+      line_item: li.line_item, section: li.section, parent_line: li.parent_line,
+      cm_amount: li.cm_amount, avgAmt, dollarDelta, pctDelta,
+      tier: (relTrip && absTrip) ? 1 : 2,
+      hasAccrual: li.has_accrual_entries,
+      notes: noteMap[li.line_item] || []
+    });
+  }
+  flagged.sort((a, b) => Math.abs(b.dollarDelta) - Math.abs(a.dollarDelta));
+  return flagged;
+}
+
+function fcrDismissPrompt(lineItem) {
+  const note = prompt(`Note for "${lineItem}" (e.g. "reimbursable, ignore"):`);
+  if (note === null || !note.trim()) return;
+  const suppress = confirm('Auto-hide this from future flagged lists too?\n\nOK = hide going forward\nCancel = keep flagging it, but show your note each time');
+  fcrSaveKnownPattern(lineItem, note.trim(), suppress);
+}
+
+async function fcrSaveKnownPattern(lineItem, note, autoSuppress) {
+  const { data: { user } } = await getSupa().auth.getUser();
+  const { error } = await getSupa().from('fcr_known_patterns').insert({
+    line_item: lineItem, note, auto_suppress: autoSuppress, created_by: user?.id || null
+  });
+  if (error) { alert('Failed to save note: ' + error.message); return; }
+  fcrRenderDashboard();
+}
+
+function fcrCopyText(btn, text) {
+  navigator.clipboard.writeText(text).then(() => {
+    const orig = btn.textContent; btn.textContent = '✓ Copied'; setTimeout(() => btn.textContent = orig, 1500);
+  });
+}
+
+// ── Dashboard rendering ─────────────────────────────────────────
+function fcrRenderDashboard() {
+  const wrap = document.getElementById('fcrDashboardWrap');
+  if (!wrap) return;
+  if (!FCR.reports.length) {
+    wrap.innerHTML = `<div class="empty"><div class="ei">📈</div><p>Upload your first FCR above to get started. Once you have 2+ months, comparisons and flags appear here automatically.</p></div>`;
+    return;
+  }
+  const sorted = fcrSortedReports();
+
+  // Populate month selector
+  const selectorWrap = document.getElementById('fcrMonthSelectorWrap');
+  const selector = document.getElementById('fcrMonthSelector');
+  if (selector) {
+    const currentVal = selector.value;
+    selector.innerHTML = sorted.map(r =>
+      `<option value="${r.id}">${fcrMonthLabel(r)}</option>`
+    ).join('');
+    // Keep selection if still valid, otherwise default to latest
+    if (currentVal && sorted.find(r => r.id === currentVal)) {
+      selector.value = currentVal;
+    } else {
+      selector.value = sorted[sorted.length - 1].id;
+    }
+    if (selectorWrap) selectorWrap.style.display = sorted.length > 1 ? 'flex' : 'none';
+  }
+
+  const selectedId = selector?.value || sorted[sorted.length - 1].id;
+  const current = sorted.find(r => r.id === selectedId) || sorted[sorted.length - 1];
+  const prior = fcrPriorReport(current);
+  const baseline = fcrBaselineReports(current);
+
+  fcrLoadKnownPatterns().then(patterns => {
+    const verification = fcrComputeVerification(current);
+    const variance = fcrComputeVariance(current, baseline, patterns);
+    FCR._variance = variance;
+    wrap.innerHTML =
+      fcrSnapshotHTML(current, prior) +
+      fcrVerificationHTML(verification, current) +
+      fcrVarianceHTML(variance, current, prior, baseline) +
+      fcrTrendTableHTML(sorted);
+  });
+}
+
+function fcrOnMonthChange() {
+  fcrRenderDashboard();
+}
+
+function fcrArrow(delta, goodIsUp) {
+  if (delta === null || delta === undefined || Math.abs(delta) < 0.005) return '<span style="color:var(--text-light)">—</span>';
+  const up = delta > 0;
+  const good = goodIsUp ? up : !up;
+  const color = good ? '#16a34a' : '#dc2626';
+  return `<span style="color:${color};font-weight:700">${up ? '▲' : '▼'}</span>`;
+}
+
+function fcrSnapshotHTML(current, prior) {
+  const items = fcrGetItems(current.id);
+  const priorItems = prior ? fcrGetItems(prior.id) : [];
+  const findPct = (arr, name) => arr.find(i => i.line_item === name)?.cm_pct;
+
+  const foodPct = findPct(items, 'Food Cost'), foodPctPrior = findPct(priorItems, 'Food Cost');
+  const talentPct = findPct(items, 'Talent Investment'), talentPctPrior = findPct(priorItems, 'Talent Investment');
+  const cfaPct = findPct(items, 'Chick-fil-A Puerto Rico LLC Expenses and Fees'), cfaPctPrior = findPct(priorItems, 'Chick-fil-A Puerto Rico LLC Expenses and Fees');
+
+  const salesDelta = prior ? current.total_sales - prior.total_sales : null;
+  const npDelta = prior ? current.net_profit - prior.net_profit : null;
+  const foodDelta = (foodPct != null && foodPctPrior != null) ? foodPct - foodPctPrior : null;
+  const talentDelta = (talentPct != null && talentPctPrior != null) ? talentPct - talentPctPrior : null;
+  const cfaDelta = (cfaPct != null && cfaPctPrior != null) ? cfaPct - cfaPctPrior : null;
+
+  return `
+  <div class="ccard">
+    <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+      <strong style="color:var(--navy)">${fcrMonthLabel(current)} Snapshot</strong>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${current.parse_check_passed === false ? `<span style="background:#fef2f2;color:#991b1b;border:1px solid #fecaca;border-radius:6px;padding:3px 8px;font-size:.72rem;font-weight:700">⚠️ Parse check failed on save</span>` : ''}
+        ${current.is_transition_period ? `<span style="background:#fefce8;color:#854d0e;border:1px solid #fde047;border-radius:6px;padding:3px 8px;font-size:.72rem;font-weight:700">Transition month — excluded from baselines</span>` : ''}
+      </div>
+    </div>
+    <div class="ccard-body">
+      <div class="stat-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
+        <div class="stat-card">
+          <div class="slabel">Total Sales</div><div class="sval sm">$${fcrFmt(current.total_sales)}</div>
+          <div style="font-size:.75rem;margin-top:4px">${fcrArrow(salesDelta, true)} ${salesDelta != null ? '$' + fcrFmt(Math.abs(salesDelta)) : ''}</div>
+        </div>
+        <div class="stat-card" style="border-left-color:#16a34a">
+          <div class="slabel" style="color:#16a34a">Net Profit</div><div class="sval sm" style="color:#16a34a">$${fcrFmt(current.net_profit)}</div>
+          <div style="font-size:.75rem;margin-top:4px">${fcrArrow(npDelta, true)} ${npDelta != null ? '$' + fcrFmt(Math.abs(npDelta)) : ''} · ${(current.net_profit_pct || 0).toFixed(2)}%</div>
+        </div>
+        <div class="stat-card" style="border-left-color:#d97706">
+          <div class="slabel" style="color:#d97706">Food Cost %</div><div class="sval sm" style="color:#d97706">${foodPct != null ? foodPct.toFixed(2) + '%' : '—'}</div>
+          <div style="font-size:.75rem;margin-top:4px">${fcrArrow(foodDelta, false)} ${foodDelta != null ? Math.abs(foodDelta).toFixed(2) + 'pp' : ''}</div>
+        </div>
+        <div class="stat-card" style="border-left-color:#7c3aed">
+          <div class="slabel" style="color:#7c3aed">Talent Investment %</div><div class="sval sm" style="color:#7c3aed">${talentPct != null ? talentPct.toFixed(2) + '%' : '—'}</div>
+          <div style="font-size:.75rem;margin-top:4px">${fcrArrow(talentDelta, false)} ${talentDelta != null ? Math.abs(talentDelta).toFixed(2) + 'pp' : ''}</div>
+        </div>
+        <div class="stat-card" style="border-left-color:var(--red)">
+          <div class="slabel" style="color:var(--red)">CFA PR Fees %</div><div class="sval sm" style="color:var(--red)">${cfaPct != null ? cfaPct.toFixed(2) + '%' : '—'}</div>
+          <div style="font-size:.75rem;margin-top:4px">${fcrArrow(cfaDelta, false)} ${cfaDelta != null ? Math.abs(cfaDelta).toFixed(2) + 'pp' : ''}</div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function fcrVerificationHTML(verification, current) {
+  const { questions, passes } = verification;
+  return `
+  <div class="ccard" style="margin-top:16px">
+    <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <strong style="color:var(--navy)">✅ Verification — Questions for CFA / CPA</strong>
+      <span style="font-size:.75rem;color:var(--text-light)">${questions.length} to review · ${passes.length} checks passed</span>
+    </div>
+    <div class="ccard-body">
+      ${questions.length === 0
+        ? `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px 14px;font-size:.85rem;color:#166534">✓ All contractual checks passed for ${fcrMonthLabel(current)} — royalty, rent, flat fees, and YTD math all reconcile.</div>`
+        : questions.map(q => `
+          <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:14px;margin-bottom:10px">
+            <div style="font-weight:700;color:#9a3412;font-size:.88rem;margin-bottom:4px">⚠️ ${q.title}</div>
+            <div style="font-size:.82rem;color:var(--text-mid);margin-bottom:8px">${q.detail}</div>
+            <div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:10px;font-size:.8rem;color:var(--text-mid);font-style:italic">"${q.draft}"</div>
+            <button class="btn btn-sm" style="margin-top:8px" onclick="fcrCopyText(this,'${fcrEscJs(q.draft)}')">📋 Copy question</button>
+          </div>`).join('')}
+      ${passes.length ? `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:.8rem;color:var(--text-light)">Show ${passes.length} passed checks</summary><ul style="font-size:.8rem;color:var(--text-mid);margin-top:8px">${passes.map(p => `<li>✓ ${p}</li>`).join('')}</ul></details>` : ''}
+    </div>
+  </div>`;
+}
+
+function fcrVarianceHTML(flagged, current, prior, baseline) {
+  if (!prior) {
+    return `<div class="ccard" style="margin-top:16px"><div class="ccard-body"><div class="empty"><div class="ei">📊</div><p>Operational trend flags need at least one prior month to compare against. Upload another month to activate this section.</p></div></div></div>`;
+  }
+
+  // Build baseline label e.g. "Apr–Jun avg" or "May–Jun avg"
+  const baselineSorted = (baseline || []).slice().sort((a, b) => (a.period_year - b.period_year) || (a.period_month - b.period_month));
+  let baselineLabel = 'prior months avg';
+  if (baselineSorted.length === 1) {
+    baselineLabel = `${fcrMonthLabel(baselineSorted[0])} only`;
+  } else if (baselineSorted.length > 1) {
+    const first = baselineSorted[0];
+    const last = baselineSorted[baselineSorted.length - 1];
+    // Short form: "Apr–Jun avg"
+    const shortMonth = r => fcrMonthName(r.period_month).slice(0, 3);
+    baselineLabel = first.period_year === last.period_year
+      ? `${shortMonth(first)}–${shortMonth(last)} avg`
+      : `${shortMonth(first)} ${first.period_year}–${shortMonth(last)} ${last.period_year} avg`;
+  }
+
+  const row = f => `
+    <div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px;background:${f.tier === 1 ? '#fef2f2' : '#fffbeb'}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:700;font-size:.85rem;color:${f.tier === 1 ? '#991b1b' : '#92400e'}">${f.line_item}${f.hasAccrual ? ' <span style="font-weight:400;font-size:.72rem;color:var(--text-light)">(has accrual entries — check timing before assuming it\'s real)</span>' : ''}</div>
+          <div style="font-size:.78rem;color:var(--text-mid)">${f.parent_line || f.section} · $${fcrFmt(f.cm_amount)} in ${fcrMonthLabel(current)} vs $${fcrFmt(f.avgAmt)} ${baselineLabel}</div>
+          ${f.notes.length ? `<div style="font-size:.76rem;color:#16a34a;margin-top:4px">📌 ${f.notes.map(n => fcrEsc(n)).join(' · ')}</div>` : ''}
+        </div>
+        <div style="text-align:right">
+          <div style="font-weight:800;font-size:.95rem;color:${f.dollarDelta > 0 ? '#dc2626' : '#16a34a'}">${f.dollarDelta > 0 ? '+' : '-'}$${fcrFmt(Math.abs(f.dollarDelta))}</div>
+          <div style="font-size:.75rem;color:var(--text-light)">${f.pctDelta > 0 ? '+' : ''}${f.pctDelta.toFixed(1)}%</div>
+        </div>
+      </div>
+      <div style="margin-top:8px"><button class="btn btn-sm" onclick="fcrDismissPrompt('${fcrEscJs(f.line_item)}')">Note &amp; dismiss</button></div>
+    </div>`;
+
+  const tier1 = flagged.filter(f => f.tier === 1);
+  const tier2 = flagged.filter(f => f.tier === 2);
+
+  return `
+  <div class="ccard" style="margin-top:16px">
+    <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <strong style="color:var(--navy)">🔍 Operational Watch — ${fcrMonthLabel(current)} vs ${baselineLabel}</strong>
+      <span style="font-size:.75rem;color:var(--text-light)">${flagged.length} flagged, ranked by $ impact</span>
+    </div>
+    <div class="ccard-body">
+      ${flagged.length === 0 ? `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px 14px;font-size:.85rem;color:#166534">✓ Nothing moved outside the normal range this month.</div>` : ''}
+      ${tier1.map(row).join('')}
+      ${tier2.map(row).join('')}
+    </div>
+  </div>`;
+}
+
+function fcrTrendTableHTML(sorted) {
+  const keyLineItems = [
+    'Food Cost', 'Paper Cost', 'Talent Investment', 'Utilities',
+    'Miscellaneous Income/Expense', 'Marketing', 'Repairs and Maintenance',
+    'Business Insurance', 'Financial Fees', 'Other Taxes',
+    'Chick-fil-A Puerto Rico LLC Expenses and Fees'
+  ];
+  const cols = sorted.map(r => `<th style="padding:8px;text-align:right;white-space:nowrap">${fcrMonthName(r.period_month).slice(0, 3)} '${String(r.period_year).slice(2)}${r.is_transition_period ? ' †' : ''}</th>`).join('');
+  const rows = keyLineItems.map(name => {
+    const cells = sorted.map(r => {
+      const li = fcrGetItems(r.id).find(i => i.line_item === name);
+      return `<td style="padding:8px;text-align:right">${li ? li.cm_pct.toFixed(2) + '%' : '—'}</td>`;
+    }).join('');
+    return `<tr style="border-bottom:1px solid #f1f5f9"><td style="padding:8px;font-weight:600">${name}</td>${cells}</tr>`;
+  }).join('');
+  const salesRow = `<tr style="border-bottom:2px solid var(--border);background:#f8fafc"><td style="padding:8px;font-weight:700">Total Sales</td>${sorted.map(r => `<td style="padding:8px;text-align:right;font-weight:700">$${fcrFmt(r.total_sales)}</td>`).join('')}</tr>`;
+  const npRow = `<tr style="background:#f0fdf4"><td style="padding:8px;font-weight:700;color:#166534">Net Profit %</td>${sorted.map(r => `<td style="padding:8px;text-align:right;font-weight:700;color:#166534">${(r.net_profit_pct || 0).toFixed(2)}%</td>`).join('')}</tr>`;
+
+  return `
+  <div class="ccard" style="margin-top:16px">
+    <div style="padding:14px 20px;border-bottom:1px solid var(--border)">
+      <strong style="color:var(--navy)">📅 Month-over-Month Trend (% of Sales)</strong>
+      ${sorted.some(r => r.is_transition_period) ? `<span style="font-size:.72rem;color:var(--text-light)"> · † = transition month, excluded from variance baselines</span>` : ''}
+    </div>
+    <div class="ccard-body" style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+        <thead><tr style="border-bottom:2px solid var(--border)"><th style="padding:8px;text-align:left">Line Item</th>${cols}</tr></thead>
+        <tbody>${salesRow}${rows}${npRow}</tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  REPUTATION / REVIEWS TAB
+// ═══════════════════════════════════════════════════════════
+
+const GOOGLE_API_KEY  = 'AIzaSyCrrOs1hpIvq11FfqfP89UeM00qfN5ANiQ';
+const GOOGLE_PLACE_QUERY = 'Chick-fil-A Los Filtros Bayamon Puerto Rico';
