@@ -361,30 +361,23 @@
   // ═════════════ USERS & ACCESS (operator only) ═════════════
   H.pages.access = {
     async render(host) {
-      host.innerHTML = `<div class="ph"><div><h2>Users &amp; access <span class="pill dark" style="vertical-align:middle;margin-left:6px">Operator only</span></h2><p>Who can sign in and what they can see. Change a whole role at once, or give one person extra access.</p></div>
+      host.innerHTML = `<div class="ph"><div><h2>Users &amp; access <span class="pill dark" style="vertical-align:middle;margin-left:6px">Operator only</span></h2><p>Who can sign in and what each person can see.</p></div>
         <div class="actions"><button class="btn" onclick="H.pages.access.backup()">Download full backup</button><button class="btn btn-primary" onclick="H.pages.access.invite()">Invite someone</button></div></div><div id="acBody"><div class="li-empty">Loading…</div></div>`;
       const [profiles, access, invites] = await Promise.all([H.db.list('profiles', { cache: false }), H.db.list('hub_access', { cache: false }), H.db.list('hub_invites', { cache: false, order: 'created_at', asc: false })]);
       const body = document.getElementById('acBody'); if (!body) return;
       const acc = Object.fromEntries((access || []).map(a => [a.user_id, a]));
       const users = (profiles || []).map(p => ({ ...p, role: H.normRole(p.role), custom: acc[p.id] && Array.isArray(acc[p.id].sections) && acc[p.id].sections.length ? acc[p.id].sections : null }));
-      const counts = {}; users.forEach(u => { counts[u.role] = (counts[u.role] || 0) + 1; });
-      body.innerHTML = `
+            body.innerHTML = `
         ${profiles === null ? `<div class="source warn"><span>The user list could not be read (${H.esc((H.db.lastError || {}).message || 'permission denied')}). Run <code>sql/2026-10-hub-v2.sql</code> so the operator can see every profile.</span></div>` : ''}
-        <div class="kpis">${['operator', 'director', 'shift_leader', 'marketing'].map(r => `<div class="kpi"><div class="kpi-label">${H.ROLE_LABELS[r]}</div><div class="kpi-val">${counts[r] || 0}</div><div class="kpi-sub">${H.sectionsFor(r).length} sections</div></div>`).join('')}
-          <div class="kpi"><div class="kpi-label">Custom access</div><div class="kpi-val">${users.filter(u => u.custom).length}</div><div class="kpi-sub">People with exceptions</div></div></div>
-        <div class="section-label">What each role can see</div>
-        <div class="tbl-wrap mb"><div class="tbl-scroll"><table><thead><tr><th>Section</th>${['operator', 'director', 'shift_leader', 'marketing'].map(r => `<th class="c">${H.ROLE_LABELS[r]}</th>`).join('')}</tr></thead><tbody>
-          ${H.SECTIONS.map(s => `<tr><td style="color:var(--text);font-weight:600">${H.esc(H.SECTION_LABELS[s])}</td>${['operator', 'director', 'shift_leader', 'marketing'].map(r => `<td class="c">${H.sectionsFor(r).includes(s) ? '<span style="color:var(--ok);font-weight:700">✓</span>' : '<span class="muted">—</span>'}</td>`).join('')}</tr>`).join('')}
-        </tbody></table></div></div>
-        <div class="section-label" style="margin-top:22px">People</div>
+        <div class="section-label">People</div>
         <div class="tbl-wrap"><div class="tbl-scroll"><table><thead><tr><th>Name</th><th>Role</th><th>Access</th><th class="r"></th></tr></thead><tbody>
           ${users.map(u => `<tr><td><div style="color:var(--text);font-weight:600">${H.esc(u.name || u.email || u.id)}</div><div class="small muted">${H.esc(u.email || '')}</div></td>
             <td>${u.id === (H.user() || {}).id ? `<span class="pill dark">${H.ROLE_LABELS[u.role]}</span> <span class="small muted">you</span>` : `<select class="sel" onchange="H.pages.access.setRole('${u.id}',this.value)">${['operator', 'director', 'shift_leader', 'marketing', 'team_member'].map(r => `<option value="${r}" ${r === H.normRole(u.role) ? 'selected' : ''}>${H.ROLE_LABELS[r]}</option>`).join('')}</select>`}</td>
-            <td>${u.custom ? `<span class="pill amber">Custom · ${u.custom.length} sections</span>` : `<span class="small muted">${H.sectionsFor(u.role).length} sections</span>`}</td>
+            <td style="max-width:520px">${u.role === 'operator' ? '<span class="small muted">Everything</span>' : `<span class="small">${H.esc(H.sectionsFor(u.role, u.custom).map(x => H.SECTION_LABELS[x]).join(', '))}</span>`}</td>
             <td class="r">${u.id === (H.user() || {}).id ? '' : `<button class="btn btn-sm" onclick="H.pages.access.editAccess('${u.id}')">Edit access</button>`}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No profiles found.</td></tr>'}
         </tbody></table></div></div>
         ${(invites || []).filter(i => !i.accepted_at).length ? `<div class="section-label" style="margin-top:22px">Invited</div><div class="list">${invites.filter(i => !i.accepted_at).map(i => `<div class="li">${H.icon('people', 'blue')}<div><div class="li-title">${H.esc(i.name || i.email)}</div><div class="li-sub">${H.esc(i.email)} · ${H.ROLE_LABELS[i.role] || i.role} · invited ${H.fmtD(H.isoOfTs(i.created_at))}</div></div><span class="pill amber">Waiting for first sign-in</span></div>`).join('')}</div>` : ''}
-        <div class="source mt" style="margin-top:22px"><span>Section access controls what each person sees in the hub. The database still lets any signed-in person read most tables, so treat this as a view setting until the database rules are tightened (see the last note in <code>sql/2026-10-hub-v2.sql</code>).</span></div>`;
+        <div class="source mt" style="margin-top:22px"><span>Changes apply the next time that person signs in. FCR trends and Users &amp; access are only ever shown to the Operator. Monthly P&amp;L, Christmas bonus, saved reconciliations and QuickBooks are also locked to the Operator in the database itself, whatever is ticked here.</span></div>`;
     },
     async setRole(id, role) {
       try { const { error } = await getSupa().from('profiles').update({ role }).eq('id', id); if (error) throw error; H.db.bust('profiles'); H.toast(`Role changed to ${H.ROLE_LABELS[role]}`); this.render(document.getElementById('accessApp')); }

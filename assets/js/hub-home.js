@@ -156,17 +156,15 @@ Use "act" only when something affects the restaurant within the next 7 days. sta
       host.innerHTML = `<div class="home-hero">
           <div><div class="home-kicker">${H.esc(greet)} · ${H.esc(now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }))}</div>
           <h2 class="home-title">Welcome back, ${H.esc(firstName())}</h2>
-          <p class="muted" style="margin:4px 0 0">What's happening around the store and what's coming up.</p></div>
+          <p class="muted" style="margin:4px 0 0">What's happening around the store.</p></div>
         </div>
         <div class="home-grid">
           <section><div class="section-label">What could affect the store <span class="row" style="gap:8px">${H.isOperator() ? '<a href="#" onclick="H.pages.home.addNews();return false">Add a story</a>' : ''}<a href="#" id="newsRefresh" onclick="H.pages.home.refresh();return false">Refresh news</a></span></div>
             <div class="chips" id="newsChips"></div>
             <div class="card" id="newsList"><div class="li-empty">Loading…</div></div></section>
-          <section><div class="section-label">Coming up <a href="#" onclick="goTab('calendar');return false">Open calendar</a></div>
-            <div class="card" id="homeCal"><div class="li-empty">Loading…</div></div>
-            <div id="homeSources"></div></section>
+          <section><div id="homeSources"></div></section>
         </div>`;
-      this.news(); this.upcoming();
+      this.news();
       if (H.renderSources) H.renderSources(document.getElementById('homeSources'));
       // Fresh news once a day, in the background, for the operator
       if (H.isOperator() && !window.__HUB_PREVIEW__) {
