@@ -218,7 +218,7 @@
 
   // ── roles & sections ──────────────────────────────────────
   // Sections in sidebar order.
-  const ALL = ['home', 'calendar', 'equipment', 'quality', 'sales', 'foodcost', 'productivity', 'pl', 'cash', 'recon', 'fcr', 'dashboard', 'bonus', 'staffing', 'infractions', 'meals', 'access', 'catering', 'marketing', 'reputation'];
+  const ALL = ['home', 'calendar', 'equipment', 'quality', 'sales', 'foodcost', 'productivity', 'pl', 'cash', 'recon', 'dashboard', 'bonus', 'staffing', 'infractions', 'meals', 'access', 'catering', 'marketing', 'reputation'];
   const EVERYONE = ['home']; // anyone with access to the hub (Calendar can be ticked on or off per person)
   H.SECTIONS = ALL;
   H.SECTION_LABELS = { bonus: 'Christmas bonus', home: 'Home', calendar: 'Calendar', quality: 'Speed & quality', sales: 'Sales', pl: 'Monthly P&L', cash: 'Cash', equipment: 'Equipment', foodcost: 'Food cost', productivity: 'Productivity', recon: 'Reconciliation', fcr: 'FCR trends', staffing: 'Staffing', infractions: 'Infractions', dashboard: 'Leave balances', import: 'Import hours', recordto: 'Record time-off', meals: 'Meal penalties', access: 'Users & access', catering: 'Catering', marketing: 'Marketing', reputation: 'Reputación' };
@@ -289,7 +289,7 @@
     document.getElementById('navUser').textContent = user.name || user.pin || '';
     document.getElementById('navRolePill').textContent = H.ROLE_LABELS[role] || role;
     document.getElementById('navAvatar').textContent = H.initials(user.name || user.pin);
-    document.getElementById('sbViewWrap').style.display = role === 'operator' ? '' : 'none';
+    const vw = document.getElementById('sbViewWrap'); if (vw) vw.style.display = 'none';
     const sel = document.getElementById('sbViewAs'); if (sel) sel.value = 'operator';
     document.getElementById('topDate').textContent = H.prNow().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
     applyNav();
@@ -385,3 +385,13 @@
     host.innerHTML += `<div class="source warn mt"><span>The <strong>${H.esc(table)}</strong> table isn't set up yet. Run <code>sql/2026-10-hub-v2.sql</code> once in the Supabase SQL editor, then reload.</span></div>`;
   };
 })();
+
+// Print only one part of the page (e.g. the reconciliation report), not the whole hub
+window.hubPrintOnly = id => {
+  const el = document.getElementById(id); if (!el) return window.print();
+  document.body.classList.add('print-only'); el.classList.add('print-target');
+  const done = () => { document.body.classList.remove('print-only'); el.classList.remove('print-target'); window.removeEventListener('afterprint', done); };
+  window.addEventListener('afterprint', done);
+  window.print();
+  setTimeout(done, 1000);
+};

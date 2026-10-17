@@ -131,8 +131,8 @@
   const PLS = { month: null };
   H.pages.pl = {
     async render(host) {
-      host.innerHTML = `<div class="ph"><div><h2>Monthly P&amp;L <span class="pill dark" style="vertical-align:middle;margin-left:6px">Operator only</span></h2><p>Every line of the cfahome Management Tool, month by month, as dollars and as a share of sales.</p></div>
-        <div class="actions"><button class="btn btn-primary" onclick="H.pages.pl.importRows()">Update from cfahome</button></div></div><div id="plBody"><div class="li-empty">Loading…</div></div>`;
+      host.innerHTML = `<div class="ph"><div><h2>Monthly P&amp;L <span class="pill dark" style="vertical-align:middle;margin-left:6px">Operator only</span></h2><p>The month from cfahome, with the FCR line detail and the CFA charge checks. Click a category to see its lines.</p></div>
+        <div class="actions"><button class="btn" onclick="H.fcrImport && H.fcrImport(H.pages.pl.month())">Add FCR lines</button><button class="btn btn-primary" onclick="H.pages.pl.importRows()">Update from cfahome</button></div></div><div id="plBody"><div class="li-empty">Loading…</div></div>`;
       const rows = await H.db.list('pl_months', { order: 'period_start', cache: false });
       const body = document.getElementById('plBody'); if (!body) return;
       if (rows === null) return H.missingTable(body, 'pl_months');
@@ -158,7 +158,7 @@
         <div class="split">
           <div class="tbl-wrap"><div class="tbl-scroll"><table><thead><tr><th>${H.esc(H.monthLabel(PLS.month, true))}</th><th class="r">$</th><th class="r">% of sales</th><th class="r">vs last month</th><th class="r">YTD $</th><th class="r">YTD %</th></tr></thead><tbody>
             <tr><td style="font-weight:700;color:var(--text)">Sales</td><td class="r" style="font-weight:700">${H.money(cur.sales)}</td><td class="r">100%</td><td class="r">${prev ? H.delta(cur.sales, prev.sales, true) : '—'}</td><td class="r">${H.money(ytd('sales'))}</td><td class="r">100%</td></tr>
-            ${PL_LINES.filter(([k]) => cur[k] != null || ytd(k)).map(([k, l]) => { const p = pct(cur[k], cur.sales), pp = prev ? pct(prev[k], prev.sales) : null; return `<tr><td>${H.esc(l)}</td><td class="r">${H.money(cur[k])}</td><td class="r">${H.pct(p)}</td><td class="r">${pp != null && p != null ? (Math.abs(p - pp) < 0.05 ? '<span class="muted">0.0 pts</span>' : `<span style="color:var(--${p - pp < 0 ? 'ok' : 'bad'});font-weight:600">${p - pp > 0 ? '+' : ''}${(p - pp).toFixed(1)} pts</span>`) : '—'}</td><td class="r">${H.money(ytd(k))}</td><td class="r">${H.pct(pct(ytd(k), ytd('sales')))}</td></tr>`; }).join('')}
+            ${PL_LINES.filter(([k]) => cur[k] != null || ytd(k)).map(([k, l]) => { const p = pct(cur[k], cur.sales), pp = prev ? pct(prev[k], prev.sales) : null; return `<tr><td><a href="#" onclick="H.pages.pl.lines('${k}');return false" title="See the FCR line items">${H.esc(l)}</a></td><td class="r">${H.money(cur[k])}</td><td class="r">${H.pct(p)}</td><td class="r">${pp != null && p != null ? (Math.abs(p - pp) < 0.05 ? '<span class="muted">0.0 pts</span>' : `<span style="color:var(--${p - pp < 0 ? 'ok' : 'bad'});font-weight:600">${p - pp > 0 ? '+' : ''}${(p - pp).toFixed(1)} pts</span>`) : '—'}</td><td class="r">${H.money(ytd(k))}</td><td class="r">${H.pct(pct(ytd(k), ytd('sales')))}</td></tr>`; }).join('')}
             <tr><td style="font-weight:700;color:var(--text)">Net profit</td><td class="r" style="font-weight:700">${H.money(cur.net_profit)}</td><td class="r" style="font-weight:700">${H.pct(np)}</td><td class="r">${npPrev != null ? pts(np, npPrev) + ' pts' : '—'}</td><td class="r">${H.money(ytd('net_profit'))}</td><td class="r">${H.pct(pct(ytd('net_profit'), ytd('sales')))}</td></tr>
           </tbody></table></div></div>
           <div class="card card-pad"><div class="section-label">Net profit % by month</div>
@@ -166,7 +166,10 @@
             ${Math.abs(gap) > Math.max(50, (+cur.sales || 0) * 0.005) ? `<div class="source warn mt"><span>The lines plus net profit come to ${H.money(accounted)}, ${H.money(Math.abs(gap))} ${gap > 0 ? 'more' : 'less'} than sales. A line may be missing or entered twice.</span></div>` : ''}
             <div class="small muted mt-s">${ly ? `Same month last year: ${H.pct(pct(ly.net_profit, ly.sales))} net profit.` : 'The Management Tool shows last year as 0 because Pertenecen LLC started Apr 1, 2026.'}</div></div>
         </div>`;
+      if (H.fcrPanel) await H.fcrPanel(body, PLS.month, cur);
     },
+    month() { return PLS.month; },
+    lines(k) { const l = (PL_LINES.find(x => x[0] === k) || [k, k])[1]; return H.fcrLines && H.fcrLines(k, PLS.month, l); },
     setMonth(k) { PLS.month = k; this.render(document.getElementById('plApp')); },
     importRows() {
       const hdr = 'month,sales,' + PL_LINES.map(l => l[0]).join(',') + ',net_profit';

@@ -97,6 +97,7 @@ async function signOut() {
 // ══════════════════════════════════════════
 function goTab(t) {
   if (t === 'timeoff') t = 'recordto';
+  if (t === 'fcr') t = 'pl';   // FCR trends now lives inside Monthly P&L
   // Import hours and Record time-off now live inside the Leave balances page
   if (t === 'import' || t === 'recordto') { window._hubLbSub = t; t = 'dashboard'; }
   if (window.hubCanSee && !hubCanSee(t)) t = window.hubLanding ? hubLanding() : 'dashboard';

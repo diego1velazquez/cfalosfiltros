@@ -64,12 +64,29 @@
     holiday: ['Holiday', 'blue'], closed: ['Closed', 'red'], event: ['Event', 'gray'], deadline: ['Deadline', 'amber'], cfa: ['Chick-fil-A', 'red'],
     community: ['Community', 'purple'], personal: ['Personal', 'green'], alert: ['Outage / closure', 'amber'], catering: ['Catering', 'green'],
   };
+  // Events from cfahome only count if they can move traffic at Los Filtros: big crowds anywhere within
+  // cfahome's 10-mile radius (Coliseo, Choliseo, stadiums), or mid-size ones right next to the store.
+  H.EVENT_RULE = { bigCrowd: 3000, nearMiles: 2, nearCrowd: 500 };
+  H.eventInfo = e => { const t = `${e.notes || ''}`, a = t.match(/Expected\s*([\d,]+)/i), d = t.match(/([\d.]+)\s*mi\b/i); return { att: a ? +a[1].replace(/,/g, '') : null, miles: d ? +d[1] : null }; };
+  H.eventMatters = e => {
+    if (e.source !== 'cfahome Events') return true;                  // your own entries always show
+    const { att, miles } = H.eventInfo(e), R = H.EVENT_RULE;
+    if (att == null) return true;                                     // no crowd size: can't judge, keep it
+    return att >= R.bigCrowd || (miles != null && miles <= R.nearMiles && att >= R.nearCrowd);
+  };
   // Everything on the calendar between two dates (inclusive), from every source.
   H.calendarEvents = async (from, to) => {
     const vis = H.visible(), out = [];
     for (let y = +from.slice(0, 4); y <= +to.slice(0, 4); y++) out.push(...H.builtinEvents(y));
     const mine = await H.db.list('hub_calendar', { cache: false }) || [];
-    mine.forEach(e => out.push({ ...e, kind: e.kind || 'event' }));
+    // cfahome sometimes lists one event several times (e.g. "Monster Jam San Juan" and "Monster Jam at Coliseo…" the same day): keep the biggest
+    const seenEv = new Map();
+    mine.filter(H.eventMatters).forEach(e => {
+      if (e.source !== 'cfahome Events') return out.push({ ...e, kind: e.kind || 'event' });
+      const key = e.day + '|' + String(e.title).toLowerCase().replace(/[^a-z0-9áéíóúñü ]/g, ' ').split(/\s+/).filter(Boolean).slice(0, 2).join(' ');
+      const prev = seenEv.get(key); if (!prev || (H.eventInfo(e).att || 0) > (H.eventInfo(prev).att || 0)) seenEv.set(key, e);
+    });
+    seenEv.forEach(e => out.push({ ...e, kind: e.kind || 'event' }));
     const news = await H.db.list('hub_news') || [];
     news.filter(n => n.starts_on && !n.hidden).forEach(n => out.push({ day: n.starts_on, end_day: n.ends_on, title: n.title, kind: 'alert', notes: n.impact, url: n.url, news: true }));
     if (vis.includes('bonus') && H.bonusDates) for (let y = +from.slice(0, 4); y <= +to.slice(0, 4); y++) {
@@ -293,12 +310,15 @@ Use "act" only when something affects the restaurant within the next 7 days. sta
     importEvents() {
       H.importModal({
         title: 'Import events near the store',
-        intro: 'From cfahome → Analytics Hub → Sales & Brand Growth → Events Around Your Restaurant. One row per event. Re-importing the same event updates it.',
-        example: 'date,end_date,title,notes\n2026-10-24,,Festival de la Chiringa · Parque Lineal,Expected 8,000 · 2.1 mi\n2026-11-07,2026-11-08,Torneo de voleibol · Coliseo Rubén Rodríguez,Expected 3,500',
+        intro: 'From cfahome → Analytics Hub → Sales & Brand Growth → Events Around Your Restaurant. Only events that can bring traffic are kept: 3,000+ expected anywhere in the 10 miles, or 500+ within 2 miles. Put the crowd and distance in notes as "Expected 8,000 · 2.1 mi".',
+        example: 'date,end_date,title,notes\n2026-10-24,,Festival de la Chiringa · Parque Lineal,Expected 8,000 · 2.1 mi\n2026-11-07,2026-11-08,Torneo de voleibol · Coliseo Rubén Rodríguez,Expected 3,500 · 1.4 mi',
         prompt: 'cfahome → Analytics Hub → Sales & Brand Growth → Events Around Your Restaurant. For the next 60 days copy each event: date, end date, name and venue, and expected attendance or distance as notes.',
         onRows: async (rows, dry) => {
           const out = rows.map(r => { const d = H.toISO(H.pick(r, 'date', 'start_date', 'day')); const t = String(H.pick(r, 'title', 'event', 'name') || '').trim(); if (!d || !t) return null; return { day: d, end_day: H.toISO(H.pick(r, 'end_date', 'end')) || null, title: t.slice(0, 200), kind: 'event', notes: H.pick(r, 'notes', 'venue', 'attendance') || null, source: 'cfahome Events', created_by: H.who(), created_at: new Date().toISOString() }; }).filter(Boolean);
-          if (dry) { const red = []; out.forEach(e => { if (e.end_day && e.end_day < e.day) red.push(`${e.title}: ends before it starts.`); }); return { rows: out, block: red.length > 0, html: out.length ? `<span style="color:var(--ok);font-weight:600">${out.length} event${out.length === 1 ? '' : 's'} read</span>${H.flagHtml(red, [])}` : '<span style="color:var(--bad)">No rows with a date and a title were found.</span>' }; }
+          const keep = out.filter(H.eventMatters), skipped = out.length - keep.length;
+          if (dry) { const red = [], amber = []; keep.forEach(e => { if (e.end_day && e.end_day < e.day) red.push(`${e.title}: ends before it starts.`); });
+            const noSize = keep.filter(e => H.eventInfo(e).att == null).length; if (noSize) amber.push(`${noSize} event${noSize === 1 ? ' has' : 's have'} no expected attendance in notes, so ${noSize === 1 ? 'it is' : 'they are'} kept. Add "Expected N · X mi" to filter them.`);
+            return { rows: keep, block: red.length > 0, html: out.length ? `<span style="color:var(--ok);font-weight:600">${keep.length} event${keep.length === 1 ? '' : 's'} that can affect the store</span>${skipped ? ` <span class="muted">· ${skipped} smaller or farther ones left out</span>` : ''}${H.flagHtml(red, amber)}` : '<span style="color:var(--bad)">No rows with a date and a title were found.</span>' }; }
           await H.db.upsert('hub_calendar', rows, 'day,title'); H.toast(`${rows.length} events saved`); this.render(document.getElementById('calendarApp'));
         },
       });

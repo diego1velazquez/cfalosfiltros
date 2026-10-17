@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet"/>
-  <link rel="stylesheet" href="assets/css/styles.css?v=19"/>
+  <link rel="stylesheet" href="assets/css/styles.css?v=23"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" onerror="console.warn('pdf.js CDN failed')"></script>
 </head>
 <body>
@@ -47,15 +47,6 @@
       <img class="icon" src="assets/img/cfa-icon.png" alt="Chick-fil-A"/>
       <div class="name">Los Filtros Hub<small>Command center · FSU 30014</small></div>
     </div>
-    <div class="sb-view" id="sbViewWrap" style="display:none">
-      <label for="sbViewAs">Viewing as</label>
-      <select id="sbViewAs" onchange="hubSetViewAs(this.value)">
-        <option value="operator">Operator</option>
-        <option value="director">Director</option>
-        <option value="shift_leader">Shift leader</option>
-        <option value="marketing">Marketing</option>
-      </select>
-    </div>
     <nav class="tabnav" id="adminTabNav" style="display:none" aria-label="Sections">
       <div class="nav-group" data-group="overview">Overview</div>
       <a class="tab" onclick="goTab('home')" id="t-home" data-title="Home"><svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7"/><path d="M6 9.5V20h12V9.5"/><path d="M10 20v-5h4v5"/></svg><span>Home</span><span class="count" id="cnt-home"></span></a>
@@ -70,7 +61,6 @@
       <a class="tab" onclick="goTab('pl')" id="t-pl" data-title="Monthly P&amp;L"><svg viewBox="0 0 24 24"><path d="M5 3.5h14v17H5z"/><path d="M8.5 8h7M8.5 11.5h7M8.5 15h4"/><path d="M15.5 15h.5"/></svg><span>Monthly P&amp;L</span><span class="count" id="cnt-pl"></span></a>
       <a class="tab" onclick="goTab('cash')" id="t-cash" data-title="Cash"><svg viewBox="0 0 24 24"><rect x="3" y="6.5" width="18" height="11" rx="2"/><circle cx="12" cy="12" r="2.6"/><path d="M6.5 9.5v.01M17.5 14.5v.01"/></svg><span>Cash</span><span class="count" id="cnt-cash"></span></a>
       <a class="tab" onclick="goTab('recon')" id="t-recon" data-title="Reconciliation"><svg viewBox="0 0 24 24"><path d="M4 7h12"/><path d="m13 4 3 3-3 3"/><path d="M20 17H8"/><path d="m11 14-3 3 3 3"/></svg><span>Reconciliation</span><span class="count" id="cnt-recon"></span></a>
-      <a class="tab" onclick="goTab('fcr')" id="t-fcr" data-title="FCR trends"><svg viewBox="0 0 24 24"><path d="M7 3.5h7l4 4v13H7z"/><path d="M14 3.5v4h4"/><path d="M10 17v-3M12.5 17v-5M15 17v-2"/></svg><span>FCR trends</span><span class="count" id="cnt-fcr"></span></a>
       <div class="nav-group" data-group="people">People</div>
       <a class="tab" onclick="goTab('dashboard')" id="t-dashboard" data-title="Leave balances"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/><path d="m9 15 2 2 4-4"/></svg><span>Leave balances</span><span class="count" id="cnt-dashboard"></span></a>
       <a class="tab" onclick="goTab('bonus')" id="t-bonus" data-title="Christmas bonus"><svg viewBox="0 0 24 24"><rect x="3.5" y="8" width="17" height="12.5" rx="1.5"/><path d="M3.5 12h17M12 8v12.5"/><path d="M12 8c-1.5-3-5-3.5-5-1.2C7 8 9.5 8 12 8zm0 0c1.5-3 5-3.5 5-1.2C17 8 14.5 8 12 8z"/></svg><span>Christmas bonus</span><span class="count" id="cnt-bonus"></span></a>
@@ -375,10 +365,10 @@
           </div>
         </div>
       </div>
-      <div class="ccard">
+      <div class="ccard" id="reconReportCard">
         <div style="padding:14px 20px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)">
           <strong style="font-size:1rem">Reconciliation report</strong>
-          <div style="display:flex;gap:8px"><button class="btn btn-sm" onclick="window.print()">Print</button></div>
+          <div style="display:flex;gap:8px"><button class="btn btn-sm" onclick="hubPrintOnly('reconReportCard')">Print</button></div>
         </div>
         <div class="ccard-body">
           <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:18px">
@@ -830,16 +820,17 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js"></script>
-<script src="assets/js/hub-checkmode.js?v=19"></script>
-<script src="assets/js/app.js?v=19"></script>
-<script src="assets/js/hub-core.js?v=19"></script>
-<script src="assets/js/hub-ops.js?v=19"></script>
-<script src="assets/js/hub-people.js?v=19"></script>
-<script src="assets/js/hub-guests.js?v=19"></script>
-<script src="assets/js/hub-biz.js?v=19"></script>
-<script src="assets/js/hub-home.js?v=19"></script>
-<script src="assets/js/hub-bonus.js?v=19"></script>
-<script src="assets/js/hub-recon.js?v=19"></script>
-<script src="assets/js/hub-qbo.js?v=19"></script>
+<script src="assets/js/hub-checkmode.js?v=23"></script>
+<script src="assets/js/app.js?v=23"></script>
+<script src="assets/js/hub-core.js?v=23"></script>
+<script src="assets/js/hub-ops.js?v=23"></script>
+<script src="assets/js/hub-people.js?v=23"></script>
+<script src="assets/js/hub-guests.js?v=23"></script>
+<script src="assets/js/hub-biz.js?v=23"></script>
+<script src="assets/js/hub-fcr.js?v=23"></script>
+<script src="assets/js/hub-home.js?v=23"></script>
+<script src="assets/js/hub-bonus.js?v=23"></script>
+<script src="assets/js/hub-recon.js?v=23"></script>
+<script src="assets/js/hub-qbo.js?v=23"></script>
 </body>
 </html>

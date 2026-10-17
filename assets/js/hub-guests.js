@@ -434,6 +434,8 @@
    Hub: Food cost → Update from cfahome. Header: month,sales,food_cost_pct,theoretical_pct,beginning_inventory,purchases,ending_inventory,waste,employee_meals,promo (month as YYYY-MM, numbers only). Check rows.`,
     pl: `MONTHLY P&L. cfahome → Reports and Tools → Chick-fil-A Report Galleries → Management tab → Management Tool, current-month (CM) column for each listed month. Dollars for Sales, Food, Paper, Talent Investment, Utilities, Marketing, R&M, Insurance, Financial Fees, Other Taxes, CFA PR LLC Fees, Misc, Net Profit.
    Hub: Monthly P&L → Update from cfahome. Header: month,sales,food,paper,talent,utilities,marketing,repairs,insurance,financial_fees,other_taxes,cfa_fees,misc,net_profit. Check rows.`,
+    fcr: `FCR DETAIL. cfahome → Reports and Tools → Financial Management → the Financial Control Report (FCR) for each listed month. Read every line in the current-month (CM) and year-to-date (YTD) columns: each section total (Food Cost, Paper Cost, Talent Investment, Utilities, Miscellaneous Income/Expense, Marketing, Repairs and Maintenance, Business Insurance, Financial Fees, Other Taxes, Chick-fil-A Puerto Rico LLC Expenses and Fees) and every line under it, with the exact line names as printed (for example "Base Franchise Fee - Royalty", "Base Rent CFA", "Percentage Rent CFA", "Equipment Rent", "Business Services Fee", "Common Area Maintenance").
+   Hub: Monthly P&L → Add FCR lines. Header: month,section,parent_line,line_item,is_subtotal,cm_amount,cm_pct,ytd_amount,ytd_pct (month as YYYY-MM; is_subtotal yes for each section total, whose parent_line is blank; other lines have the section total as parent_line). Pull the P&L for the month first. Check rows: the section totals plus net profit must equal sales.`,
     productivity: `PRODUCTIVITY. cfahome → Analytics Hub → Talent → Labor Productivity Analytics (day grain, table view) for sales, labor hours, labor cost; Sales & Brand Growth → Sales Analytics for forecast, same-day-last-year sales and transactions; Talent → Actual vs Scheduled Labor Hours for scheduled hours. Tableau dashboards have Download → CSV if copying is slow.
    Hub: Productivity → Update from cfahome. Header: date,sales,forecast_sales,last_year_sales,labor_hours,last_year_labor_hours,labor_cost,overtime_hours,transactions,scheduled_hours (date as YYYY-MM-DD). Check rows.`,
     sales: `SALES BY CHANNEL. cfahome → Analytics Hub → Sales & Brand Growth → Sales Analytics, day grain, by channel (Dine In, Drive Thru, Carry Out, 3PD, Catering) and by source (POS, Mobile, Web, ExtPOS), with last year.
@@ -446,8 +448,8 @@
    Hub: Staffing → Retention & turnover → Update. Header: month,retention_pct,turnover_pct,turnover_p12_pct,hires,exits,headcount.`,
     reputation: `RATINGS. SMG 360 (separate login), last 30 days: Overall Satisfaction, Taste, Speed of Service, Order Accuracy (% top box) and the survey count, plus every guest comment with its date and score. Uber Eats Manager: store rating and number of ratings.
    Hub: Reputación → Update from Claude, paste in the formats shown, Save. For Google, click Actualizar Google.`,
-    events: `EVENTS NEAR THE STORE. Analytics Hub → Sales & Brand Growth → Events Around Your Restaurant: every event in the next 60 days within 10 miles (date, end date, name, venue, expected attendance).
-   Hub: Calendar → Import events. Header: date,end_date,title,notes.`,
+    events: `EVENTS NEAR THE STORE. Analytics Hub → Sales & Brand Growth → Events Around Your Restaurant, next 60 days. Only events that can bring traffic to the store: expected attendance 3,000 or more anywhere in the list (Coliseo de Puerto Rico, Coliseo Rubén Rodríguez, stadiums, big concerts and festivals), or 500 or more within 2 miles. Skip small conferences, classes and meetups.
+   Hub: Calendar → Import events. Header: date,end_date,title,notes. Title = event name · venue. Notes exactly like "Expected 7,178 · 6.0 mi". The hub also filters by those numbers.`,
     news: `NEWS. Search the web for news from the last 14 days that could affect the store (Avenida Los Filtros, Bayamón/Guaynabo): LUMA outages, AAA water interruptions, road work and closures, new businesses, PR labor/economy news for restaurants, Chick-fil-A company news, storms.
    Hub: Home → Add a story, paste a JSON list with published_on, title, source, url, category (luma, aaa, construction, local, business, cfa, weather), severity (act, watch, info), starts_on, ends_on, impact (one sentence: why it matters for the store).`,
   };
@@ -476,6 +478,9 @@
       const rows = await H.db.list('pl_months', { cache: false });
       if (rows) { const have = new Set(rows.map(r => H.monthKey(r.period_start))); const miss = closedMonths.filter(k => !have.has(k));
         push('pl', 'Monthly P&L', miss.length ? `P&L months: ${miss.join(', ')}` : null, miss.length ? `${miss.length} month${miss.length === 1 ? '' : 's'}` : 'Up to date', miss.length ? monthsTxt(miss) : 'Every closed month is in'); }
+      const fr = await H.db.list('fcr_reports', { cache: false });
+      if (fr) { const haveF = new Set(fr.map(r => `${r.period_year}-${String(r.period_month).padStart(2, '0')}`)); const missF = closedMonths.filter(k => !haveF.has(k));
+        push('fcr', 'FCR detail', missF.length ? `FCR detail months: ${missF.join(', ')}` : null, missF.length ? `${missF.length} month${missF.length === 1 ? '' : 's'}` : 'Up to date', missF.length ? monthsTxt(missF) : 'Every closed month is in'); }
     }
     if (vis.includes('productivity')) {
       const rows = await H.db.list('productivity_days', { cache: false });
@@ -547,6 +552,7 @@
 
   H.claudeList = n => n.items.map(i => i.list || `${i.label.toUpperCase()}: up to date, nothing to pull`).join('\n');
   H.claudeNothing = n => !n.items.some(i => i.need && !i.light);
+  H.claudeFcrHow = () => HOW.fcr;
   const RULES = `Rules:
 - After Check rows, read what it says. If anything shows in red, do not Save that box; tell me what it said. Otherwise click Save.
 - Check every date range in cfahome before copying: whole calendar months for monthly numbers, single days for daily numbers. Never copy a month-to-date or week total into a month or a day.

@@ -441,9 +441,16 @@ input[type=file]::file-selector-button:hover{background:#F4F4F5}
 
 /* ═══════════ PRINT ═══════════ */
 @media print{
-  .sidebar,.topbar,.tbl-bar,button{display:none!important}
+  .sidebar,.topbar,.tbl-bar,button,.toast,#claudeUpdBtn{display:none!important}
   #appShell[style*="flex"]{display:block!important;background:#fff}
-  .page{display:block!important}
+  .main{padding:0!important}
+  /* only the page you're on, never every page of the hub */
+  .page:not(.active){display:none!important}
+  .page.active{display:block!important}
+  /* hubPrintOnly(id): just that section */
+  body.print-only *{visibility:hidden!important}
+  body.print-only .print-target,body.print-only .print-target *{visibility:visible!important}
+  body.print-only .print-target{position:absolute;left:0;top:0;width:100%;border:none;box-shadow:none}
 }
 /* Update with Claude */
 .btn-claude{display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--border)}

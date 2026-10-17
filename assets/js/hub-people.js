@@ -45,36 +45,12 @@
   }
 
   H.pages.staffing = {
+    // Only cfahome retention & turnover is shown (added by hub-biz.js). Headcount targets and the
+    // hiring pipeline were removed: nothing fed them, so they only showed zeros.
     async render(host) {
-      host.innerHTML = `<div class="ph"><div><h2>Staffing</h2><p>People you have in each area against what you need, and who is on the way in.</p></div>
-        <div class="actions"><button class="btn" onclick="H.pages.staffing.editTargets()">Staffing targets</button><button class="btn" onclick="H.pages.staffing.importRoster()">Import roster</button><button class="btn" onclick="H.pages.staffing.assign()">Assign positions</button><button class="btn btn-primary" onclick="H.pages.staffing.addCandidate()">Add candidate</button></div></div><div id="stBody"><div class="li-empty">Loading…</div></div>`;
-      const { pos, targets, cands } = await stLoad();
-      const body = document.getElementById('stBody'); if (!body) return;
-      if (pos === null || cands === null) { body.innerHTML = ''; return H.missingTable(body, 'staff_positions / candidates'); }
-      const hc = headcount(pos, targets);
-      const need = Object.values(hc.rows).flatMap(a => Object.values(a)).reduce((s, r) => s + Math.max(0, r.need - r.have + r.leaving), 0);
-      const pipeline = (cands || []).filter(c => ['applied', 'interview_set', 'interviewed', 'offer'].includes(c.stage));
-      const starting = (cands || []).filter(c => c.stage === 'hired' && c.start_date && c.start_date >= H.today());
-      const leaving = (pos || []).filter(p => p.ends_on && p.ends_on >= H.today());
-      const pt = H.employees().length;
-
-      body.innerHTML = `
-        <div class="kpis">
-          <div class="kpi"><div class="kpi-label">Team members</div><div class="kpi-val">${pt}</div><div class="kpi-sub">${hc.unassigned ? `${hc.unassigned} without a position yet` : 'All assigned'}</div></div>
-          <div class="kpi ${need ? 'bad' : 'ok'}"><div class="kpi-label">Open spots</div><div class="kpi-val">${need}</div><div class="kpi-sub">after ${starting.length} starting soon and ${leaving.length} leaving</div></div>
-          <div class="kpi info"><div class="kpi-label">In the hiring pipeline</div><div class="kpi-val">${pipeline.length}</div><div class="kpi-sub">${pipeline.filter(c => c.stage === 'interview_set').length} interviews set · ${pipeline.filter(c => c.stage === 'offer').length} offer out</div></div>
-          <div class="kpi"><div class="kpi-label">Starting soon</div><div class="kpi-val">${starting.length}</div><div class="kpi-sub">${starting.slice(0, 2).map(c => H.shortName(c.name)).join(', ') || '&nbsp;'}</div></div>
-        </div>
-        <div class="grid g3">${AREAS.map(a => areaCard(a, hc.rows[a] || {}, (cands || []).filter(c => c.area === a && ['applied', 'interview_set', 'interviewed', 'offer'].includes(c.stage)).length)).join('')}</div>
-        ${hc.unassigned ? `<div class="source warn mt"><span>${hc.unassigned} active team member${hc.unassigned === 1 ? ' has' : 's have'} no area or position yet, so they aren't counted above. <a href="#" onclick="H.pages.staffing.assign();return false" style="color:inherit;font-weight:700;margin-left:4px">Assign positions</a></span></div>` : ''}
-        <div class="section-label" style="margin-top:26px">Hiring pipeline <span class="small muted" style="text-transform:none;letter-spacing:0">Click a candidate to see interviews and notes</span></div>
-        <div class="board">${STAGES.map(s => { const list = (cands || []).filter(c => c.stage === s.k && (s.k !== 'hired' || !c.start_date || c.start_date >= H.addDays(H.today(), -30))); return `<div class="col"><div class="col-head"><span>${s.l}</span><span class="muted">${list.length}</span></div>${list.map(candTile).join('') || '<div class="small muted" style="padding:4px">None</div>'}</div>`; }).join('')}</div>
-        <div class="grid g2 mt" style="margin-top:22px">
-          <div class="card card-pad"><div class="section-label">Starting soon</div>${starting.length ? starting.map(c => `<div class="between small" style="padding:6px 0;border-top:1px solid #F0F0F2"><span><strong>${H.esc(c.name)}</strong> · ${H.esc(c.position || c.area || '')}</span><span class="muted">${H.fmtD(c.start_date)}</span></div>`).join('') : '<div class="small muted">No start dates set.</div>'}</div>
-          <div class="card card-pad"><div class="section-label">Leaving</div>${leaving.length ? leaving.map(p => `<div class="between small" style="padding:6px 0;border-top:1px solid #F0F0F2"><span><strong>${H.esc(p.employee_name)}</strong> · ${H.esc(p.position || p.area || '')}</span><span class="muted">Last day ${H.fmtD(p.ends_on)}</span></div>`).join('') : '<div class="small muted">Nobody has a last day set. Set one under Assign positions.</div>'}</div>
-        </div>`;
+      host.innerHTML = `<div class="ph"><div><h2>Staffing</h2><p>Retention and turnover from cfahome.</p></div></div><div id="stBody"></div>`;
     },
-    async count() { const { cands } = await stLoad(); if (!cands) return null; const n = cands.filter(c => c.stage === 'interviewed').length; return { n, alert: false }; },
+    async count() { return null; },
     addCandidate(c) {
       c = c || {};
       const allPos = [...new Set([...Object.values(DEFAULT_POSITIONS).flat()])];
